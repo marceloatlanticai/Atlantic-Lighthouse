@@ -61,14 +61,25 @@ iframe { border: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# ── Client brand config (from .env) ───────────────────────────────────────────
+# Set these in .env to customise per client:
+#   CLIENT_BEACON_COLOR = #cf2b29   (Heinz red, or any brand color)
+#   CLIENT_BEACON_2     = #e0502f   (lighter shade of brand color)
+#   CLIENT_PILL_COLOR   = #0a4a6e   (pill background — defaults to Atlantic blue)
+#   AGENCY_NAME         = Atlantic · New York
+CLIENT_BEACON_COLOR = os.environ.get("CLIENT_BEACON_COLOR", "#0a7d8c")   # default: teal
+CLIENT_BEACON_2     = os.environ.get("CLIENT_BEACON_2",     "#0fa3b5")
+CLIENT_PILL_COLOR   = os.environ.get("CLIENT_PILL_COLOR",   "#0a4a6e")
+AGENCY_NAME         = os.environ.get("AGENCY_NAME",         "Atlantic · New York")
+
 # ── Sidebar — config ───────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
-<div style="font-family:'Georgia',serif;font-size:20px;color:#f0ebe2;margin-bottom:4px">
+<div style="font-family:'Georgia',serif;font-size:20px;color:#d0eaf0;margin-bottom:4px">
   🗼 THE LIGHTHOUSE
 </div>
-<div style="font-family:monospace;font-size:10px;color:#e8a838;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:16px">
-  Countercurrent.ai · v3
+<div style="font-family:monospace;font-size:10px;color:#0fa3b5;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:16px">
+  Atlantic · Countercurrent.ai · v3
 </div>
 """, unsafe_allow_html=True)
 
@@ -86,7 +97,16 @@ with st.sidebar:
     signal_limit  = st.slider("Signals to analyse", 10, 50, 20)
 
     st.markdown("---")
-    regenerate    = st.button("⚡  Sweep & Generate", use_container_width=True)
+    st.markdown(
+        '<div style="font-size:10px;color:#0fa3b5;font-family:monospace;'
+        'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">'
+        'Mode</div>',
+        unsafe_allow_html=True,
+    )
+    live_mode = st.toggle("Live — call Claude", value=False,
+                          help="OFF = mostra último dispatch salvo (sem custo).\nON = gera novo conteúdo via Claude.")
+    regenerate = st.button("⚡  Sweep & Generate", use_container_width=True,
+                           disabled=not live_mode)
 
     st.markdown("---")
     st.markdown(
@@ -317,7 +337,7 @@ def _fallback() -> dict:
             "title": "No signals found — run ingestion first",
             "dek": (
                 "The Lighthouse needs data. Run python NYLIBERTYingestion.py (or ingestion.py) "
-                "to populate signals.jsonl, then press Sweep & Generate."
+                "to populate signals.jsonl, then switch to Live mode and generate."
             ),
             "pullquote": "The signal database is empty.",
             "pullquote_cite": "— System",
@@ -336,7 +356,7 @@ def _fallback() -> dict:
             {"n": "02", "text": "The countercurrent is hiding somewhere in the internet right now.", "tag": "Go get it"},
             {"n": "03", "text": "A brand that moves before the current peaks always looks like a genius in hindsight.", "tag": "Timing is everything"},
         ],
-        "briefing": "No signals available. Run ingestion.py and press Sweep & Generate.",
+        "briefing": "No dispatch saved yet. Run ingestion.py, switch to Live mode, and generate.",
         "alerts": [{"sev": "mid", "text": "<b>No data</b> — run ingestion.py first", "time": "Now · System"}],
     }
 
@@ -485,6 +505,12 @@ def build_html(content: dict, signals: list, client: str, tagline: str) -> str:
     src_pills   = sources_pills(signals)
     chips_html  = chip_buttons(lead)
 
+    # Client brand colors (from env)
+    beacon      = CLIENT_BEACON_COLOR
+    beacon_2    = CLIENT_BEACON_2
+    pill_color  = CLIENT_PILL_COLOR
+    agency      = e(AGENCY_NAME)
+
     return f"""<!DOCTYPE html>
 <html lang="en-GB">
 <head>
@@ -493,21 +519,30 @@ def build_html(content: dict, signals: list, client: str, tagline: str) -> str:
 <title>The Lighthouse — {e(client)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,400..700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,400..700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
 <style>
 :root{{
-  --paper:#f6f1e7; --paper-2:#efe8d8; --ink:#1a1714; --ink-soft:#4a443c;
-  --line:#d8cfbb; --line-strong:#c4b89e;
-  --beacon:#cf2b29; --beacon-2:#e0502f;
-  --teal:#0e4f4f; --rising:#2f7d4f; --falling:#b4452f;
+  /* ── Atlantic Ocean Palette ─────────────────────── */
+  --paper:      #ebf2f7;
+  --paper-2:    #dce9f2;
+  --ink:        #071828;
+  --ink-soft:   #274d68;
+  --line:       #9dc4d8;
+  --line-strong:#6ea8c4;
+  --beacon:     {beacon};
+  --beacon-2:   {beacon_2};
+  --deep:       #062233;
+  --atlantic:   #0a4a6e;
+  --rising:     #1a8a6b;
+  --falling:    #c94f35;
 }}
 *{{box-sizing:border-box;}} html{{scroll-behavior:smooth;}}
 body{{
   margin:0; background:var(--paper); color:var(--ink);
   font-family:'Inter',-apple-system,sans-serif; -webkit-font-smoothing:antialiased;
   background-image:
-    radial-gradient(circle at 12% -5%, rgba(207,43,41,.06), transparent 35%),
-    radial-gradient(circle at 95% 0%, rgba(14,79,79,.05), transparent 30%);
+    radial-gradient(ellipse 80% 40% at 50% -10%, rgba(10,125,140,.08), transparent),
+    radial-gradient(ellipse 60% 30% at 90% 110%, rgba(6,34,51,.05), transparent);
 }}
 .wrap{{max-width:1240px; margin:0 auto; padding:0 28px;}}
 .masthead{{border-bottom:3px double var(--ink); padding-top:22px;}}
@@ -519,40 +554,40 @@ body{{
 }}
 .masthead-top .edition{{display:flex; gap:22px; align-items:center;}}
 .live{{display:inline-flex; align-items:center; gap:7px; color:var(--ink); font-weight:700;}}
-.live .dot{{width:8px; height:8px; border-radius:50%; background:var(--rising); animation:pulse 2s infinite;}}
+.live .dot{{width:8px; height:8px; border-radius:50%; background:var(--beacon); animation:pulse 2.4s infinite;}}
 @keyframes pulse{{
-  0%{{box-shadow:0 0 0 0 rgba(47,125,79,.45);}}
-  70%{{box-shadow:0 0 0 9px rgba(47,125,79,0);}}
-  100%{{box-shadow:0 0 0 0 rgba(47,125,79,0);}}
+  0%{{box-shadow:0 0 0 0 rgba(10,125,140,.5);}}
+  70%{{box-shadow:0 0 0 10px rgba(10,125,140,0);}}
+  100%{{box-shadow:0 0 0 0 rgba(10,125,140,0);}}
 }}
 .clientbar{{
   display:flex; justify-content:center; align-items:center; gap:10px; padding:12px 0 2px;
   font-family:'JetBrains Mono',monospace; font-size:11px;
   letter-spacing:.18em; text-transform:uppercase; color:var(--ink-soft);
 }}
-.clientbar .pill{{background:var(--beacon); color:#fff; padding:3px 11px; border-radius:3px; font-weight:700; letter-spacing:.08em;}}
+.clientbar .pill{{background:{pill_color}; color:#fff; padding:3px 11px; border-radius:3px; font-weight:700; letter-spacing:.08em;}}
 .title-row{{display:flex; align-items:center; justify-content:center; gap:26px; padding:8px 0 10px;}}
 .beacon-mark{{position:relative; width:54px; height:54px; flex:none;}}
 .beacon-mark .tower{{
   position:absolute; left:50%; bottom:0; transform:translateX(-50%);
-  width:14px; height:34px; background:linear-gradient(var(--ink),#2c2620);
+  width:14px; height:34px; background:linear-gradient(var(--ink),#1a3d52);
   clip-path:polygon(28% 0,72% 0,100% 100%,0 100%);
 }}
 .beacon-mark .lamp{{
   position:absolute; left:50%; top:7px; transform:translateX(-50%);
   width:14px; height:11px; background:var(--beacon); border-radius:3px 3px 0 0;
-  box-shadow:0 0 14px 2px rgba(207,43,41,.7); z-index:2;
+  box-shadow:0 0 16px 4px rgba(10,125,140,.55); z-index:2;
 }}
 .beacon-mark .beam{{
   position:absolute; left:50%; top:12px; width:0; height:0;
   transform-origin:left center;
   border-top:16px solid transparent; border-bottom:16px solid transparent;
-  border-left:64px solid rgba(224,80,47,.3);
-  animation:sweep-beam 6s ease-in-out infinite;
+  border-left:64px solid rgba(15,163,181,.28);
+  animation:sweep-beam 7s ease-in-out infinite;
 }}
 @keyframes sweep-beam{{
-  0%,100%{{transform:rotate(-32deg); opacity:.25;}}
-  50%{{transform:rotate(28deg); opacity:.55;}}
+  0%,100%{{transform:rotate(-32deg); opacity:.2;}}
+  50%{{transform:rotate(28deg); opacity:.5;}}
 }}
 h1.logo{{font-family:'Fraunces',serif; font-weight:600; font-size:58px; letter-spacing:.01em; margin:0; line-height:.95; text-align:center;}}
 h1.logo .the{{display:block; font-size:14px; letter-spacing:.42em; font-weight:500; margin-bottom:4px; color:var(--ink-soft);}}
@@ -586,11 +621,11 @@ h1.logo .the{{display:block; font-size:14px; letter-spacing:.42em; font-weight:5
 .signal .plat{{font-family:'JetBrains Mono',monospace; font-size:10px; text-transform:uppercase; color:var(--ink-soft); width:66px; flex:none; letter-spacing:.05em;}}
 .signal .txt{{line-height:1.4;}}
 .signal .num{{margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--ink-soft); white-space:nowrap;}}
-.counter{{background:var(--teal); color:#eef5f4; border-radius:8px; padding:20px; position:relative; overflow:hidden;}}
-.counter::before{{content:""; position:absolute; top:-40px; right:-40px; width:140px; height:140px; border-radius:50%; background:radial-gradient(circle, rgba(224,80,47,.34), transparent 70%);}}
+.counter{{background:var(--deep); color:#d0eaf0; border-radius:8px; padding:20px; position:relative; overflow:hidden;}}
+.counter::before{{content:""; position:absolute; top:-40px; right:-40px; width:160px; height:160px; border-radius:50%; background:radial-gradient(circle, rgba(10,125,140,.25), transparent 70%);}}
 .counter .lbl{{font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--beacon-2); font-weight:700;}}
 .counter h4{{font-family:'Fraunces',serif; font-size:21px; font-weight:600; margin:8px 0 10px; line-height:1.2;}}
-.counter p{{font-size:13.5px; line-height:1.5; color:#cfe0de; margin:0 0 16px;}}
+.counter p{{font-size:13.5px; line-height:1.5; color:rgba(208,234,240,.75); margin:0 0 16px;}}
 .counter .act{{display:flex; gap:8px;}}
 .counter button{{flex:1; font-family:'Inter'; font-size:12px; font-weight:600; padding:9px; border-radius:6px; cursor:pointer; border:1px solid rgba(255,255,255,.25); background:transparent; color:#eef5f4; transition:.15s;}}
 .counter button.primary{{background:var(--beacon); border-color:var(--beacon); color:#fff;}}
@@ -658,13 +693,13 @@ h1.logo .the{{display:block; font-size:14px; letter-spacing:.42em; font-weight:5
 .p-x{{border-left-color:#111;}} .p-x .plat{{color:#111;}}
 .p-mumsnet{{border-left-color:#a4117f;}} .p-mumsnet .plat{{color:#a4117f;}}
 .p-ig{{border-left-color:#c13584;}} .p-ig .plat{{color:#c13584;}}
-.provocations{{background:var(--teal); color:#eef5f4; border-radius:10px; padding:34px 34px 30px; margin:0 0 40px; position:relative; overflow:hidden;}}
-.provocations::before{{content:""; position:absolute; top:-60px; right:-50px; width:220px; height:220px; border-radius:50%; background:radial-gradient(circle, rgba(224,80,47,.26), transparent 70%);}}
-.provocations::after{{content:""; position:absolute; bottom:-70px; left:-40px; width:180px; height:180px; border-radius:50%; background:radial-gradient(circle, rgba(255,255,255,.05), transparent 70%);}}
+.provocations{{background:var(--deep); color:#d0eaf0; border-radius:10px; padding:34px 34px 30px; margin:0 0 40px; position:relative; overflow:hidden;}}
+.provocations::before{{content:""; position:absolute; top:-60px; right:-50px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle, rgba(10,125,140,.2), transparent 70%);}}
+.provocations::after{{content:""; position:absolute; bottom:-70px; left:-40px; width:200px; height:200px; border-radius:50%; background:radial-gradient(circle, rgba(15,163,181,.07), transparent 70%);}}
 .prov-head{{display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; margin-bottom:8px; position:relative;}}
 .prov-head .eye{{font-family:'JetBrains Mono',monospace; font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--beacon-2); font-weight:700;}}
 .prov-head h3{{font-family:'Fraunces',serif; font-weight:600; font-size:30px; margin:0; line-height:1.05;}}
-.prov-sub{{font-family:'Fraunces',serif; font-style:italic; font-size:15px; line-height:1.5; color:#bcd2d0; margin:0 0 26px; max-width:74ch; position:relative;}}
+.prov-sub{{font-family:'Fraunces',serif; font-style:italic; font-size:15px; line-height:1.5; color:rgba(208,234,240,.6); margin:0 0 26px; max-width:74ch; position:relative;}}
 .prov-grid{{display:grid; grid-template-columns:repeat(3,1fr); gap:26px; position:relative;}}
 .prov{{border-top:2px solid rgba(255,255,255,.22); padding-top:15px;}}
 .prov .n{{font-family:'Fraunces',serif; font-size:34px; font-weight:300; color:var(--beacon-2); line-height:1; margin-bottom:12px; display:block;}}
@@ -689,6 +724,10 @@ footer{{border-top:3px double var(--ink); padding:22px 0 40px; font-family:'JetB
 <body>
 <div class="wrap">
 
+  <div style="background:var(--ink);color:rgba(255,255,255,.45);font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;padding:7px 28px;">
+    <span>Cultural Intelligence Platform · Powered by Countercurrent</span>
+    <span style="color:#fff;font-weight:700;letter-spacing:.22em;">{agency}</span>
+  </div>
   <header class="masthead">
     <div class="masthead-top">
       <div class="edition"><span>{vol_no}</span><span>{today_str}</span></div>
@@ -839,8 +878,8 @@ footer{{border-top:3px double var(--ink); padding:22px 0 40px; font-family:'JetB
 
   <footer>
     <span>The Lighthouse · Countercurrent.ai v3</span>
-    <span>Client: {e(client)} · Claude + Gemini Embeddings + Pinecone</span>
-    <span>Refreshes on demand · Human-reviewed before send</span>
+    <span style="color:var(--beacon);font-weight:700;letter-spacing:.14em;">{agency}</span>
+    <span>Client: {e(client)} · Refreshes on demand · Human-reviewed before send</span>
   </footer>
 
 </div>
@@ -876,13 +915,42 @@ if "lh_content" not in st.session_state:
     st.session_state.lh_content = None
 
 
-# ── Load data + generate ───────────────────────────────────────────────────────
+# ── Load data ──────────────────────────────────────────────────────────────────
 
 signals = load_signals()
 
-# Only generate when the user explicitly clicks the button.
-# Never auto-generate on load — saves API credits during testing.
-if regenerate:
+
+def load_last_dispatch(path: str = "data/dispatches.jsonl"):
+    """Load the most recent saved dispatch from disk."""
+    if not os.path.exists(path):
+        return None
+    last = None
+    with open(path) as f:
+        for line in f:
+            try:
+                last = json.loads(line)
+            except Exception:
+                pass
+    if last and "full" in last:
+        return last["full"]
+    return None
+
+
+# ── Mode: saved (free) vs live (calls Claude) ──────────────────────────────────
+
+if not live_mode:
+    # SAVED MODE — load last dispatch, zero API cost
+    if st.session_state.lh_content is None:
+        saved = load_last_dispatch()
+        if saved:
+            st.session_state.lh_content = saved
+            st.sidebar.caption("Showing last saved dispatch.")
+        else:
+            st.session_state.lh_content = _fallback()
+            st.sidebar.caption("No dispatch saved yet — switch to Live to generate.")
+
+elif regenerate:
+    # LIVE MODE — call Claude
     if not signals:
         st.session_state.lh_content = _fallback()
     else:
@@ -920,4 +988,4 @@ if content:
     final_html = build_html(content, signals, client_name, brief_tagline)
     st.components.v1.html(final_html, height=3200, scrolling=True)
 else:
-    st.info("Press **⚡ Sweep & Generate** in the sidebar to produce the first briefing.")
+    st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
