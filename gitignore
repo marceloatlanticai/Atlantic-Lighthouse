@@ -1,0 +1,23 @@
+# Ambiente virtual
+venv/
+env/
+.venv/
+
+# Variáveis de ambiente — NUNCA subir para o GitHub
+.env
+
+# Dados locais — não precisam ir para o GitHub
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Mac
+.DS_Store
+
+# VS Code
+.vscode/
