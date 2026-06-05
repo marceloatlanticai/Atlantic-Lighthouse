@@ -377,23 +377,12 @@ with st.sidebar:
         '↓ Report</div>',
         unsafe_allow_html=True,
     )
-    if st.session_state.get("lh_content"):
-        _report_signals = load_signals()
-        _report_html    = build_html(
-            st.session_state["lh_content"], _report_signals,
-            client_name, brief_tagline,
-        )
-        _date_str = datetime.utcnow().strftime("%Y-%m-%d")
-        st.download_button(
-            "↓ Download Report (HTML→PDF)",
-            data=_report_html,
-            file_name=f"lighthouse_{_date_str}.html",
-            mime="text/html",
-            use_container_width=True,
-            help="Open in browser → Print → Save as PDF",
-        )
-    else:
-        st.caption("Generate a dispatch first to download the report.")
+    # Download button placeholder — filled after build_html is defined
+    _has_content = bool(st.session_state.get("lh_content"))
+    _download_placeholder = st.empty()
+    _date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    if not _has_content:
+        _download_placeholder.caption("Generate a dispatch first to download the report.")
 
     # ── Dispatch archive ────────────────────────────────────────────────────
     st.markdown("---")
@@ -2082,6 +2071,25 @@ if send_email_btn and email_to and content:
         st.toast(f"✓ Dispatch sent to {email_to}")
     else:
         st.error("Send failed — check SENDGRID_API_KEY and SENDGRID_FROM_EMAIL in .env")
+
+
+# ── Fill report download button (load_signals + build_html now in scope) ───────
+
+if _has_content:
+    _report_html = build_html(
+        st.session_state["lh_content"], load_signals(),
+        client_name, brief_tagline,
+    )
+    _download_placeholder.download_button(
+        "↓ Download Report (HTML→PDF)",
+        data=_report_html,
+        file_name=f"lighthouse_{_date_str}.html",
+        mime="text/html",
+        use_container_width=True,
+        help="Open in browser → Print → Save as PDF",
+    )
+else:
+    _download_placeholder.caption("Generate a dispatch first to download the report.")
 
 
 # ── Render ─────────────────────────────────────────────────────────────────────
