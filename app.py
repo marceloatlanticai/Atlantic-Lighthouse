@@ -194,6 +194,32 @@ iframe { border: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# ── Dispatch archive helpers (defined early — called inside sidebar) ───────────
+
+def load_all_dispatches(path: str = "data/dispatches.jsonl") -> list:
+    """Load all saved dispatches, newest first."""
+    if not os.path.exists(path):
+        return []
+    records = []
+    with open(path) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+                if "full" in rec and "timestamp" in rec:
+                    records.append(rec)
+            except Exception:
+                pass
+    return sorted(records, key=lambda x: x["timestamp"], reverse=True)
+
+
+def dispatch_label(rec: dict) -> str:
+    """Human-readable label for a dispatch record."""
+    ts    = rec.get("timestamp", "")[:10]
+    title = rec.get("full", {}).get("lead", {}).get("title", rec.get("content", ""))
+    short = (title[:42] + "…") if len(title) > 42 else title
+    return f"{ts}  ·  {short}" if short else ts
+
+
 # ── Login screen ──────────────────────────────────────────────────────────────
 
 def show_login():
@@ -2010,28 +2036,6 @@ def load_last_dispatch(path: str = "data/dispatches.jsonl"):
     return None
 
 
-def load_all_dispatches(path: str = "data/dispatches.jsonl") -> list:
-    """Load all saved dispatches, newest first."""
-    if not os.path.exists(path):
-        return []
-    records = []
-    with open(path) as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-                if "full" in rec and "timestamp" in rec:
-                    records.append(rec)
-            except Exception:
-                pass
-    return sorted(records, key=lambda x: x["timestamp"], reverse=True)
-
-
-def dispatch_label(rec: dict) -> str:
-    """Human-readable label for a dispatch record."""
-    ts   = rec.get("timestamp", "")[:10]
-    title = rec.get("full", {}).get("lead", {}).get("title", rec.get("content", ""))
-    short = (title[:42] + "…") if len(title) > 42 else title
-    return f"{ts}  ·  {short}" if short else ts
 
 
 # ── Mode: saved (free) vs live (calls Claude) ──────────────────────────────────
