@@ -113,6 +113,19 @@ st.markdown("""
 }
 .block-container { padding: 0.5rem 0.5rem 0 !important; max-width: 100% !important; background: transparent !important; }
 
+/* Prevent white text leaking into light sections */
+[data-testid="stTabsContent"] p,
+[data-testid="stTabsContent"] div,
+[data-testid="stTabsContent"] span {
+    color: #071828;
+}
+[data-testid="stTabsContent"] .cur-item-type  { color: #0a7d8c !important; }
+[data-testid="stTabsContent"] .cur-item-title { color: #071828 !important; }
+[data-testid="stTabsContent"] .cur-item-content { color: #274d68 !important; }
+[data-testid="stTabsContent"] .cur-user-pill  { color: #fff !important; }
+/* Streamlit default p/text in light mode */
+p, li, span, label { color: #071828; }
+
 section[data-testid="stSidebar"] { background: #0f0e0c !important; }
 section[data-testid="stSidebar"] * { color: #c8c0b4 !important; }
 section[data-testid="stSidebar"] .stButton > button {
@@ -665,14 +678,14 @@ def _native_css(beacon: str, beacon_2: str) -> str:
 .lh-spark i{{flex:1;background:var(--lh-line-strong);border-radius:2px 2px 0 0;display:block;}}
 .lh-card-foot{{display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:var(--lh-ink-soft);padding-top:8px;border-top:1px dotted var(--lh-line);}}
 .lh-reach{{font-weight:700;color:var(--lh-ink);}}
-.lh-voice{{background:rgba(255,255,255,.7);border:1px solid var(--lh-line);border-left:3px solid var(--lh-line);border-radius:8px;padding:14px 16px;height:100%;}}
+.lh-voice{{background:rgba(255,255,255,.75);border:1px solid var(--lh-line);border-left:3px solid var(--lh-line);border-radius:8px;padding:14px 16px;height:100%;}}
 .lh-voice-top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}}
 .lh-voice-plat{{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;font-weight:700;}}
-.lh-voice-eng{{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--lh-ink-soft);}}
-.lh-voice-q{{font-family:'Fraunces',serif;font-size:1rem;line-height:1.46;color:var(--lh-ink);margin-bottom:8px;}}
+.lh-voice-eng{{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#274d68 !important;}}
+.lh-voice-q{{font-family:'Fraunces',serif;font-size:1rem;line-height:1.46;color:#071828 !important;margin-bottom:8px;}}
 .lh-voice-bot{{display:flex;justify-content:space-between;border-top:1px dotted var(--lh-line);padding-top:8px;}}
-.lh-voice-handle{{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--lh-ink-soft);}}
-.lh-voice-rel{{font-family:'JetBrains Mono',monospace;font-size:8.5px;text-transform:uppercase;color:#fff;background:var(--lh-ink);padding:2px 6px;border-radius:3px;}}
+.lh-voice-handle{{font-family:'JetBrains Mono',monospace;font-size:10px;color:#274d68 !important;}}
+.lh-voice-rel{{font-family:'JetBrains Mono',monospace;font-size:8.5px;text-transform:uppercase;color:#fff !important;background:#071828;padding:2px 6px;border-radius:3px;}}
 .p-reddit-n{{border-left-color:#d93a00;}}.p-reddit-n .lh-voice-plat{{color:#d93a00;}}
 .p-tiktok-n{{border-left-color:#111;}}.p-tiktok-n .lh-voice-plat{{color:#111;}}
 .p-x-n{{border-left-color:#111;}}.p-x-n .lh-voice-plat{{color:#111;}}
@@ -686,28 +699,28 @@ def _native_css(beacon: str, beacon_2: str) -> str:
 .lh-prov-n{{font-family:'Fraunces',serif;font-size:2.2rem;font-weight:300;color:{beacon_2};display:block;margin-bottom:8px;line-height:1;}}
 .lh-prov-text{{font-family:'Fraunces',serif;font-size:1.1rem;line-height:1.42;color:#e8f6fa;margin-bottom:6px;}}
 .lh-prov-tag{{font-family:'JetBrains Mono',monospace;font-size:9.5px;text-transform:uppercase;color:rgba(10,125,140,.85);letter-spacing:.06em;}}
-.lh-panel{{border:1px solid var(--lh-line);border-radius:8px;background:rgba(255,255,255,.5);margin-bottom:20px;overflow:hidden;}}
-.lh-panel-head{{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:12px 16px;border-bottom:1px solid var(--lh-line);color:var(--lh-ink);display:flex;justify-content:space-between;}}
-.lh-panel-cnt{{color:{beacon};}}
-.lh-brandrow{{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--lh-line);}}
+.lh-panel{{border:1px solid var(--lh-line);border-radius:8px;background:rgba(255,255,255,.6);margin-bottom:20px;overflow:hidden;}}
+.lh-panel-head{{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:12px 16px;border-bottom:1px solid var(--lh-line);color:#071828 !important;display:flex;justify-content:space-between;background:rgba(255,255,255,.7);}}
+.lh-panel-cnt{{color:{beacon} !important;}}
+.lh-brandrow{{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--lh-line);background:rgba(255,255,255,.4);}}
 .lh-brandrow:last-child{{border-bottom:none;}}
-.lh-av{{width:30px;height:30px;border-radius:6px;flex:none;display:grid;place-items:center;font-family:'Fraunces',serif;font-weight:600;font-size:13px;color:#fff;}}
-.lh-bn{{font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px;}}
-.lh-ours{{font-family:'JetBrains Mono',monospace;font-size:8px;background:{beacon};color:#fff;padding:1px 5px;border-radius:3px;}}
-.lh-bi{{font-size:10.5px;color:var(--lh-ink-soft);}}
+.lh-av{{width:30px;height:30px;border-radius:6px;flex:none;display:grid;place-items:center;font-family:'Fraunces',serif;font-weight:600;font-size:13px;color:#fff !important;}}
+.lh-bn{{font-weight:600;font-size:13px;color:#071828 !important;display:flex;align-items:center;gap:6px;}}
+.lh-ours{{font-family:'JetBrains Mono',monospace;font-size:8px;background:{beacon};color:#fff !important;padding:1px 5px;border-radius:3px;}}
+.lh-bi{{font-size:10.5px;color:#274d68 !important;}}
 .lh-bstat{{margin-left:auto;text-align:right;}}
-.lh-bpct{{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;}}
-.lh-bpct-up{{color:var(--lh-rising);}}.lh-bpct-down{{color:var(--lh-falling);}}
-.lh-bsub{{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;color:var(--lh-ink-soft);}}
-.lh-alert{{padding:12px 16px;border-bottom:1px solid var(--lh-line);display:flex;gap:10px;}}
+.lh-bpct{{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;color:#071828 !important;}}
+.lh-bpct-up{{color:#1a8a6b !important;}}.lh-bpct-down{{color:#c94f35 !important;}}
+.lh-bsub{{font-size:9px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;color:#274d68 !important;}}
+.lh-alert{{padding:12px 16px;border-bottom:1px solid var(--lh-line);display:flex;gap:10px;background:rgba(255,255,255,.3);}}
 .lh-alert:last-child{{border-bottom:none;}}
 .lh-sev{{width:4px;border-radius:4px;flex:none;}}
-.lh-sev-hi{{background:var(--lh-falling);}}.lh-sev-mid{{background:{beacon};}}.lh-sev-lo{{background:var(--lh-rising);}}
-.lh-atxt{{font-size:13px;line-height:1.4;color:var(--lh-ink);}}.lh-atxt b{{font-weight:600;}}
-.lh-atime{{font-family:'JetBrains Mono',monospace;font-size:9.5px;text-transform:uppercase;color:var(--lh-ink-soft);margin-top:4px;}}
-.lh-digest{{padding:16px;}}
-.lh-digest-p{{font-family:'Fraunces',serif;font-size:14px;line-height:1.6;color:var(--lh-ink);margin:0 0 12px;}}
-.lh-next{{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:var(--lh-ink-soft);text-align:center;padding:10px;border-top:1px dashed var(--lh-line);}}
+.lh-sev-hi{{background:#c94f35;}}.lh-sev-mid{{background:{beacon};}}.lh-sev-lo{{background:#1a8a6b;}}
+.lh-atxt{{font-size:13px;line-height:1.4;color:#071828 !important;}}.lh-atxt b{{font-weight:600;color:#071828 !important;}}
+.lh-atime{{font-family:'JetBrains Mono',monospace;font-size:9.5px;text-transform:uppercase;color:#274d68 !important;margin-top:4px;}}
+.lh-digest{{padding:16px;background:rgba(255,255,255,.3);}}
+.lh-digest-p{{font-family:'Fraunces',serif;font-size:14px;line-height:1.6;color:#071828 !important;margin:0 0 12px;}}
+.lh-next{{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:#274d68 !important;text-align:center;padding:10px;border-top:1px dashed var(--lh-line);}}
 /* Save button */
 div[data-testid="stButton"] button.lh-save {{
   padding:3px 8px !important; min-height:0 !important; height:28px !important;
@@ -830,8 +843,8 @@ def _mcls(d):
     return {"up": "lh-momentum-up", "down": "lh-momentum-down"}.get(d, "lh-momentum-flat")
 
 def _save_button(label: str, type_: str, title: str, content_str: str, key: str, user: str):
-    """Renders a 🔖 save button. Returns True if just saved."""
-    if st.button("🔖", key=key, help=f"Salvar na curadoria"):
+    """Renders a 💾 save button."""
+    if st.button("💾", key=key, help="Save to curation board"):
         ok = add_curadoria_item(user, type_, title, content_str)
         if ok:
             st.toast(f"✓ Salvo no seu board, {user}!")
@@ -1591,29 +1604,29 @@ st.markdown("""
     text-transform: uppercase; color: #0a7d8c; font-weight: 700;
 }
 .cur-item {
-    background: #fff; border: 1px solid #9dc4d8;
+    background: #fff !important; border: 1px solid #9dc4d8;
     border-left: 3px solid #0a7d8c; border-radius: 6px;
     padding: 14px 16px; margin-bottom: 10px;
 }
 .cur-item-type {
     font-family: monospace; font-size: 9px; letter-spacing: .12em;
-    text-transform: uppercase; color: #0a7d8c; margin-bottom: 5px;
+    text-transform: uppercase; color: #0a7d8c !important; margin-bottom: 5px;
 }
 .cur-item-title {
     font-family: Georgia, serif; font-size: 15px;
-    font-weight: 600; color: #071828; margin-bottom: 5px; line-height: 1.3;
+    font-weight: 600; color: #071828 !important; margin-bottom: 5px; line-height: 1.3;
 }
 .cur-item-content {
-    font-size: 13px; color: #274d68; line-height: 1.5;
+    font-size: 13px; color: #274d68 !important; line-height: 1.5;
 }
 .cur-item-meta {
-    font-family: monospace; font-size: 9px; color: #9dc4d8;
+    font-family: monospace; font-size: 9px; color: #6ea8c4 !important;
     text-transform: uppercase; margin-top: 8px;
 }
 .cur-user-pill {
     display: inline-block; padding: 2px 8px; border-radius: 3px;
     font-family: monospace; font-size: 9px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: .06em; color: #fff; margin-right: 6px;
+    text-transform: uppercase; letter-spacing: .06em; color: #fff !important; margin-right: 6px;
 }
 </style>
 """, unsafe_allow_html=True)
