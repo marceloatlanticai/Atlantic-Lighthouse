@@ -140,6 +140,55 @@ section[data-testid="stSidebar"] input, section[data-testid="stSidebar"] textare
     color: #c8c0b4 !important; font-size: 0.82rem !important;
 }
 iframe { border: none !important; }
+
+/* ── Main-area save buttons (💾 / 🗑) — transparent, beacon on hover ── */
+:not(section[data-testid="stSidebar"]) .stButton > button {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: 1px solid rgba(157,196,216,.35) !important;
+    border-radius: 6px !important;
+    color: #274d68 !important;
+    box-shadow: none !important;
+    font-size: 15px !important;
+    padding: 2px 8px !important;
+    min-height: 28px !important;
+    transition: all .15s !important;
+}
+:not(section[data-testid="stSidebar"]) .stButton > button:hover {
+    border-color: #0a7d8c !important;
+    color: #0a7d8c !important;
+    background: transparent !important;
+    background-color: transparent !important;
+}
+:not(section[data-testid="stSidebar"]) .stButton > button p,
+:not(section[data-testid="stSidebar"]) .stButton > button span {
+    color: inherit !important;
+}
+
+/* ── Login form submit button ── */
+[data-testid="stFormSubmitButton"] > button,
+[data-testid="stFormSubmitButton"] > button:focus {
+    background: #071828 !important;
+    background-color: #071828 !important;
+    color: #ffffff !important;
+    border: 1px solid #071828 !important;
+    border-radius: 6px !important;
+    font-size: 15px !important;
+    padding: 10px 20px !important;
+    width: 100% !important;
+    box-shadow: none !important;
+    transition: background .15s !important;
+}
+[data-testid="stFormSubmitButton"] > button:hover {
+    background: #0a7d8c !important;
+    background-color: #0a7d8c !important;
+    border-color: #0a7d8c !important;
+    color: #ffffff !important;
+}
+[data-testid="stFormSubmitButton"] > button p,
+[data-testid="stFormSubmitButton"] > button span {
+    color: #ffffff !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -209,15 +258,15 @@ def show_login():
     _, col, _ = st.columns([1, 2, 1])
     with col:
         with st.form("login_form", clear_on_submit=False):
-            user_sel = st.selectbox("Usuário", list(USERS.keys()), label_visibility="visible")
-            password = st.text_input("Senha", type="password", placeholder="••••••••")
-            submitted = st.form_submit_button("Entrar →", use_container_width=True)
+            user_sel = st.selectbox("Username", list(USERS.keys()), label_visibility="visible")
+            password = st.text_input("Password", type="password", placeholder="••••••••")
+            submitted = st.form_submit_button("Sign in →", use_container_width=True)
             if submitted:
                 if USERS.get(user_sel) == password:
                     st.session_state.logged_in_user = user_sel
                     st.rerun()
                 else:
-                    st.error("Senha incorreta.")
+                    st.error("Incorrect password.")
 
 
 if "logged_in_user" not in st.session_state:
@@ -254,7 +303,7 @@ with st.sidebar:
   </div>
 </div>
 """, unsafe_allow_html=True)
-    if st.button("Sair", use_container_width=True, key="logout_btn"):
+    if st.button("Sign out", use_container_width=True, key="logout_btn"):
         del st.session_state.logged_in_user
         st.rerun()
 
@@ -279,7 +328,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     live_mode = st.toggle("Live — call Claude", value=False,
-                          help="OFF = mostra último dispatch salvo (sem custo).\nON = gera novo conteúdo via Claude.")
+                          help="OFF = shows last saved dispatch (no cost).\nON = generates new content via Claude.")
     regenerate = st.button("⚡  Sweep & Generate", use_container_width=True,
                            disabled=not live_mode)
 
@@ -876,9 +925,9 @@ def _save_button(label: str, type_: str, title: str, content_str: str, key: str,
     if st.button("💾", key=key, help="Save to curation board"):
         ok = add_curadoria_item(user, type_, title, content_str)
         if ok:
-            st.toast(f"✓ Salvo no seu board, {user}!")
+            st.toast(f"✓ Saved to your board, {user}!")
         else:
-            st.toast("Já está no seu board.")
+            st.toast("Already saved to your board.")
 
 
 def render_content_sections(content: dict, user: str):
@@ -1058,7 +1107,7 @@ def render_content_sections(content: dict, user: str):
 
     # ── PROVOCATIONS ──────────────────────────────────────────────────────────
     st.markdown(f"""
-<div class="lh-prov-wrap">
+<div class="lh-prov-wrap" style="background:#062233 !important;color:#d0eaf0 !important;border-radius:10px;padding:28px 32px;">
   <div class="lh-prov-head-eye">◐ To Close · The Countercurrent</div>
   <div class="lh-prov-head-title">Three provocations for the room</div>
   <div class="lh-prov-head-sub">Deliberately unfinished questions drawn from today's currents — not answers, but opening lines to push the team past the obvious.</div>
@@ -1070,7 +1119,7 @@ def render_content_sections(content: dict, user: str):
             col_p, col_ps = st.columns([8, 1])
             with col_p:
                 st.markdown(f"""
-<div class="lh-prov-wrap" style="padding:20px 22px">
+<div class="lh-prov-wrap" style="background:#062233 !important;color:#d0eaf0 !important;border-radius:10px;padding:20px 22px;">
   <div class="lh-prov">
     <span class="lh-prov-n">{e(p.get("n",""))}</span>
     <div class="lh-prov-text">{e(p.get("text",""))}</div>
@@ -1079,7 +1128,7 @@ def render_content_sections(content: dict, user: str):
 </div>""", unsafe_allow_html=True)
             with col_ps:
                 _save_button("🔖",
-                    f"Provocação {p.get('n','')}",
+                    f"Provocation {p.get('n','')}",
                     p.get("text",""),
                     p.get("tag",""),
                     f"save_prov_{i}", user)
@@ -1663,15 +1712,15 @@ st.markdown("""
 # Header
 st.markdown("""
 <div class="cur-header">
-  <span class="cur-label">◈ Curadoria</span>
-  <div class="cur-title">Board de Insights</div>
-  <div class="cur-sub">Selecione os conteúdos mais relevantes do dispatch. Seu board e o da equipe ficam aqui.</div>
+  <span class="cur-label">◈ Curation</span>
+  <div class="cur-title">Insights Board</div>
+  <div class="cur-sub">Select the most relevant content from the dispatch. Your board and your team's board live here.</div>
 </div>
 """, unsafe_allow_html=True)
 
 cur_tab2, cur_tab3 = st.tabs([
-    f"  Meu Board ({st.session_state.logged_in_user})  ",
-    "  Board Coletivo  ",
+    f"  My Board ({st.session_state.logged_in_user})  ",
+    "  Team Board  ",
 ])
 
 # ── TAB 2: Meu Board ──────────────────────────────────────────────────────────
@@ -1680,9 +1729,9 @@ with cur_tab2:
     my_items = [i for i in load_curadoria() if i["user"] == current_user]
 
     if not my_items:
-        st.info("Seu board está vazio. Use os botões 🔖 ao longo do dispatch para salvar insights.")
+        st.info("Your board is empty. Use the 🔖 buttons throughout the dispatch to save insights.")
     else:
-        st.markdown(f"**{len(my_items)} item{'ns' if len(my_items) != 1 else ''} salvos**")
+        st.markdown(f"**{len(my_items)} item{'s' if len(my_items) != 1 else ''} saved**")
         for item in reversed(my_items):
             col_a, col_b = st.columns([6, 1])
             with col_a:
@@ -1691,11 +1740,11 @@ with cur_tab2:
   <div class="cur-item-type">{e(item['type'])}</div>
   <div class="cur-item-title">{e(item['title'][:120])}</div>
   <div class="cur-item-content">{e(item['content'][:240])}{"…" if len(item['content']) > 240 else ""}</div>
-  <div class="cur-item-meta">Salvo em {e(item['saved_at'])}</div>
+  <div class="cur-item-meta">Saved on {e(item['saved_at'])}</div>
 </div>""", unsafe_allow_html=True)
             with col_b:
                 st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-                if st.button("🗑", key=f"del_{item['id']}", help="Remover do board"):
+                if st.button("🗑", key=f"del_{item['id']}", help="Remove from board"):
                     remove_curadoria_item(item["id"])
                     st.rerun()
 
@@ -1705,7 +1754,7 @@ with cur_tab3:
     all_items = load_curadoria()
 
     if not all_items:
-        st.info("Nenhum item salvo ainda. Comece selecionando conteúdos na aba **Selecionar**.")
+        st.info("No items saved yet. Use the 🔖 buttons throughout the dispatch to save insights.")
     else:
         # Group by user
         by_user = {}
@@ -1713,7 +1762,7 @@ with cur_tab3:
             by_user.setdefault(item["user"], []).append(item)
 
         total = len(all_items)
-        st.markdown(f"**{total} insight{'s' if total != 1 else ''} salvos pela equipe** · {len(by_user)} usuário{'s' if len(by_user) != 1 else ''}")
+        st.markdown(f"**{total} insight{'s' if total != 1 else ''} saved by the team** · {len(by_user)} member{'s' if len(by_user) != 1 else ''}")
         st.markdown("---")
 
         for user_name, items in by_user.items():
@@ -1733,6 +1782,6 @@ with cur_tab3:
   <div class="cur-item-content">{e(item['content'][:240])}{"…" if len(item['content']) > 240 else ""}</div>
   <div class="cur-item-meta">
     <span class="cur-user-pill" style="background:{color}">{e(user_name)}</span>
-    Salvo em {e(item['saved_at'])}
+    Saved on {e(item['saved_at'])}
   </div>
 </div>""", unsafe_allow_html=True)
