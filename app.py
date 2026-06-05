@@ -462,6 +462,7 @@ def build_context(signals: list, rag_results: list, limit: int = 25) -> str:
         seen.add(snippet[:80])
         parts.append(
             f"SIGNAL [{s.get('source','?').upper()}] {s.get('timestamp','')[:10]}\n"
+            f"URL: {s.get('url','')}\n"
             f"Title: {s.get('title','')}\n"
             f"Content: {s.get('content','')[:320]}"
         )
@@ -569,15 +570,15 @@ Generate a complete Lighthouse briefing. Return a single JSON object with EXACTL
     {{"momentum_pct": "-XX%", "momentum_dir": "down", "tags": "Format War · Watch", "title": "A declining signal worth watching", "body": "...", "sources": "...", "reach": "...", "spark": [90, 82, 70, 60, 52, 44, 38]}}
   ],
   "voices": [
-    {{"platform_class": "p-reddit", "platform_label": "Reddit · r/SubName", "engagement": "▲ 3.1k", "quote": "Vivid, specific, casual voice.", "handle": "u/realistic_handle", "rel_tag": "Short tag"}},
-    {{"platform_class": "p-tiktok", "platform_label": "TikTok", "engagement": "410k views", "quote": "...", "handle": "@handle", "rel_tag": "..."}},
-    {{"platform_class": "p-x", "platform_label": "X", "engagement": "12k likes", "quote": "...", "handle": "@handle", "rel_tag": "..."}},
-    {{"platform_class": "p-mumsnet", "platform_label": "Mumsnet", "engagement": "240 replies", "quote": "...", "handle": "Username", "rel_tag": "..."}},
-    {{"platform_class": "p-ig", "platform_label": "Instagram", "engagement": "22k likes", "quote": "...", "handle": "@handle", "rel_tag": "..."}},
-    {{"platform_class": "p-reddit", "platform_label": "Reddit · r/SubName", "engagement": "▲ 5.4k", "quote": "...", "handle": "u/handle", "rel_tag": "..."}},
-    {{"platform_class": "p-tiktok", "platform_label": "TikTok · Niche", "engagement": "880k views", "quote": "...", "handle": "@handle", "rel_tag": "..."}},
-    {{"platform_class": "p-x", "platform_label": "X", "engagement": "8.3k likes", "quote": "...", "handle": "@handle", "rel_tag": "..."}},
-    {{"platform_class": "p-reddit", "platform_label": "Reddit · r/SubName", "engagement": "▲ 1.9k", "quote": "...", "handle": "u/handle", "rel_tag": "..."}}
+    {{"platform_class": "p-reddit", "platform_label": "Reddit · r/SubName", "engagement": "▲ 3.1k", "quote": "Vivid, specific, casual voice.", "handle": "u/realistic_handle", "rel_tag": "Short tag", "url": "https://reddit.com/r/SubName/comments/..."}},
+    {{"platform_class": "p-tiktok", "platform_label": "TikTok", "engagement": "410k views", "quote": "...", "handle": "@handle", "rel_tag": "...", "url": "https://tiktok.com/@handle/video/..."}},
+    {{"platform_class": "p-x", "platform_label": "X", "engagement": "12k likes", "quote": "...", "handle": "@handle", "rel_tag": "...", "url": ""}},
+    {{"platform_class": "p-mumsnet", "platform_label": "Mumsnet", "engagement": "240 replies", "quote": "...", "handle": "Username", "rel_tag": "...", "url": ""}},
+    {{"platform_class": "p-ig", "platform_label": "Instagram", "engagement": "22k likes", "quote": "...", "handle": "@handle", "rel_tag": "...", "url": ""}},
+    {{"platform_class": "p-reddit", "platform_label": "Reddit · r/SubName", "engagement": "▲ 5.4k", "quote": "...", "handle": "u/handle", "rel_tag": "...", "url": "https://reddit.com/r/SubName/comments/..."}},
+    {{"platform_class": "p-tiktok", "platform_label": "TikTok · Niche", "engagement": "880k views", "quote": "...", "handle": "@handle", "rel_tag": "...", "url": "https://tiktok.com/@handle/video/..."}},
+    {{"platform_class": "p-x", "platform_label": "X", "engagement": "8.3k likes", "quote": "...", "handle": "@handle", "rel_tag": "...", "url": ""}},
+    {{"platform_class": "p-reddit", "platform_label": "Reddit · r/SubName", "engagement": "▲ 1.9k", "quote": "...", "handle": "u/handle", "rel_tag": "...", "url": "https://reddit.com/r/SubName/comments/..."}}
   ],
   "provocations": [
     {{"n": "01", "text": "Open strategic question, 20-30 words, makes a strategist uncomfortable.", "tag": "Short philosophical tag"}},
@@ -592,7 +593,8 @@ Generate a complete Lighthouse briefing. Return a single JSON object with EXACTL
   ]
 }}
 
-Be specific. Steal language from the actual signals. Write like a world-class strategist."""
+Be specific. Steal language from the actual signals. Write like a world-class strategist.
+For the "url" field in each voice: use the exact URL from the SIGNAL context above that best matches the quote. If no URL is available for that platform, leave it as an empty string ""."""
 
     try:
         msg = claude.messages.create(
@@ -725,6 +727,11 @@ def render_card(c: dict) -> str:
     )
 
 def render_voice(v: dict) -> str:
+    url     = v.get("url", "")
+    link    = (f'<a href="{e(url)}" target="_blank" rel="noopener" '
+               f'style="margin-left:auto;font-size:10px;color:var(--beacon);'
+               f'text-decoration:none;font-family:\'JetBrains Mono\',monospace;'
+               f'letter-spacing:.04em;">↗ source</a>') if url else ""
     return (
         f'<div class="voice {e(v.get("platform_class","p-reddit"))}">'
         f'<div class="vtop">'
@@ -735,6 +742,7 @@ def render_voice(v: dict) -> str:
         f'<div class="vbot">'
         f'<span class="handle">{e(v.get("handle",""))}</span>'
         f'<span class="rel">{e(v.get("rel_tag",""))}</span>'
+        f'{link}'
         f'</div></div>'
     )
 
@@ -981,6 +989,118 @@ document.querySelectorAll('.chip').forEach(function(c){{c.addEventListener('clic
 </body></html>"""
 
 
+# ── Raw Signal Feed ───────────────────────────────────────────────────────────
+
+SOURCE_COLORS = {
+    "reddit": "#d44800",
+    "tiktok": "#0fa3b5",
+    "rss":    "#6ea8c4",
+    "web":    "#1a8a6b",
+}
+SOURCE_LABELS = {
+    "reddit": "Reddit",
+    "tiktok": "TikTok",
+    "rss":    "RSS",
+    "web":    "Web",
+}
+
+def _render_raw_signals(signals: list, topic_tags: list) -> None:
+    """Show real captured signals with direct links, filterable by platform."""
+    if not signals:
+        return
+
+    beacon   = CLIENT_BEACON_COLOR
+    beacon_2 = CLIENT_BEACON_2
+
+    # Score signals by topic relevance
+    topic_words = set(" ".join(topic_tags).lower().split())
+    def relevance(s):
+        text = f"{s.get('title','')} {s.get('content','')}".lower()
+        return sum(1 for w in topic_words if w in text)
+
+    scored = sorted(
+        [s for s in signals if s.get("url","").startswith("http")],
+        key=lambda s: (-relevance(s), s.get("timestamp",""))
+    )
+
+    # Available platforms in this dataset
+    platforms = sorted({s.get("source","other").lower() for s in scored})
+
+    st.markdown(f"""
+<div style="border-top:2px solid #071828;padding-top:18px;margin:32px 0 16px;">
+  <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;
+        text-transform:uppercase;color:{beacon};font-weight:700;">◉ Raw Signal Feed</span>
+  <div style="font-family:'Fraunces',serif;font-weight:600;font-size:2rem;
+        margin:10px 0 6px;color:#071828;">Original posts from the sweep</div>
+  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:15px;
+        color:#274d68;max-width:72ch;">Real content captured directly from the platforms — unfiltered, unedited.
+        Click <b>↗ view post</b> to open the original publication.</div>
+</div>""", unsafe_allow_html=True)
+
+    # Platform filter
+    filter_cols = st.columns(len(platforms) + 1)
+    selected_src = st.session_state.get("raw_signal_filter", "all")
+
+    with filter_cols[0]:
+        if st.button("All", key="rsf_all",
+                     type="primary" if selected_src == "all" else "secondary"):
+            st.session_state["raw_signal_filter"] = "all"
+            st.rerun()
+
+    for ci, plat in enumerate(platforms):
+        with filter_cols[ci + 1]:
+            col = SOURCE_COLORS.get(plat, "#9dc4d8")
+            label = SOURCE_LABELS.get(plat, plat.title())
+            if st.button(label, key=f"rsf_{plat}",
+                         type="primary" if selected_src == plat else "secondary"):
+                st.session_state["raw_signal_filter"] = plat
+                st.rerun()
+
+    # Filter + cap at 30
+    selected_src = st.session_state.get("raw_signal_filter", "all")
+    filtered = [
+        s for s in scored
+        if selected_src == "all" or s.get("source","").lower() == selected_src
+    ][:30]
+
+    if not filtered:
+        st.caption("No signals found for this filter.")
+        return
+
+    sig_cols = st.columns(3, gap="medium")
+    for i, s in enumerate(filtered):
+        src    = s.get("source","web").lower()
+        color  = SOURCE_COLORS.get(src, "#9dc4d8")
+        label  = SOURCE_LABELS.get(src, src.title())
+        title  = s.get("title","") or "—"
+        body   = s.get("content","")[:200]
+        if len(s.get("content","")) > 200:
+            body += "…"
+        ts     = s.get("timestamp","")[:10]
+        url    = s.get("url","")
+
+        with sig_cols[i % 3]:
+            st.markdown(f"""
+<div style="background:rgba(255,255,255,.7);border:1px solid #9dc4d8;
+     border-left:3px solid {color};border-radius:8px;padding:14px 16px;
+     margin-bottom:14px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+    <span style="font-family:'JetBrains Mono',monospace;font-size:9px;
+          text-transform:uppercase;letter-spacing:.1em;color:{color};font-weight:700;">
+      ● {label}</span>
+    <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#9dc4d8;">{ts}</span>
+  </div>
+  <div style="font-family:'Fraunces',serif;font-size:14px;font-weight:600;
+       color:#071828;line-height:1.35;margin-bottom:8px;">{e(title[:90])}</div>
+  <div style="font-size:12.5px;color:#274d68;line-height:1.55;margin-bottom:12px;">{e(body)}</div>
+  <a href="{e(url)}" target="_blank" rel="noopener"
+     style="font-family:'JetBrains Mono',monospace;font-size:9.5px;
+            letter-spacing:.06em;text-transform:uppercase;color:{color};
+            text-decoration:none;border-bottom:1px solid {color};
+            padding-bottom:1px;">↗ view post</a>
+</div>""", unsafe_allow_html=True)
+
+
 # ── Native Streamlit section renderers ────────────────────────────────────────
 
 def _mdir(d):
@@ -1139,9 +1259,10 @@ def render_content_sections(content: dict, user: str):
     # ── VOICES ────────────────────────────────────────────────────────────────
     st.markdown("""
 <div style="border-top:2px solid #071828;padding-top:18px;margin:8px 0 20px">
-  <span class="lh-eyebrow">● Live · Voices From The Currents</span>
+  <span class="lh-eyebrow">◎ Editorial Synthesis · Claude-Composed Voices</span>
   <div style="font-family:'Fraunces',serif;font-weight:600;font-size:2rem;margin:10px 0 6px;color:#071828">What people are actually saying</div>
-  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:15px;color:#274d68;max-width:72ch">Raw signal texture from this sweep — the language and feelings real people attach to the category. Steal the language.</div>
+  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:15px;color:#274d68;max-width:72ch;margin-bottom:10px">Raw signal texture from this sweep — the language and feelings real people attach to the category. Steal the language.</div>
+  <div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.06em;color:#9dc4d8;border-left:2px solid #9dc4d8;padding-left:10px;">These voices are editorial composites written by Claude from real signals — condensed for clarity. See the <b>Raw Signal Feed</b> below for the original posts with direct links.</div>
 </div>""", unsafe_allow_html=True)
 
     voice_cols = st.columns(3, gap="medium")
@@ -1154,6 +1275,13 @@ def render_content_sections(content: dict, user: str):
         with voice_cols[i % 3]:
             col_v, col_vs = st.columns([8, 1])
             with col_v:
+                _v_url  = v.get("url", "")
+                _v_link = (
+                    '<a href="' + e(_v_url) + '" target="_blank" rel="noopener" '
+                    'style="margin-left:auto;font-family:JetBrains Mono,monospace;'
+                    'font-size:9px;letter-spacing:.06em;text-transform:uppercase;'
+                    'color:#0a7d8c;text-decoration:none;">↗ source</a>'
+                ) if _v_url else ""
                 st.markdown(f"""
 <div class="lh-voice {pcls}">
   <div class="lh-voice-top">
@@ -1164,6 +1292,7 @@ def render_content_sections(content: dict, user: str):
   <div class="lh-voice-bot">
     <span class="lh-voice-handle">{e(v.get("handle",""))}</span>
     <span class="lh-voice-rel">{e(v.get("rel_tag",""))}</span>
+    {_v_link}
   </div>
 </div>""", unsafe_allow_html=True)
             with col_vs:
@@ -1172,6 +1301,9 @@ def render_content_sections(content: dict, user: str):
                     v.get("quote","")[:80],
                     v.get("quote",""),
                     f"save_voice_{i}", user)
+
+    # ── RAW SIGNAL FEED ───────────────────────────────────────────────────────
+    _render_raw_signals(load_signals(), lead.get("topic_tags", []))
 
     # ── PROVOCATIONS — single HTML block, no Streamlit columns (avoids gap bleed) ──
     prov_items_html = ""
