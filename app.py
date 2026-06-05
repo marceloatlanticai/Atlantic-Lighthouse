@@ -15,6 +15,7 @@ Run:
 
 import os
 import json
+import uuid
 import html as html_mod
 from datetime import datetime
 from typing import Optional
@@ -31,6 +32,63 @@ try:
             os.environ[key] = str(value)
 except Exception:
     pass
+
+# ── Users & passwords ──────────────────────────────────────────────────────────
+# Passwords can be overridden via .env: PASS_MARCELO=outra_senha etc.
+USERS = {
+    "Marcelo": os.environ.get("PASS_MARCELO", "marcelo123"),
+    "Marco":   os.environ.get("PASS_MARCO",   "Marco123"),
+    "Pat":     os.environ.get("PASS_PAT",      "Pat123"),
+    "Joao":    os.environ.get("PASS_JOAO",     "joao123"),
+}
+
+# User avatar colors
+USER_COLORS = {
+    "Marcelo": "#0a7d8c",
+    "Marco":   "#1a6b4a",
+    "Pat":     "#8a3a8c",
+    "Joao":    "#0a4a6e",
+}
+
+# ── Curadoria helpers ──────────────────────────────────────────────────────────
+CURADORIA_PATH = "data/curadoria.json"
+
+def load_curadoria() -> list:
+    os.makedirs("data", exist_ok=True)
+    if not os.path.exists(CURADORIA_PATH):
+        return []
+    try:
+        with open(CURADORIA_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _save_curadoria(items: list):
+    os.makedirs("data", exist_ok=True)
+    with open(CURADORIA_PATH, "w") as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+
+def add_curadoria_item(user: str, type_: str, title: str, content: str) -> bool:
+    """Add item. Returns False if already saved by this user."""
+    items = load_curadoria()
+    # Prevent duplicates for same user + same title
+    for it in items:
+        if it["user"] == user and it["title"] == title:
+            return False
+    items.append({
+        "id":         str(uuid.uuid4())[:8],
+        "user":       user,
+        "type":       type_,
+        "title":      title,
+        "content":    content,
+        "saved_at":   datetime.utcnow().strftime("%d %b %Y · %H:%M"),
+    })
+    _save_curadoria(items)
+    return True
+
+def remove_curadoria_item(item_id: str):
+    items = [i for i in load_curadoria() if i["id"] != item_id]
+    _save_curadoria(items)
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -61,6 +119,67 @@ iframe { border: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# ── Login screen ──────────────────────────────────────────────────────────────
+
+def show_login():
+    """Full-screen Atlantic-styled login. Blocks the rest of the app."""
+    st.markdown("""
+<style>
+.login-wrap {
+    max-width: 400px; margin: 6rem auto 0; padding: 2.5rem;
+    background: #fff; border: 1px solid #9dc4d8; border-radius: 10px;
+    box-shadow: 0 8px 32px rgba(7,24,40,.08);
+}
+.login-logo {
+    text-align: center; margin-bottom: 1.8rem;
+}
+.login-logo .the {
+    font-family: monospace; font-size: 10px; letter-spacing: .42em;
+    text-transform: uppercase; color: #274d68; display: block; margin-bottom: 4px;
+}
+.login-logo h1 {
+    font-family: Georgia, serif; font-size: 38px; font-weight: 600;
+    color: #071828; margin: 0; letter-spacing: -.01em; line-height: 1;
+}
+.login-logo .tagline {
+    font-family: Georgia, serif; font-style: italic;
+    font-size: 13px; color: #274d68; margin-top: 6px;
+}
+.login-agency {
+    text-align: center; font-family: monospace; font-size: 9px;
+    letter-spacing: .16em; text-transform: uppercase; color: #0a7d8c;
+    margin-bottom: 1.8rem;
+}
+</style>
+<div class="login-wrap">
+  <div class="login-logo">
+    <span class="the">The</span>
+    <h1>Lighthouse</h1>
+    <div class="tagline">Cultural Intelligence Platform</div>
+  </div>
+  <div class="login-agency">Atlantic · New York · Countercurrent.ai</div>
+</div>
+""", unsafe_allow_html=True)
+
+    # Use st.columns to center the form under the HTML above
+    _, col, _ = st.columns([1, 2, 1])
+    with col:
+        with st.form("login_form", clear_on_submit=False):
+            user_sel = st.selectbox("Usuário", list(USERS.keys()), label_visibility="visible")
+            password = st.text_input("Senha", type="password", placeholder="••••••••")
+            submitted = st.form_submit_button("Entrar →", use_container_width=True)
+            if submitted:
+                if USERS.get(user_sel) == password:
+                    st.session_state.logged_in_user = user_sel
+                    st.rerun()
+                else:
+                    st.error("Senha incorreta.")
+
+
+if "logged_in_user" not in st.session_state:
+    show_login()
+    st.stop()
+
 # ── Client brand config (from .env) ───────────────────────────────────────────
 # Set these in .env to customise per client:
 #   CLIENT_BEACON_COLOR = #cf2b29   (Heinz red, or any brand color)
@@ -74,14 +193,26 @@ AGENCY_NAME         = os.environ.get("AGENCY_NAME",         "Atlantic · New Yor
 
 # ── Sidebar — config ───────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("""
+    current_user  = st.session_state.logged_in_user
+    user_color    = USER_COLORS.get(current_user, "#0a7d8c")
+    st.markdown(f"""
 <div style="font-family:'Georgia',serif;font-size:20px;color:#d0eaf0;margin-bottom:4px">
   🗼 THE LIGHTHOUSE
 </div>
-<div style="font-family:monospace;font-size:10px;color:#0fa3b5;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:16px">
+<div style="font-family:monospace;font-size:10px;color:#0fa3b5;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:12px">
   Atlantic · Countercurrent.ai · v3
 </div>
+<div style="display:flex;align-items:center;gap:10px;background:#1a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:4px">
+  <div style="width:28px;height:28px;border-radius:50%;background:{user_color};display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;font-weight:600;font-size:12px;color:#fff;flex:none">{current_user[0]}</div>
+  <div>
+    <div style="font-size:13px;color:#d0eaf0;font-weight:500">{current_user}</div>
+    <div style="font-family:monospace;font-size:9px;color:#0a7d8c;letter-spacing:.08em;text-transform:uppercase">Online</div>
+  </div>
+</div>
 """, unsafe_allow_html=True)
+    if st.button("Sair", use_container_width=True, key="logout_btn"):
+        del st.session_state.logged_in_user
+        st.rerun()
 
     client_name   = st.text_input("Client", value="Heinz Soup · United Kingdom")
     brief_tagline = st.text_input("Brief tagline", value="Reading Britain's lunch currents so Heinz can build the countercurrent.")
@@ -989,3 +1120,198 @@ if content:
     st.components.v1.html(final_html, height=3200, scrolling=True)
 else:
     st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CURADORIA — Seleção e board coletivo
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.markdown("""
+<style>
+.cur-header {
+    border-top: 3px double #071828; padding-top: 1.5rem; margin-top: 0.5rem;
+}
+.cur-title {
+    font-family: Georgia, serif; font-size: 32px; font-weight: 600;
+    color: #071828; margin: 6px 0 4px;
+}
+.cur-sub {
+    font-family: Georgia, serif; font-style: italic;
+    font-size: 15px; color: #274d68; margin: 0 0 1.5rem;
+}
+.cur-label {
+    font-family: monospace; font-size: 10px; letter-spacing: .16em;
+    text-transform: uppercase; color: #0a7d8c; font-weight: 700;
+}
+.cur-item {
+    background: #fff; border: 1px solid #9dc4d8;
+    border-left: 3px solid #0a7d8c; border-radius: 6px;
+    padding: 14px 16px; margin-bottom: 10px;
+}
+.cur-item-type {
+    font-family: monospace; font-size: 9px; letter-spacing: .12em;
+    text-transform: uppercase; color: #0a7d8c; margin-bottom: 5px;
+}
+.cur-item-title {
+    font-family: Georgia, serif; font-size: 15px;
+    font-weight: 600; color: #071828; margin-bottom: 5px; line-height: 1.3;
+}
+.cur-item-content {
+    font-size: 13px; color: #274d68; line-height: 1.5;
+}
+.cur-item-meta {
+    font-family: monospace; font-size: 9px; color: #9dc4d8;
+    text-transform: uppercase; margin-top: 8px;
+}
+.cur-user-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-family: monospace; font-size: 9px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .06em; color: #fff; margin-right: 6px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+st.markdown("""
+<div class="cur-header">
+  <span class="cur-label">◈ Curadoria</span>
+  <div class="cur-title">Board de Insights</div>
+  <div class="cur-sub">Selecione os conteúdos mais relevantes do dispatch. Seu board e o da equipe ficam aqui.</div>
+</div>
+""", unsafe_allow_html=True)
+
+cur_tab1, cur_tab2, cur_tab3 = st.tabs([
+    f"  Selecionar  ",
+    f"  Meu Board ({st.session_state.logged_in_user})  ",
+    "  Board Coletivo  ",
+])
+
+# ── TAB 1: Selecionar ─────────────────────────────────────────────────────────
+with cur_tab1:
+    if not content or content == _fallback():
+        st.info("Gere um dispatch primeiro para poder selecionar conteúdos.")
+    else:
+        lead  = content.get("lead", {})
+        cards = content.get("cards", [])
+        voices = content.get("voices", [])
+        provs  = content.get("provocations", [])
+        current_user = st.session_state.logged_in_user
+
+        def _save_btn(type_: str, title: str, body: str, key: str):
+            col_a, col_b = st.columns([5, 1])
+            with col_a:
+                st.markdown(f"""
+<div class="cur-item">
+  <div class="cur-item-type">{type_}</div>
+  <div class="cur-item-title">{e(title[:120])}</div>
+  <div class="cur-item-content">{e(body[:220])}{"…" if len(body) > 220 else ""}</div>
+</div>""", unsafe_allow_html=True)
+            with col_b:
+                st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+                if st.button("💾 Salvar", key=key, use_container_width=True):
+                    ok = add_curadoria_item(current_user, type_, title, body)
+                    if ok:
+                        st.toast(f"✓ Salvo no seu board!")
+                    else:
+                        st.toast("Já está no seu board.")
+
+        # Lead
+        st.markdown("##### Lead Current")
+        _save_btn(
+            "Lead Current",
+            lead.get("title", ""),
+            lead.get("countercurrent_title", "") + " — " + lead.get("countercurrent_body", ""),
+            "save_lead",
+        )
+
+        # Cards
+        if cards:
+            st.markdown("##### Cards")
+            for i, card in enumerate(cards[:4]):
+                _save_btn("Card", card.get("title", ""), card.get("body", ""), f"save_card_{i}")
+
+        # Voices
+        if voices:
+            st.markdown("##### Voices")
+            for i, v in enumerate(voices[:9]):
+                _save_btn(
+                    f"Voice · {v.get('platform_label','')}",
+                    v.get("quote", "")[:80],
+                    v.get("quote", ""),
+                    f"save_voice_{i}",
+                )
+
+        # Provocations
+        if provs:
+            st.markdown("##### Provocações")
+            for i, p in enumerate(provs[:3]):
+                _save_btn(
+                    f"Provocação {p.get('n','')}",
+                    p.get("text", ""),
+                    p.get("tag", ""),
+                    f"save_prov_{i}",
+                )
+
+
+# ── TAB 2: Meu Board ──────────────────────────────────────────────────────────
+with cur_tab2:
+    current_user = st.session_state.logged_in_user
+    my_items = [i for i in load_curadoria() if i["user"] == current_user]
+
+    if not my_items:
+        st.info("Seu board está vazio. Vá para **Selecionar** e salve os insights que mais te interessam.")
+    else:
+        st.markdown(f"**{len(my_items)} item{'ns' if len(my_items) != 1 else ''} salvos**")
+        for item in reversed(my_items):
+            col_a, col_b = st.columns([6, 1])
+            with col_a:
+                st.markdown(f"""
+<div class="cur-item">
+  <div class="cur-item-type">{e(item['type'])}</div>
+  <div class="cur-item-title">{e(item['title'][:120])}</div>
+  <div class="cur-item-content">{e(item['content'][:240])}{"…" if len(item['content']) > 240 else ""}</div>
+  <div class="cur-item-meta">Salvo em {e(item['saved_at'])}</div>
+</div>""", unsafe_allow_html=True)
+            with col_b:
+                st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+                if st.button("🗑", key=f"del_{item['id']}", help="Remover do board"):
+                    remove_curadoria_item(item["id"])
+                    st.rerun()
+
+
+# ── TAB 3: Board Coletivo ─────────────────────────────────────────────────────
+with cur_tab3:
+    all_items = load_curadoria()
+
+    if not all_items:
+        st.info("Nenhum item salvo ainda. Comece selecionando conteúdos na aba **Selecionar**.")
+    else:
+        # Group by user
+        by_user = {}
+        for item in all_items:
+            by_user.setdefault(item["user"], []).append(item)
+
+        total = len(all_items)
+        st.markdown(f"**{total} insight{'s' if total != 1 else ''} salvos pela equipe** · {len(by_user)} usuário{'s' if len(by_user) != 1 else ''}")
+        st.markdown("---")
+
+        for user_name, items in by_user.items():
+            color = USER_COLORS.get(user_name, "#0a7d8c")
+            st.markdown(f"""
+<div style="display:flex;align-items:center;gap:10px;margin:1.2rem 0 0.8rem">
+  <div style="width:32px;height:32px;border-radius:50%;background:{color};display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;font-weight:600;font-size:14px;color:#fff;flex:none">{user_name[0]}</div>
+  <span style="font-family:Georgia,serif;font-size:18px;font-weight:600;color:#071828">{e(user_name)}</span>
+  <span style="font-family:monospace;font-size:10px;color:#9dc4d8;text-transform:uppercase;letter-spacing:.1em">{len(items)} item{'ns' if len(items) != 1 else ''}</span>
+</div>""", unsafe_allow_html=True)
+
+            for item in reversed(items):
+                st.markdown(f"""
+<div class="cur-item" style="border-left-color:{color}">
+  <div class="cur-item-type">{e(item['type'])}</div>
+  <div class="cur-item-title">{e(item['title'][:120])}</div>
+  <div class="cur-item-content">{e(item['content'][:240])}{"…" if len(item['content']) > 240 else ""}</div>
+  <div class="cur-item-meta">
+    <span class="cur-user-pill" style="background:{color}">{e(user_name)}</span>
+    Salvo em {e(item['saved_at'])}
+  </div>
+</div>""", unsafe_allow_html=True)
