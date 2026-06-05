@@ -342,7 +342,12 @@ with st.sidebar:
         value="desk lunch, comfort food, cost of living, office return-to-work culture, UK workers",
         height=80,
     )
-    client_filter = st.text_input("Client tag filter", value="", placeholder="Leave blank = all signals")
+    client_filter   = st.text_input("Client tag filter", value="", placeholder="Leave blank = all signals")
+    competitors_raw = st.text_input(
+        "Competitor brands",
+        value="Cully & Sully, New Covent Garden, Batchelors, Cup-a-Soup",
+        help="Comma-separated — used in Competitive Pulse",
+    )
 
     st.markdown("---")
     use_pinecone  = st.checkbox("Use Pinecone semantic search", value=True)
@@ -1556,6 +1561,289 @@ series.forEach((s,i)=>{{
     st.components.v1.html(html, height=370, scrolling=False)
 
 
+# ── Signal Volume Analytics (1) ───────────────────────────────────────────────
+
+def render_signal_volume(signals: list) -> None:
+    """Stacked area chart: signal volume by day and source."""
+    import json as _j
+    from collections import defaultdict
+
+    beacon   = CLIENT_BEACON_COLOR
+    beacon_2 = CLIENT_BEACON_2
+
+    if not signals:
+        return
+
+    # Aggregate by day × source
+    day_src: dict = defaultdict(lambda: defaultdict(int))
+    for s in signals:
+        ts  = s.get("timestamp", "")[:10]
+        src = s.get("source", "other").lower()
+        if ts:
+            day_src[ts][src] += 1
+
+    if not day_src:
+        return
+
+    all_days    = sorted(day_src.keys())
+    all_sources = ["reddit", "tiktok", "rss", "web"]
+    src_colors  = {
+        "reddit": "#d44800",
+        "tiktok": "#0fa3b5",
+        "rss":    "#6ea8c4",
+        "web":    "#1a8a6b",
+    }
+
+    # Build series per source (cumulative for stacking done in D3)
+    series = [
+        {
+            "id":    src,
+            "color": src_colors.get(src, "#9dc4d8"),
+            "pts":   [{"d": d, "v": day_src[d].get(src, 0)} for d in all_days],
+        }
+        for src in all_sources
+    ]
+    series_json = _j.dumps(series)
+    days_json   = _j.dumps(all_days)
+    total       = len(signals)
+
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Fraunces:ital,opsz,wght@0,9..144,500&display=swap" rel="stylesheet"/>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+html,body{{background:#062233;overflow:hidden;width:100%;height:100%;font-family:'JetBrains Mono',monospace;}}
+#hdr{{padding:18px 24px 4px;display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;}}
+.eye{{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:{beacon_2};font-weight:700;}}
+.ttl{{font-family:'Fraunces',serif;font-size:16px;font-weight:500;color:#d0eaf0;}}
+.sub{{font-size:9.5px;color:rgba(208,234,240,.4);letter-spacing:.06em;text-transform:uppercase;margin-left:auto;}}
+#chart{{width:100%;height:300px;}}
+.axis path,.axis line{{stroke:rgba(157,196,216,.15);}}
+.axis text{{font-family:'JetBrains Mono',monospace;font-size:9px;fill:rgba(208,234,240,.45);}}
+.grid line{{stroke:rgba(157,196,216,.07);stroke-dasharray:3,3;}}
+.legend text{{font-family:'JetBrains Mono',monospace;font-size:9px;fill:rgba(208,234,240,.65);}}
+</style></head><body>
+<div id="hdr">
+  <span class="eye">◉ Signal Volume</span>
+  <span class="ttl">Ingestion activity by platform</span>
+  <span class="sub">{total:,} signals total</span>
+</div>
+<svg id="chart"></svg>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+const series = {series_json};
+const days   = {days_json};
+
+const W  = document.getElementById('chart').clientWidth || 960;
+const H  = 300;
+const mg = {{top:14, right:110, bottom:36, left:44}};
+const iw = W - mg.left - mg.right;
+const ih = H - mg.top  - mg.bottom;
+
+const svg = d3.select('#chart').attr('width',W).attr('height',H)
+  .append('g').attr('transform',`translate(${{mg.left}},${{mg.top}})`);
+
+const parseDate = d3.timeParse('%Y-%m-%d');
+const allDates  = days.map(parseDate);
+
+const x = d3.scaleTime().domain(d3.extent(allDates)).range([0, iw]);
+
+// Stack the data
+const stackKeys = series.map(s=>s.id);
+const colorMap  = Object.fromEntries(series.map(s=>[s.id, s.color]));
+const rows      = days.map((d,i)=>{{
+  const row = {{date: parseDate(d)}};
+  series.forEach(s=>{{ row[s.id] = s.pts[i]?.v || 0; }});
+  return row;
+}});
+
+const stack  = d3.stack().keys(stackKeys)(rows);
+const maxVal = d3.max(stack, layer => d3.max(layer, d => d[1])) || 10;
+const y      = d3.scaleLinear().domain([0, maxVal * 1.05]).range([ih, 0]);
+
+// Grid
+svg.append('g').attr('class','grid')
+  .call(d3.axisLeft(y).ticks(4).tickSize(-iw).tickFormat(''));
+
+// Axes
+svg.append('g').attr('class','axis').attr('transform',`translate(0,${{ih}})`)
+  .call(d3.axisBottom(x).ticks(Math.min(days.length, 8)).tickFormat(d3.timeFormat('%d %b')));
+svg.append('g').attr('class','axis')
+  .call(d3.axisLeft(y).ticks(4));
+
+// Areas
+const area = d3.area()
+  .x(d => x(d.data.date))
+  .y0(d => y(d[0]))
+  .y1(d => y(d[1]))
+  .curve(d3.curveCatmullRom.alpha(0.5));
+
+svg.selectAll('.layer').data(stack).join('path')
+  .attr('class','layer')
+  .attr('fill', d => colorMap[d.key])
+  .attr('fill-opacity', 0.75)
+  .attr('d', area);
+
+// Legend
+stack.forEach((layer, i) => {{
+  const ly = i * 18;
+  svg.append('rect').attr('x', iw+8).attr('y', ly).attr('width', 10).attr('height', 10)
+    .attr('fill', colorMap[layer.key]).attr('rx', 2);
+  svg.append('text').attr('class','legend')
+    .attr('x', iw+22).attr('y', ly+9)
+    .text(layer.key.toUpperCase());
+}});
+</script></body></html>"""
+
+    st.components.v1.html(html, height=350, scrolling=False)
+
+
+# ── Competitive Pulse (3) ─────────────────────────────────────────────────────
+
+def render_competitive_pulse(signals: list, competitors_str: str) -> None:
+    """Track competitor brand mentions across signals by day."""
+    import json as _j, re
+    from collections import defaultdict
+
+    beacon   = CLIENT_BEACON_COLOR
+    beacon_2 = CLIENT_BEACON_2
+
+    competitors = [c.strip() for c in competitors_str.split(",") if c.strip()]
+    if not competitors or not signals:
+        return
+
+    # Count mentions per day per competitor (case-insensitive word match)
+    patterns = {c: re.compile(re.escape(c), re.IGNORECASE) for c in competitors}
+    day_comp: dict = defaultdict(lambda: defaultdict(int))
+    top_mentions: dict = {c: [] for c in competitors}  # store up to 3 best quotes
+
+    for s in signals:
+        ts   = s.get("timestamp", "")[:10]
+        text = f"{s.get('title','')} {s.get('content','')}"
+        if not ts:
+            continue
+        for comp, pat in patterns.items():
+            if pat.search(text):
+                day_comp[ts][comp] += 1
+                if len(top_mentions[comp]) < 3:
+                    snippet = text[:160].replace('"', "'")
+                    top_mentions[comp].append({"src": s.get("source","?"), "text": snippet})
+
+    if not day_comp:
+        st.markdown(f"""<div style="background:#062233;border-radius:10px;padding:20px 28px;
+            font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;
+            text-transform:uppercase;color:rgba(208,234,240,.4);">
+          <span style="color:{beacon_2};font-weight:700;">◉ Competitive Pulse</span>
+          &nbsp;·&nbsp; No competitor mentions found in current signal database
+        </div>""", unsafe_allow_html=True)
+        return
+
+    all_days = sorted(day_comp.keys())
+    palette  = ["#d44800","#0fa3b5","#6ea8c4","#1a8a6b","#c94f35","#9dc4d8"]
+
+    series = [
+        {
+            "id":    c,
+            "color": palette[i % len(palette)],
+            "total": sum(day_comp[d].get(c, 0) for d in all_days),
+            "pts":   [{"d": day, "v": day_comp[day].get(c, 0)} for day in all_days],
+            "quotes": top_mentions[c],
+        }
+        for i, c in enumerate(competitors)
+        if sum(day_comp[d].get(c, 0) for d in all_days) > 0
+    ]
+    series.sort(key=lambda s: -s["total"])
+    series_json = _j.dumps(series)
+    days_json   = _j.dumps(all_days)
+
+    # Build quotes HTML for below chart
+    quotes_html = ""
+    for s in series[:4]:
+        if s["quotes"]:
+            q = s["quotes"][0]
+            quotes_html += f"""
+<div style="border-left:3px solid {s['color']};padding:8px 12px;margin-bottom:8px;background:rgba(255,255,255,.04);border-radius:0 6px 6px 0;">
+  <div style="font-size:9px;color:{s['color']};text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;font-family:'JetBrains Mono',monospace;">{s['id']} · {q['src'].upper()} · {s['total']} mentions</div>
+  <div style="font-size:12px;color:rgba(208,234,240,.75);line-height:1.5;">"{q['text']}…"</div>
+</div>"""
+
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Fraunces:ital,opsz,wght@0,9..144,500&display=swap" rel="stylesheet"/>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+html,body{{background:#062233;overflow:hidden;width:100%;min-height:100%;font-family:'JetBrains Mono',monospace;}}
+#hdr{{padding:18px 24px 4px;display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;}}
+.eye{{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:{beacon_2};font-weight:700;}}
+.ttl{{font-family:'Fraunces',serif;font-size:16px;font-weight:500;color:#d0eaf0;}}
+.sub{{font-size:9.5px;color:rgba(208,234,240,.4);letter-spacing:.06em;text-transform:uppercase;margin-left:auto;}}
+#chart{{width:100%;height:240px;}}
+#quotes{{padding:8px 24px 16px;}}
+.axis path,.axis line{{stroke:rgba(157,196,216,.15);}}
+.axis text{{font-family:'JetBrains Mono',monospace;font-size:9px;fill:rgba(208,234,240,.45);}}
+.grid line{{stroke:rgba(157,196,216,.07);stroke-dasharray:3,3;}}
+.legend text{{font-family:'JetBrains Mono',monospace;font-size:9px;fill:rgba(208,234,240,.65);}}
+</style></head><body>
+<div id="hdr">
+  <span class="eye">◉ Competitive Pulse</span>
+  <span class="ttl">Competitor brand mentions in signals</span>
+  <span class="sub">{len(signals):,} signals scanned</span>
+</div>
+<svg id="chart"></svg>
+<div id="quotes">{quotes_html}</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+const series = {series_json};
+const days   = {days_json};
+
+const W  = document.getElementById('chart').clientWidth || 960;
+const H  = 240;
+const mg = {{top:10, right:130, bottom:36, left:40}};
+const iw = W - mg.left - mg.right;
+const ih = H - mg.top  - mg.bottom;
+
+const svg = d3.select('#chart').attr('width',W).attr('height',H)
+  .append('g').attr('transform',`translate(${{mg.left}},${{mg.top}})`);
+
+const parseDate = d3.timeParse('%Y-%m-%d');
+const allDates  = days.map(parseDate);
+const x = d3.scaleTime().domain(d3.extent(allDates)).range([0, iw]);
+
+const maxV = d3.max(series, s => d3.max(s.pts, p => p.v)) || 2;
+const y    = d3.scaleLinear().domain([0, maxV + 1]).range([ih, 0]);
+
+svg.append('g').attr('class','grid')
+  .call(d3.axisLeft(y).ticks(3).tickSize(-iw).tickFormat(''));
+svg.append('g').attr('class','axis').attr('transform',`translate(0,${{ih}})`)
+  .call(d3.axisBottom(x).ticks(Math.min(days.length,8)).tickFormat(d3.timeFormat('%d %b')));
+svg.append('g').attr('class','axis')
+  .call(d3.axisLeft(y).ticks(3).tickFormat(d => Math.round(d)));
+
+const line = d3.line()
+  .x(p => x(parseDate(p.d))).y(p => y(p.v))
+  .curve(d3.curveCatmullRom.alpha(0.5));
+
+series.forEach((s, i) => {{
+  svg.append('path').datum(s.pts)
+    .attr('fill','none').attr('stroke', s.color)
+    .attr('stroke-width', 2).attr('stroke-opacity', .85)
+    .attr('d', line);
+  svg.selectAll(`.dot-${{i}}`).data(s.pts).join('circle')
+    .attr('cx', p => x(parseDate(p.d))).attr('cy', p => y(p.v))
+    .attr('r', 3).attr('fill', s.color).attr('fill-opacity', .9);
+  // Legend
+  const ly = i * 18;
+  svg.append('line').attr('x1',iw+8).attr('x2',iw+22)
+    .attr('y1',ly+5).attr('y2',ly+5)
+    .attr('stroke',s.color).attr('stroke-width',2);
+  svg.append('text').attr('class','legend')
+    .attr('x',iw+26).attr('y',ly+9)
+    .text((s.id.length>18?s.id.slice(0,17)+'…':s.id)+' ('+s.total+')');
+}});
+</script></body></html>"""
+
+    h = 260 + min(len([s for s in series if s["quotes"]]), 4) * 68
+    st.components.v1.html(html, height=h, scrolling=False)
+
+
 # ── Full HTML for email dispatch (unchanged) ──────────────────────────────────
 
 def build_html(content: dict, signals: list, client: str, tagline: str) -> str:
@@ -2111,6 +2399,12 @@ if content:
     _all_disp = load_all_dispatches()
     render_momentum_tracker(_all_disp)
 
+    # 5. Signal Volume Analytics
+    render_signal_volume(signals)
+
+    # 6. Competitive Pulse
+    render_competitive_pulse(signals, competitors_raw)
+
 else:
     st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
 
@@ -2173,9 +2467,10 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-cur_tab2, cur_tab3 = st.tabs([
+cur_tab2, cur_tab3, cur_tab_brief = st.tabs([
     f"  My Board ({st.session_state.logged_in_user})  ",
     "  Team Board  ",
+    "  ✍ Briefing Builder  ",
 ])
 
 # ── TAB 2: Meu Board ──────────────────────────────────────────────────────────
@@ -2240,3 +2535,161 @@ with cur_tab3:
     Saved on {e(item['saved_at'])}
   </div>
 </div>""", unsafe_allow_html=True)
+
+
+# ── TAB: Briefing Builder ─────────────────────────────────────────────────────
+with cur_tab_brief:
+    current_user = st.session_state.logged_in_user
+    my_items     = [i for i in load_curadoria() if i["user"] == current_user]
+
+    st.markdown("""
+<div style="border-top:2px solid #071828;padding-top:1.2rem;margin-bottom:1rem;">
+  <div style="font-family:monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+       color:#0a7d8c;font-weight:700;margin-bottom:4px;">✍ Briefing Builder</div>
+  <div style="font-family:Georgia,serif;font-size:22px;font-weight:600;color:#071828;margin-bottom:6px;">
+    Turn your saved insights into a creative brief</div>
+  <div style="font-family:Georgia,serif;font-style:italic;font-size:14px;color:#274d68;">
+    Select items on My Board, then generate a structured brief ready to share with the creative team.</div>
+</div>""", unsafe_allow_html=True)
+
+    if not my_items:
+        st.info("Your board is empty. Save insights from the dispatch using the 🔖 buttons, then come back here.")
+    else:
+        # Show items as checkboxes
+        st.markdown(f"**{len(my_items)} insight{'s' if len(my_items)!=1 else ''} on your board** — select which to include:")
+        selected_items = []
+        for item in reversed(my_items):
+            label = f"**{item['type']}** · {item['title'][:60]}"
+            if st.checkbox(label, value=True, key=f"brief_sel_{item['id']}"):
+                selected_items.append(item)
+
+        st.markdown("---")
+
+        brief_client   = st.text_input("Client", value=client_name,  key="brief_client")
+        brief_tagline  = st.text_input("Brief context", value=brief_tagline, key="brief_ctx")
+
+        if st.button("⚡ Generate Creative Brief", use_container_width=True, disabled=not selected_items):
+            if not selected_items:
+                st.warning("Select at least one insight to build a brief.")
+            else:
+                api_key = os.environ.get("ANTHROPIC_API_KEY")
+                if not api_key:
+                    st.error("ANTHROPIC_API_KEY not found.")
+                else:
+                    try:
+                        import anthropic as _ant
+                        _client = _ant.Anthropic(api_key=api_key)
+
+                        insights_text = "\n\n".join(
+                            f"[{it['type']}] {it['title']}\n{it['content']}"
+                            for it in selected_items
+                        )
+
+                        brief_prompt = f"""You are a senior strategist at a world-class advertising agency.
+
+Client: {brief_client}
+Context: {brief_tagline}
+
+Selected cultural insights from The Lighthouse dispatch:
+
+{insights_text}
+
+Write a tight, actionable creative brief. Return ONLY valid JSON with this exact structure:
+
+{{
+  "audience_insight": "2-3 sentences. Who they are, what they're feeling right now, the specific tension.",
+  "cultural_tension": "1-2 sentences. The fault line in culture this campaign can own.",
+  "strategic_direction": "1 sentence. The single-minded thought. Bold and specific.",
+  "execution_ideas": ["Idea 1 — specific format + platform", "Idea 2", "Idea 3"],
+  "timing_window": "When to move and why. Reference the signals.",
+  "proof_point": "The key signal or quote that justifies this direction."
+}}"""
+
+                        with st.spinner("The Lighthouse is writing your brief…"):
+                            msg = _client.messages.create(
+                                model=CLAUDE_MODEL,
+                                max_tokens=1024,
+                                temperature=0.7,
+                                system="You are an elite advertising strategist. Return only raw JSON, no markdown fences.",
+                                messages=[{"role": "user", "content": brief_prompt}],
+                            )
+                            raw = msg.content[0].text.strip()
+                            if "```" in raw:
+                                raw = raw[raw.find("{"):raw.rfind("}")+1]
+                            brief_data = json.loads(raw)
+                            st.session_state["generated_brief"] = brief_data
+
+                    except Exception as ex:
+                        st.error(f"Brief generation failed: {ex}")
+
+        # Display generated brief
+        if "generated_brief" in st.session_state:
+            bd = st.session_state["generated_brief"]
+            st.markdown(f"""
+<div style="background:#fff;border:1px solid #9dc4d8;border-radius:8px;padding:28px 32px;margin-top:1rem;">
+  <div style="font-family:monospace;font-size:9px;letter-spacing:.16em;text-transform:uppercase;
+       color:#0a7d8c;font-weight:700;margin-bottom:14px;">Creative Brief · {brief_client}</div>
+
+  <div style="font-family:monospace;font-size:9px;text-transform:uppercase;letter-spacing:.1em;
+       color:#274d68;margin-bottom:4px;">Audience Insight</div>
+  <div style="font-family:Georgia,serif;font-size:15px;color:#071828;line-height:1.55;margin-bottom:16px;">
+    {e(bd.get('audience_insight',''))}</div>
+
+  <div style="font-family:monospace;font-size:9px;text-transform:uppercase;letter-spacing:.1em;
+       color:#274d68;margin-bottom:4px;">Cultural Tension</div>
+  <div style="font-family:Georgia,serif;font-size:15px;color:#071828;line-height:1.55;margin-bottom:16px;">
+    {e(bd.get('cultural_tension',''))}</div>
+
+  <div style="font-family:monospace;font-size:9px;text-transform:uppercase;letter-spacing:.1em;
+       color:#274d68;margin-bottom:4px;">Strategic Direction</div>
+  <div style="font-family:Georgia,serif;font-size:18px;font-weight:600;color:#071828;
+       line-height:1.3;margin-bottom:16px;border-left:3px solid #0a7d8c;padding-left:14px;">
+    {e(bd.get('strategic_direction',''))}</div>
+
+  <div style="font-family:monospace;font-size:9px;text-transform:uppercase;letter-spacing:.1em;
+       color:#274d68;margin-bottom:6px;">Execution Ideas</div>
+  {''.join(f'<div style="font-family:Georgia,serif;font-size:14px;color:#071828;padding:6px 0 6px 14px;border-left:2px solid #9dc4d8;margin-bottom:6px;">→ {e(idea)}</div>' for idea in bd.get('execution_ideas',[]))}
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+    <div>
+      <div style="font-family:monospace;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:#274d68;margin-bottom:4px;">Timing Window</div>
+      <div style="font-family:Georgia,serif;font-size:14px;color:#071828;line-height:1.5;">{e(bd.get('timing_window',''))}</div>
+    </div>
+    <div>
+      <div style="font-family:monospace;font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:#274d68;margin-bottom:4px;">Proof Point</div>
+      <div style="font-family:Georgia,serif;font-style:italic;font-size:14px;color:#274d68;line-height:1.5;">"{e(bd.get('proof_point',''))}"</div>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            # Download brief as text
+            brief_txt = f"""CREATIVE BRIEF — {brief_client}
+{"="*60}
+
+AUDIENCE INSIGHT
+{bd.get('audience_insight','')}
+
+CULTURAL TENSION
+{bd.get('cultural_tension','')}
+
+STRATEGIC DIRECTION
+{bd.get('strategic_direction','')}
+
+EXECUTION IDEAS
+{chr(10).join(f"→ {i}" for i in bd.get('execution_ideas',[]))}
+
+TIMING WINDOW
+{bd.get('timing_window','')}
+
+PROOF POINT
+"{bd.get('proof_point','')}\"
+
+Generated by The Lighthouse · Atlantic Intelligence Layer
+"""
+            st.download_button(
+                "↓ Download Brief",
+                data=brief_txt,
+                file_name=f"brief_{datetime.utcnow().strftime('%Y%m%d')}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
