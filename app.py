@@ -101,8 +101,19 @@ st.set_page_config(
 st.markdown("""
 <style>
 #MainMenu, header, footer { visibility: hidden; }
-.block-container { padding: 0.5rem 0.5rem 0 !important; max-width: 100% !important; }
-section[data-testid="stSidebar"] { background: #0f0e0c; }
+
+/* ── Atlantic background — garante o sea mist em todos os contextos ── */
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] > section,
+.main {
+    background-color: #ebf2f7 !important;
+    background-image:
+        radial-gradient(ellipse 80% 40% at 50% -10%, rgba(10,125,140,.07), transparent),
+        radial-gradient(ellipse 60% 30% at 90% 110%, rgba(6,34,51,.04), transparent);
+}
+.block-container { padding: 0.5rem 0.5rem 0 !important; max-width: 100% !important; background: transparent !important; }
+
+section[data-testid="stSidebar"] { background: #0f0e0c !important; }
 section[data-testid="stSidebar"] * { color: #c8c0b4 !important; }
 section[data-testid="stSidebar"] .stButton > button {
     background: #1a1714 !important; border: 1px solid #3a3530 !important;
