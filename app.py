@@ -343,6 +343,52 @@ with st.sidebar:
     email_to      = st.text_input("Send to", placeholder="strategist@agency.com", label_visibility="collapsed")
     send_email_btn = st.button("Send via SendGrid", use_container_width=True)
 
+    # ── PDF / HTML Report download ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        '<div style="font-size:10px;color:#0fa3b5;font-family:monospace;'
+        'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">'
+        '↓ Report</div>',
+        unsafe_allow_html=True,
+    )
+    if st.session_state.get("lh_content"):
+        _report_signals = load_signals()
+        _report_html    = build_html(
+            st.session_state["lh_content"], _report_signals,
+            client_name, brief_tagline,
+        )
+        _date_str = datetime.utcnow().strftime("%Y-%m-%d")
+        st.download_button(
+            "↓ Download Report (HTML→PDF)",
+            data=_report_html,
+            file_name=f"lighthouse_{_date_str}.html",
+            mime="text/html",
+            use_container_width=True,
+            help="Open in browser → Print → Save as PDF",
+        )
+    else:
+        st.caption("Generate a dispatch first to download the report.")
+
+    # ── Dispatch archive ────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        '<div style="font-size:10px;color:#0fa3b5;font-family:monospace;'
+        'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">'
+        '◷ Dispatch Archive</div>',
+        unsafe_allow_html=True,
+    )
+    _all_dispatches = load_all_dispatches()
+    if _all_dispatches:
+        _archive_labels = ["— current dispatch —"] + [dispatch_label(r) for r in _all_dispatches]
+        _sel = st.selectbox("Browse history", _archive_labels, label_visibility="collapsed")
+        if _sel != "— current dispatch —":
+            _idx = _archive_labels.index(_sel) - 1
+            if st.button("Load this dispatch", use_container_width=True):
+                st.session_state.lh_content = _all_dispatches[_idx]["full"]
+                st.rerun()
+    else:
+        st.caption("No archived dispatches yet.")
+
     st.markdown("---")
     st.markdown(
         '<div style="font-size:10px;color:#444;font-family:monospace">'
@@ -1338,6 +1384,163 @@ sim.on('tick', ()=>{{
     st.components.v1.html(html, height=430, scrolling=False)
 
 
+# ── Momentum Tracker (A) ──────────────────────────────────────────────────────
+
+def render_momentum_tracker(all_dispatches: list) -> None:
+    """Line chart of topic frequency across saved dispatches."""
+    import json as _j
+
+    beacon   = CLIENT_BEACON_COLOR
+    beacon_2 = CLIENT_BEACON_2
+
+    # Need ≥2 dispatches to show evolution
+    if len(all_dispatches) < 2:
+        st.markdown(f"""
+<div style="background:#062233;border-radius:10px;padding:22px 28px;margin-bottom:4px;
+     font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;
+     text-transform:uppercase;color:rgba(208,234,240,.45);">
+  <span style="color:{beacon_2};font-weight:700;">◈ Momentum Tracker</span>
+  &nbsp;·&nbsp; Topic evolution across dispatches
+  &nbsp;&nbsp;—&nbsp;&nbsp;
+  Requires 2+ saved dispatches · generate more to unlock this view
+</div>""", unsafe_allow_html=True)
+        return
+
+    # ── Build topic × date matrix ─────────────────────────────────────────────
+    from collections import defaultdict
+    topic_dates: dict = defaultdict(dict)   # topic -> {date: count}
+    all_dates = []
+
+    for rec in reversed(all_dispatches):   # oldest → newest
+        date  = rec["timestamp"][:10]
+        full  = rec.get("full", {})
+        all_dates.append(date)
+
+        # Lead topic_tags (weight 3)
+        for t in full.get("lead", {}).get("topic_tags", []):
+            t = t.strip().lower()
+            topic_dates[t][date] = topic_dates[t].get(date, 0) + 3
+
+        # Card tags (weight 1)
+        for card in full.get("cards", []):
+            for raw_tag in card.get("tags", "").replace("·", ",").split(","):
+                t = raw_tag.strip().lower()
+                if t:
+                    topic_dates[t][date] = topic_dates[t].get(date, 0) + 1
+
+    all_dates = sorted(set(all_dates))
+
+    # Keep only topics that appear in ≥2 dispatches
+    active = {t: v for t, v in topic_dates.items() if len(v) >= 2}
+    # Top 8 by total weight
+    top8 = sorted(active, key=lambda t: sum(active[t].values()), reverse=True)[:8]
+
+    if not top8:
+        return
+
+    # Build series for D3
+    series = []
+    for t in top8:
+        pts = [{"d": date, "v": active[t].get(date, 0)} for date in all_dates]
+        series.append({"id": t, "pts": pts})
+
+    series_json = _j.dumps(series)
+    dates_json  = _j.dumps(all_dates)
+
+    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Fraunces:ital,opsz,wght@0,9..144,500&display=swap" rel="stylesheet"/>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+html,body{{background:#062233;overflow:hidden;width:100%;height:100%;font-family:'JetBrains Mono',monospace;}}
+#hdr{{padding:18px 24px 0;display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;}}
+.eye{{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:{beacon_2};font-weight:700;}}
+.ttl{{font-family:'Fraunces',serif;font-size:16px;font-weight:500;color:#d0eaf0;}}
+.sub{{font-size:9.5px;color:rgba(208,234,240,.4);letter-spacing:.06em;text-transform:uppercase;margin-left:auto;}}
+#chart{{width:100%;height:320px;}}
+.axis path,.axis line{{stroke:rgba(157,196,216,.15);}}
+.axis text{{font-family:'JetBrains Mono',monospace;font-size:9px;fill:rgba(208,234,240,.45);}}
+.grid line{{stroke:rgba(157,196,216,.07);stroke-dasharray:3,3;}}
+.legend{{font-family:'JetBrains Mono',monospace;font-size:9px;fill:rgba(208,234,240,.6);}}
+</style></head><body>
+<div id="hdr">
+  <span class="eye">◈ Momentum Tracker</span>
+  <span class="ttl">Topic evolution across dispatches</span>
+  <span class="sub">{len(all_dispatches)} dispatches · top {len(top8)} topics</span>
+</div>
+<svg id="chart"></svg>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+const series = {series_json};
+const dates  = {dates_json};
+
+const W = document.getElementById('chart').clientWidth || 960;
+const H = 320;
+const mg = {{top:18,right:130,bottom:36,left:44}};
+const iw = W - mg.left - mg.right;
+const ih = H - mg.top  - mg.bottom;
+
+const svg = d3.select('#chart').attr('width',W).attr('height',H)
+  .append('g').attr('transform',`translate(${{mg.left}},${{mg.top}})`);
+
+const parseDate = d3.timeParse('%Y-%m-%d');
+const allDates  = dates.map(parseDate);
+
+const x = d3.scaleTime()
+  .domain(d3.extent(allDates)).range([0,iw]);
+
+const maxV = d3.max(series, s => d3.max(s.pts, p => p.v)) || 5;
+const y = d3.scaleLinear().domain([0, maxV*1.1]).range([ih,0]);
+
+// Grid
+svg.append('g').attr('class','grid')
+  .call(d3.axisLeft(y).ticks(4).tickSize(-iw).tickFormat(''));
+
+// Axes
+svg.append('g').attr('class','axis').attr('transform',`translate(0,${{ih}})`)
+  .call(d3.axisBottom(x).ticks(Math.min(allDates.length,6))
+    .tickFormat(d3.timeFormat('%d %b')));
+svg.append('g').attr('class','axis')
+  .call(d3.axisLeft(y).ticks(4).tickFormat(d=>d||''));
+
+// Colour palette — teal family
+const palette = [
+  '{beacon_2}','rgba(10,125,140,.9)','rgba(26,138,107,.9)',
+  'rgba(110,168,196,.9)','rgba(208,234,240,.7)',
+  'rgba(10,74,110,.9)','rgba(15,163,181,.6)','rgba(157,196,216,.8)'
+];
+
+const line = d3.line()
+  .x(p => x(parseDate(p.d))).y(p => y(p.v))
+  .curve(d3.curveCatmullRom.alpha(0.5));
+
+series.forEach((s,i)=>{{
+  const col = palette[i % palette.length];
+  svg.append('path')
+    .datum(s.pts).attr('fill','none')
+    .attr('stroke', col).attr('stroke-width',2)
+    .attr('stroke-opacity',.85)
+    .attr('d', line);
+
+  // Dots
+  svg.selectAll(`.dot-${{i}}`).data(s.pts).join('circle')
+    .attr('class',`dot-${{i}}`)
+    .attr('cx', p => x(parseDate(p.d))).attr('cy', p => y(p.v))
+    .attr('r', 3.5).attr('fill', col).attr('fill-opacity',.9);
+
+  // Legend
+  const ly = 8 + i * 20;
+  svg.append('line')
+    .attr('x1',iw+8).attr('x2',iw+22).attr('y1',ly).attr('y2',ly)
+    .attr('stroke',col).attr('stroke-width',2);
+  svg.append('text').attr('class','legend')
+    .attr('x',iw+26).attr('y',ly+4)
+    .text(s.id.length > 18 ? s.id.slice(0,17)+'…' : s.id);
+}});
+</script></body></html>"""
+
+    st.components.v1.html(html, height=370, scrolling=False)
+
+
 # ── Full HTML for email dispatch (unchanged) ──────────────────────────────────
 
 def build_html(content: dict, signals: list, client: str, tagline: str) -> str:
@@ -1576,6 +1779,20 @@ footer{{border-top:3px double var(--ink); padding:22px 0 40px; font-family:'JetB
   h1.logo{{font-size:44px;}}
   .lead h2{{font-size:31px;}}
 }}
+@media print{{
+  @page{{margin:18mm 16mm;}}
+  body{{background:var(--paper)!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+  .agency-bar{{background:var(--ink)!important;}}
+  .provocations,.counter{{background:var(--deep)!important;}}
+  .design-badge,.controls button,.prov-foot .btns,.digest .deliver,.card-foot button{{display:none!important;}}
+  .grid{{grid-template-columns:1fr!important;}}
+  .prov-grid{{grid-template-columns:repeat(3,1fr)!important;}}
+  .voice-grid{{column-count:2!important;}}
+  .lead h2{{font-size:28px;}}
+  h1.logo{{font-size:52px;}}
+  .voices,.cards,.provocations{{page-break-before:always;}}
+  a{{text-decoration:none;color:inherit;}}
+}}
 </style>
 </head>
 <body>
@@ -1793,6 +2010,30 @@ def load_last_dispatch(path: str = "data/dispatches.jsonl"):
     return None
 
 
+def load_all_dispatches(path: str = "data/dispatches.jsonl") -> list:
+    """Load all saved dispatches, newest first."""
+    if not os.path.exists(path):
+        return []
+    records = []
+    with open(path) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+                if "full" in rec and "timestamp" in rec:
+                    records.append(rec)
+            except Exception:
+                pass
+    return sorted(records, key=lambda x: x["timestamp"], reverse=True)
+
+
+def dispatch_label(rec: dict) -> str:
+    """Human-readable label for a dispatch record."""
+    ts   = rec.get("timestamp", "")[:10]
+    title = rec.get("full", {}).get("lead", {}).get("title", rec.get("content", ""))
+    short = (title[:42] + "…") if len(title) > 42 else title
+    return f"{ts}  ·  {short}" if short else ts
+
+
 # ── Mode: saved (free) vs live (calls Claude) ──────────────────────────────────
 
 if not live_mode:
@@ -1853,6 +2094,10 @@ if content:
 
     # 3. Topic / signal map
     render_topic_map(content)
+
+    # 4. Momentum tracker — topic evolution across dispatches
+    _all_disp = load_all_dispatches()
+    render_momentum_tracker(_all_disp)
 
 else:
     st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
