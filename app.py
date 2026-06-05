@@ -36,10 +36,10 @@ except Exception:
 # ── Users & passwords ──────────────────────────────────────────────────────────
 # Passwords can be overridden via .env: PASS_MARCELO=outra_senha etc.
 USERS = {
-    "Marcelo": os.environ.get("PASS_MARCELO", "marcelo123"),
+    "Marcelo": os.environ.get("PASS_MARCELO", "Marcelo123"),
     "Marco":   os.environ.get("PASS_MARCO",   "Marco123"),
     "Pat":     os.environ.get("PASS_PAT",      "Pat123"),
-    "Joao":    os.environ.get("PASS_JOAO",     "joao123"),
+    "Joao":    os.environ.get("PASS_JOAO",     "Joao123"),
 }
 
 # User avatar colors
