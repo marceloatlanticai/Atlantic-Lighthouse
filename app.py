@@ -142,7 +142,8 @@ section[data-testid="stSidebar"] input, section[data-testid="stSidebar"] textare
 iframe { border: none !important; }
 
 /* ── Main-area save buttons (💾 / 🗑) — transparent, beacon on hover ── */
-:not(section[data-testid="stSidebar"]) .stButton > button {
+/* button[kind] beats Streamlit's hashed Emotion class in specificity */
+[data-testid="stAppViewContainer"] button[kind="secondary"] {
     background: transparent !important;
     background-color: transparent !important;
     border: 1px solid rgba(157,196,216,.35) !important;
@@ -154,15 +155,16 @@ iframe { border: none !important; }
     min-height: 28px !important;
     transition: all .15s !important;
 }
-:not(section[data-testid="stSidebar"]) .stButton > button:hover {
+[data-testid="stAppViewContainer"] button[kind="secondary"]:hover {
     border-color: #0a7d8c !important;
     color: #0a7d8c !important;
     background: transparent !important;
     background-color: transparent !important;
 }
-:not(section[data-testid="stSidebar"]) .stButton > button p,
-:not(section[data-testid="stSidebar"]) .stButton > button span {
+[data-testid="stAppViewContainer"] button[kind="secondary"] p,
+[data-testid="stAppViewContainer"] button[kind="secondary"] div {
     color: inherit !important;
+    background: transparent !important;
 }
 
 /* ── Login form submit button ── */
@@ -1105,33 +1107,35 @@ def render_content_sections(content: dict, user: str):
                     v.get("quote",""),
                     f"save_voice_{i}", user)
 
-    # ── PROVOCATIONS ──────────────────────────────────────────────────────────
-    st.markdown(f"""
-<div class="lh-prov-wrap" style="background:#062233 !important;color:#d0eaf0 !important;border-radius:10px;padding:28px 32px;">
-  <div class="lh-prov-head-eye">◐ To Close · The Countercurrent</div>
-  <div class="lh-prov-head-title">Three provocations for the room</div>
-  <div class="lh-prov-head-sub">Deliberately unfinished questions drawn from today's currents — not answers, but opening lines to push the team past the obvious.</div>
-</div>""", unsafe_allow_html=True)
+    # ── PROVOCATIONS — single HTML block, no Streamlit columns (avoids gap bleed) ──
+    prov_items_html = ""
+    for p in provs[:3]:
+        prov_items_html += f"""
+  <div style="border-top:1px solid rgba(255,255,255,.15);padding-top:18px;">
+    <span style="font-family:'Fraunces',serif;font-size:2.2rem;font-weight:300;color:{CLIENT_BEACON_2};display:block;margin-bottom:10px;line-height:1;">{e(p.get("n",""))}</span>
+    <div style="font-family:'Fraunces',serif;font-size:1.05rem;line-height:1.44;color:#e8f6fa;margin-bottom:10px;">{e(p.get("text",""))}</div>
+    <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:rgba(10,125,140,.85);">{e(p.get("tag",""))}</span>
+  </div>"""
 
-    prov_cols = st.columns(3, gap="large")
-    for i, p in enumerate(provs[:3]):
-        with prov_cols[i]:
-            col_p, col_ps = st.columns([8, 1])
-            with col_p:
-                st.markdown(f"""
-<div class="lh-prov-wrap" style="background:#062233 !important;color:#d0eaf0 !important;border-radius:10px;padding:20px 22px;">
-  <div class="lh-prov">
-    <span class="lh-prov-n">{e(p.get("n",""))}</span>
-    <div class="lh-prov-text">{e(p.get("text",""))}</div>
-    <span class="lh-prov-tag">{e(p.get("tag",""))}</span>
+    st.markdown(f"""
+<div style="background:#062233;color:#d0eaf0;border-radius:10px;padding:28px 32px 24px;margin:0 0 4px;">
+  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:{CLIENT_BEACON_2};font-weight:700;margin-bottom:6px;">◐ To Close · The Countercurrent</div>
+  <div style="font-family:'Fraunces',serif;font-weight:600;font-size:1.8rem;margin:4px 0 6px;color:#d0eaf0;">Three provocations for the room</div>
+  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:15px;color:rgba(208,234,240,.55);margin:0 0 22px;">Deliberately unfinished questions drawn from today's currents — not answers, but opening lines to push the team past the obvious.</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:28px;">
+    {prov_items_html}
   </div>
 </div>""", unsafe_allow_html=True)
-            with col_ps:
-                _save_button("🔖",
-                    f"Provocation {p.get('n','')}",
-                    p.get("text",""),
-                    p.get("tag",""),
-                    f"save_prov_{i}", user)
+
+    # Save buttons sit just below the dark block, one per column
+    prov_save_cols = st.columns(3, gap="large")
+    for i, p in enumerate(provs[:3]):
+        with prov_save_cols[i]:
+            _save_button("🔖",
+                f"Provocation {p.get('n','')}",
+                p.get("text",""),
+                p.get("tag",""),
+                f"save_prov_{i}", user)
 
     # Footer
     agency = e(AGENCY_NAME)
@@ -1141,6 +1145,197 @@ def render_content_sections(content: dict, user: str):
   <span style="color:{CLIENT_BEACON_COLOR};font-weight:700;letter-spacing:.14em">{agency}</span>
   <span>Refreshes on demand · Human-reviewed before send</span>
 </div>""", unsafe_allow_html=True)
+
+
+# ── Topic / Signal Map (D3 force-directed) ────────────────────────────────────
+
+def render_topic_map(content: dict) -> None:
+    """Render a D3 force-directed network of topics extracted from the dispatch."""
+    import json as _json
+
+    beacon   = CLIENT_BEACON_COLOR
+    beacon_2 = CLIENT_BEACON_2
+
+    # ── Extract topics & build graph ──────────────────────────────────────────
+    topic_weight: dict = {}
+    cooc: dict = {}
+
+    def add_t(t: str, w: float):
+        t = t.strip().lower()
+        if t and len(t) > 2:
+            topic_weight[t] = topic_weight.get(t, 0) + w
+
+    def add_e(a: str, b: str, w: float):
+        a, b = a.strip().lower(), b.strip().lower()
+        if a and b and a != b:
+            key = tuple(sorted([a, b]))
+            cooc[key] = cooc.get(key, 0) + w
+
+    lead  = content.get("lead", {})
+    ltags = lead.get("topic_tags", [])
+    for t in ltags:
+        add_t(t, 5)
+    for i, t1 in enumerate(ltags):
+        for t2 in ltags[i + 1:]:
+            add_e(t1, t2, 3)
+
+    for card in content.get("cards", []):
+        raw   = card.get("tags", "").replace("·", ",")
+        ctags = [t.strip() for t in raw.split(",") if t.strip()]
+        for t in ctags:
+            add_t(t, 3)
+        for i, t1 in enumerate(ctags):
+            for t2 in ctags[i + 1:]:
+                add_e(t1, t2, 2)
+
+    for v in content.get("voices", []):
+        rt = v.get("rel_tag", "").strip()
+        if rt:
+            add_t(rt, 1)
+            for lt in ltags[:2]:
+                add_e(rt, lt, 0.8)
+
+    if not topic_weight:
+        return
+
+    nodes = [{"id": t, "w": round(w, 1)} for t, w in topic_weight.items()]
+    links = [
+        {"source": k[0], "target": k[1], "w": round(v, 1)}
+        for k, v in cooc.items()
+        if k[0] in topic_weight and k[1] in topic_weight
+    ]
+
+    nodes_json = _json.dumps(nodes)
+    links_json = _json.dumps(links)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Fraunces:ital,opsz,wght@0,9..144,400;1,9..144,400&display=swap" rel="stylesheet"/>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+html,body{{background:#062233;overflow:hidden;width:100%;height:100%;}}
+#header{{padding:20px 28px 0;display:flex;align-items:baseline;gap:16px;}}
+.eye{{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.18em;
+      text-transform:uppercase;color:{beacon_2};font-weight:700;}}
+.ttl{{font-family:'Fraunces',serif;font-size:17px;font-weight:500;color:#d0eaf0;}}
+.sub{{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:rgba(208,234,240,.45);
+      letter-spacing:.06em;text-transform:uppercase;margin-left:auto;}}
+#chart{{width:100%;height:380px;display:block;}}
+.node-label{{
+  font-family:'JetBrains Mono',monospace;
+  fill:#c8e8f0;
+  pointer-events:none;
+  text-shadow:0 1px 5px rgba(6,34,51,.95),0 0 10px rgba(6,34,51,.7);
+  dominant-baseline:middle;
+}}
+</style>
+</head>
+<body>
+<div id="header">
+  <span class="eye">◎ Signal Map</span>
+  <span class="ttl">Topic landscape · this edition</span>
+  <span class="sub">Drag nodes · hover to highlight</span>
+</div>
+<svg id="chart"></svg>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+const nodes = {nodes_json};
+const links = {links_json};
+
+const W = document.getElementById('chart').clientWidth || 960;
+const H = 380;
+const svg = d3.select('#chart').attr('width',W).attr('height',H);
+
+// Soft glow backdrop
+const defs = svg.append('defs');
+const glow = defs.append('filter').attr('id','glow');
+glow.append('feGaussianBlur').attr('stdDeviation','3.5').attr('result','blur');
+const merge = glow.append('feMerge');
+merge.append('feMergeNode').attr('in','blur');
+merge.append('feMergeNode').attr('in','SourceGraphic');
+
+const rg = defs.append('radialGradient').attr('id','bg-glow')
+  .attr('cx','50%').attr('cy','50%').attr('r','55%');
+rg.append('stop').attr('offset','0%').attr('stop-color','rgba(10,125,140,.07)');
+rg.append('stop').attr('offset','100%').attr('stop-color','rgba(6,34,51,0)');
+svg.append('rect').attr('width',W).attr('height',H).attr('fill','url(#bg-glow)');
+
+const maxW = d3.max(nodes, d => d.w) || 5;
+const rScale    = d3.scaleSqrt().domain([0,maxW]).range([5,26]);
+const fontScale = d3.scaleSqrt().domain([0,maxW]).range([8.5,14.5]);
+const opScale   = d => 0.5 + (d.w/maxW)*0.5;
+
+// Two-stop teal gradient by weight
+const cScale = d3.scaleSequential()
+  .domain([0,maxW])
+  .interpolator(d3.interpolateRgb('{beacon}','rgba(15,163,181,.95)'));
+
+const sim = d3.forceSimulation(nodes)
+  .force('link', d3.forceLink(links).id(d=>d.id)
+    .distance(d => 70 - d.w*3).strength(d => Math.min(d.w*0.05,0.35)))
+  .force('charge', d3.forceManyBody().strength(d => -100 - rScale(d.w)*9))
+  .force('center', d3.forceCenter(W/2, H/2))
+  .force('collision', d3.forceCollide().radius(d => rScale(d.w)+20));
+
+const linkSel = svg.append('g').selectAll('line').data(links).join('line')
+  .attr('stroke','rgba(15,163,181,.18)')
+  .attr('stroke-width', d => Math.min(d.w*0.4+0.2, 2));
+
+const nodeSel = svg.append('g').selectAll('g').data(nodes).join('g')
+  .style('cursor','pointer')
+  .call(d3.drag()
+    .on('start',(e,d)=>{{ if(!e.active) sim.alphaTarget(.3).restart(); d.fx=d.x;d.fy=d.y; }})
+    .on('drag', (e,d)=>{{ d.fx=e.x; d.fy=e.y; }})
+    .on('end',  (e,d)=>{{ if(!e.active) sim.alphaTarget(0); d.fx=null;d.fy=null; }}));
+
+nodeSel.append('circle')
+  .attr('r', d=>rScale(d.w))
+  .attr('fill', d=>cScale(d.w))
+  .attr('fill-opacity', d=>opScale(d))
+  .attr('stroke', d=>cScale(d.w))
+  .attr('stroke-width', 1.2)
+  .attr('stroke-opacity', 0.6)
+  .attr('filter','url(#glow)')
+  .on('mouseover', function(e,d){{
+    d3.select(this).attr('fill-opacity',1).attr('stroke-opacity',1);
+    // highlight connected links
+    linkSel
+      .attr('stroke', l => (l.source.id===d.id||l.target.id===d.id)
+        ? 'rgba(15,163,181,.7)' : 'rgba(15,163,181,.08)')
+      .attr('stroke-width', l => (l.source.id===d.id||l.target.id===d.id)
+        ? Math.min(l.w*0.6+0.5, 3) : Math.min(l.w*0.4+0.2, 2));
+  }})
+  .on('mouseout', function(e,d){{
+    d3.select(this).attr('fill-opacity',opScale(d)).attr('stroke-opacity',0.6);
+    linkSel
+      .attr('stroke','rgba(15,163,181,.18)')
+      .attr('stroke-width', l => Math.min(l.w*0.4+0.2, 2));
+  }});
+
+nodeSel.append('text')
+  .attr('class','node-label')
+  .text(d=>d.id)
+  .attr('text-anchor','middle')
+  .attr('dy', d => rScale(d.w) + 13)
+  .attr('font-size', d => fontScale(d.w)+'px')
+  .attr('fill-opacity', d => 0.6 + (d.w/maxW)*0.4);
+
+sim.on('tick', ()=>{{
+  linkSel
+    .attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)
+    .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+  const pad = 32;
+  nodeSel.attr('transform', d=>
+    `translate(${{Math.max(pad,Math.min(W-pad,d.x))}},${{Math.max(pad,Math.min(H-pad,d.y))}})`
+  );
+}});
+</script>
+</body>
+</html>"""
+
+    st.components.v1.html(html, height=430, scrolling=False)
 
 
 # ── Full HTML for email dispatch (unchanged) ──────────────────────────────────
@@ -1655,6 +1850,9 @@ if content:
 
     # 2. Interactive content (lead, cards, voices, provocations) — native Streamlit
     render_content_sections(content, current_user)
+
+    # 3. Topic / signal map
+    render_topic_map(content)
 
 else:
     st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
