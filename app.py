@@ -174,6 +174,26 @@ def show_login():
     letter-spacing: .16em; text-transform: uppercase; color: #0a7d8c;
     margin-bottom: 1.8rem;
 }
+/* Login form submit button */
+[data-testid="stFormSubmitButton"] > button,
+[data-testid="stFormSubmitButton"] > button:focus {
+    background: #071828 !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-family: Georgia, serif !important;
+    font-size: 15px !important;
+    font-weight: 500 !important;
+    letter-spacing: .04em !important;
+    padding: 12px 20px !important;
+    width: 100% !important;
+    cursor: pointer !important;
+    transition: background .15s !important;
+}
+[data-testid="stFormSubmitButton"] > button:hover {
+    background: #0a7d8c !important;
+    color: #ffffff !important;
+}
 </style>
 <div class="login-wrap">
   <div class="login-logo">
@@ -665,7 +685,7 @@ def _native_css(beacon: str, beacon_2: str) -> str:
 .lh-signal-plat{{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:{beacon};width:64px;flex:none;}}
 .lh-signal-txt{{line-height:1.4;color:var(--lh-ink);}}
 .lh-signal-num{{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--lh-ink-soft);white-space:nowrap;}}
-.lh-counter{{background:var(--lh-deep);color:#d0eaf0;border-radius:8px;padding:20px;}}
+.lh-counter{{background:#062233 !important;color:#d0eaf0 !important;border-radius:8px;padding:20px;}}
 .lh-counter-lbl{{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:{beacon_2};font-weight:700;margin-bottom:8px;}}
 .lh-counter-title{{font-family:'Fraunces',serif;font-size:1.2rem;font-weight:600;line-height:1.2;margin-bottom:10px;color:#d0eaf0;}}
 .lh-counter-body{{font-size:13.5px;line-height:1.5;color:rgba(208,234,240,.75);}}
@@ -691,7 +711,7 @@ def _native_css(beacon: str, beacon_2: str) -> str:
 .p-x-n{{border-left-color:#111;}}.p-x-n .lh-voice-plat{{color:#111;}}
 .p-mumsnet-n{{border-left-color:#a4117f;}}.p-mumsnet-n .lh-voice-plat{{color:#a4117f;}}
 .p-ig-n{{border-left-color:#c13584;}}.p-ig-n .lh-voice-plat{{color:#c13584;}}
-.lh-prov-wrap{{background:var(--lh-deep);color:#d0eaf0;border-radius:10px;padding:28px 32px;}}
+.lh-prov-wrap{{background:#062233 !important;color:#d0eaf0 !important;border-radius:10px;padding:28px 32px;}}
 .lh-prov-head-eye{{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:{beacon_2};font-weight:700;}}
 .lh-prov-head-title{{font-family:'Fraunces',serif;font-weight:600;font-size:1.8rem;margin:8px 0 4px;color:#d0eaf0;}}
 .lh-prov-head-sub{{font-family:'Fraunces',serif;font-style:italic;font-size:15px;color:rgba(208,234,240,.55);margin:0 0 20px;}}
@@ -721,15 +741,24 @@ def _native_css(beacon: str, beacon_2: str) -> str:
 .lh-digest{{padding:16px;background:rgba(255,255,255,.3);}}
 .lh-digest-p{{font-family:'Fraunces',serif;font-size:14px;line-height:1.6;color:#071828 !important;margin:0 0 12px;}}
 .lh-next{{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:#274d68 !important;text-align:center;padding:10px;border-top:1px dashed var(--lh-line);}}
-/* Save button */
-div[data-testid="stButton"] button.lh-save {{
-  padding:3px 8px !important; min-height:0 !important; height:28px !important;
-  font-size:15px !important; line-height:1 !important;
-  background:rgba(255,255,255,.8) !important; border:1px solid var(--lh-line) !important;
-  border-radius:5px !important; color:var(--lh-ink-soft) !important;
+/* Save button (💾) — transparent bg, turns beacon on hover */
+div[data-testid="stButton"] > button {{
+  background: transparent !important;
+  border: 1px solid rgba(157,196,216,.4) !important;
+  border-radius: 6px !important;
+  color: #274d68 !important;
+  font-size: 15px !important;
+  line-height: 1 !important;
+  padding: 3px 8px !important;
+  min-height: 28px !important;
+  height: 28px !important;
+  box-shadow: none !important;
+  transition: all .15s !important;
 }}
-div[data-testid="stButton"] button.lh-save:hover {{
-  border-color:{beacon} !important; color:{beacon} !important;
+div[data-testid="stButton"] > button:hover {{
+  border-color: {beacon} !important;
+  color: {beacon} !important;
+  background: transparent !important;
 }}
 </style>"""
 
