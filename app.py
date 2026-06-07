@@ -2866,22 +2866,24 @@ import urllib.request
 import urllib.parse
 
 
-@st.cache_data(ttl=300)   # cache 5 min — avoids hammering GDELT
+@st.cache_data(ttl=900)   # cache 15 min — GDELT rate-limits aggressively
 def _gdelt_search(query: str, n: int = 12) -> list:
     """Search GDELT global media database — free, no key needed."""
     import time as _time
+    # Simplify query to first 4 words — reduces rate-limit risk on GDELT
+    simple_q = " ".join(query.replace(",", "").split()[:4])
     endpoints = [
-        # v2 DOC API
+        # v2 DOC API — primary
         (
             "https://api.gdeltproject.org/api/v2/doc/doc"
-            f"?query={urllib.parse.quote(query)}"
+            f"?query={urllib.parse.quote(simple_q)}"
             f"&mode=artlist&maxrecords={n}&format=json&sort=DateDesc"
         ),
-        # v1 API fallback (different rate limit bucket)
+        # v2 with English filter — different bucket
         (
-            "https://api.gdeltproject.org/api/v1/search_tablerow_artlist_c"
-            f"?query={urllib.parse.quote(query)}"
-            f"&maxrows={n}&output=json"
+            "https://api.gdeltproject.org/api/v2/doc/doc"
+            f"?query={urllib.parse.quote(simple_q + ' sourcelang:english')}"
+            f"&mode=artlist&maxrecords={n}&format=json"
         ),
     ]
     for i, url in enumerate(endpoints):
@@ -2915,18 +2917,23 @@ def _exa_search(query: str, api_key: str, n: int = 10) -> list:
     try:
         from exa_py import Exa
         exa = Exa(api_key=api_key)
-        res = exa.search(query, num_results=n, use_autoprompt=True, text=True)
+        # exa-py ≥1.0: use contents dict, use_autoprompt removed
+        res = exa.search(
+            query,
+            num_results=n,
+            contents={"text": {"max_characters": 400}},
+        )
         return [
             {
-                "title":   r.title or "",
-                "url":     r.url or "",
-                "snippet": (r.text or "")[:300],
-                "published": (r.published_date or "")[:10],
+                "title":     r.title or "",
+                "url":       r.url or "",
+                "snippet":   (getattr(r, "text", None) or "")[:400],
+                "published": (getattr(r, "published_date", None) or "")[:10],
             }
             for r in res.results
         ]
     except ImportError:
-        return [{"error": "📦 exa-py not installed yet. On Streamlit Cloud: commit the updated requirements.txt and Manage App → Reboot. Locally: pip install exa-py"}]
+        return [{"error": "📦 exa-py not installed yet. On Streamlit Cloud: commit requirements.txt and Manage App → Reboot. Locally: pip install exa-py"}]
     except Exception as ex:
         return [{"error": str(ex)}]
 
@@ -3242,85 +3249,100 @@ border-radius:6px;padding:12px 14px;margin-bottom:10px;">
 
 # ── TAB: YouTube ──────────────────────────────────────────────────────────────
 with lab_tab_yt:
+    import re as _re
+
     st.markdown("""
 <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;
 text-transform:uppercase;color:#0a7d8c;font-weight:700;margin-bottom:4px;">
-YouTube · Video search + transcript extraction</div>
-<div style="font-size:13px;color:#274d68;line-height:1.6;margin-bottom:16px;max-width:64ch;">
-Culture moves visually first, textually second. YouTube transcripts capture what creators say
-before it becomes a written post — an early signal layer most tools miss entirely.</div>
+🎥 YouTube · Video signal showcase</div>
+<div style="font-size:13px;color:#274d68;line-height:1.6;margin-bottom:4px;max-width:64ch;">
+Paste YouTube URLs below to preview videos as signal cards — title, channel, thumbnail and
+direct link. No API key needed. Culture moves visually first; these are the creators setting
+the agenda before it becomes a written post.</div>
 """, unsafe_allow_html=True)
 
-    yt_key = os.environ.get("YOUTUBE_API_KEY", "")
+    yt_urls_raw = st.text_area(
+        "YouTube URLs (one per line)",
+        value="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        height=120,
+        key="yt_urls_input",
+        help="Paste any YouTube video URLs — one per line. oEmbed fetches metadata with no API key."
+    )
 
-    st.markdown("""
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
-<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #0a7d8c;border-radius:8px;padding:14px 16px;">
-  <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;
-  color:#0a7d8c;margin-bottom:8px;">Step 1 · YouTube Data API v3</div>
-  <div style="font-size:12.5px;color:#274d68;line-height:1.6;">Search for videos about your topic.
-  Returns video IDs, titles, channel names, view counts, publish dates.
-  Free: 10,000 units/day. Get key at console.cloud.google.com</div>
-</div>
-<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #1a8a6b;border-radius:8px;padding:14px 16px;">
-  <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;
-  color:#1a8a6b;margin-bottom:8px;">Step 2 · youtube-transcript-api</div>
-  <div style="font-size:12.5px;color:#274d68;line-height:1.6;">Extract full text transcript
-  from any YouTube video for free — no API key needed. Works on any video with auto-captions.
-  <code>pip install youtube-transcript-api</code></div>
-</div>
+    def _yt_oembed(url: str) -> dict:
+        """Fetch video metadata via YouTube oEmbed — free, no API key."""
+        oe_url = f"https://www.youtube.com/oembed?url={urllib.parse.quote(url)}&format=json"
+        req = urllib.request.Request(oe_url, headers={"User-Agent": "Lighthouse/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read())
+
+    def _extract_vid_id(url: str) -> str:
+        m = _re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})", url)
+        return m.group(1) if m else ""
+
+    if st.button("🎥 Load videos", key="btn_yt_load"):
+        urls = [u.strip() for u in yt_urls_raw.splitlines() if u.strip()]
+        if not urls:
+            st.warning("Paste at least one YouTube URL above.")
+        else:
+            st.session_state["yt_cards"] = []
+            for url in urls[:12]:
+                try:
+                    meta = _yt_oembed(url)
+                    vid_id = _extract_vid_id(url)
+                    st.session_state["yt_cards"].append({
+                        "title":     meta.get("title", ""),
+                        "channel":   meta.get("author_name", ""),
+                        "thumb":     meta.get("thumbnail_url", ""),
+                        "url":       url,
+                        "vid_id":    vid_id,
+                        "width":     meta.get("thumbnail_width", 480),
+                    })
+                except Exception as ex:
+                    st.session_state["yt_cards"].append({
+                        "title": f"Could not load: {url[:50]}",
+                        "error": str(ex), "url": url,
+                    })
+
+    cards = st.session_state.get("yt_cards", [])
+    if cards:
+        st.markdown(f"**{len(cards)} video{'s' if len(cards)!=1 else ''} loaded:**")
+        yt_cols = st.columns(3, gap="medium")
+        for i, c in enumerate(cards):
+            with yt_cols[i % 3]:
+                if "error" in c:
+                    st.markdown(f"""
+<div style="background:#fff;border:1px solid #c94f35;border-left:3px solid #c94f35;
+border-radius:8px;padding:12px;margin-bottom:12px;font-size:12px;color:#c94f35;">
+{e(c['title'])}</div>""", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #d44800;
+border-radius:8px;overflow:hidden;margin-bottom:14px;">
+  <img src="{e(c['thumb'])}" style="width:100%;display:block;"/>
+  <div style="padding:12px 14px;">
+    <div style="font-size:13px;font-weight:600;color:#071828;line-height:1.3;margin-bottom:6px;">
+      {e(c['title'][:80])}</div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;
+    letter-spacing:.08em;color:#d44800;margin-bottom:10px;">{e(c['channel'])}</div>
+    <a href="{e(c['url'])}" target="_blank"
+    style="font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.06em;
+    text-transform:uppercase;color:#d44800;text-decoration:none;
+    border-bottom:1px solid #d44800;padding-bottom:1px;">↗ watch on YouTube</a>
+  </div>
 </div>""", unsafe_allow_html=True)
-
-    if not yt_key:
-        yt_key_input = st.text_input("YOUTUBE_API_KEY (for video search)",
-                                     type="password",
-                                     help="Optional — needed for video search. Transcripts work without it.")
-    else:
-        st.success("✓ YOUTUBE_API_KEY loaded from environment")
-        yt_key_input = yt_key
-
-    st.markdown("**Test transcript extraction directly from a video URL:**")
-    yt_url = st.text_input("YouTube URL", value="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                            key="yt_url_input")
-
-    if st.button("🎥 Extract Transcript", key="btn_yt"):
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-            import re as _re
-            vid_match = _re.search(r"v=([a-zA-Z0-9_-]{11})", yt_url)
-            if not vid_match:
-                st.error("Could not parse video ID from URL.")
-            else:
-                vid_id = vid_match.group(1)
-                with st.spinner("Extracting transcript…"):
-                    transcript = YouTubeTranscriptApi.get_transcript(vid_id)
-                full_text = " ".join(t["text"] for t in transcript)
-                word_count = len(full_text.split())
-                st.success(f"✓ Transcript extracted — {word_count:,} words")
-                st.text_area("Transcript preview (first 1,000 chars)",
-                             value=full_text[:1000], height=200)
-                st.download_button("↓ Download full transcript",
-                                   data=full_text,
-                                   file_name=f"transcript_{vid_id}.txt",
-                                   mime="text/plain")
-        except ImportError:
-            st.error("📦 youtube-transcript-api not installed yet. On Streamlit Cloud: commit the updated requirements.txt and Manage App → Reboot. Locally: pip install youtube-transcript-api")
-        except Exception as ex:
-            st.error(f"Transcript error: {ex}")
 
     with st.expander("How to integrate YouTube into the Lighthouse pipeline"):
         st.markdown("""
-**Recommended workflow:**
+**Recommended workflow once YOUTUBE_API_KEY is added:**
 
-1. Use YouTube Data API to search for videos about your topic each morning
+1. Search for videos about your topic each morning using YouTube Data API v3
 2. Filter for videos with 10K+ views published in the last 7 days
-3. Extract transcripts using `youtube-transcript-api` (free, no quota)
+3. Extract transcripts using `youtube-transcript-api` (free, no quota limit)
 4. Chunk transcripts into 500-word segments and embed into Pinecone
-5. Claude now has access to what major creators said about the category — days before it becomes a written post
+5. Claude now has access to what creators said — days before it becomes a written post
 
-**Cost:** YouTube API = free (10K units/day). Transcript API = free. Embedding = ~$0.0001/video.
-
-**Signal value:** TikTok creators often post the same content on YouTube first. Catching it on YouTube gives you 24-72h of advance notice before the TikTok version goes viral.
+**Signal value:** TikTok creators often post on YouTube first. Catching it there gives 24-72h advance notice before the TikTok version goes viral.
 """)
 
 
