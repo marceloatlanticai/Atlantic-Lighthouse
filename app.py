@@ -141,6 +141,37 @@ section[data-testid="stSidebar"] input, section[data-testid="stSidebar"] textare
 }
 iframe { border: none !important; }
 
+/* ── Expanders — force light background ── */
+[data-testid="stExpander"] {
+    background: #ffffff !important;
+    border: 1px solid #9dc4d8 !important;
+    border-radius: 6px !important;
+}
+[data-testid="stExpander"] summary {
+    color: #071828 !important;
+    background: transparent !important;
+}
+[data-testid="stExpander"] div[data-testid="stExpanderDetails"] {
+    background: #ffffff !important;
+    color: #274d68 !important;
+}
+[data-testid="stExpander"] p,
+[data-testid="stExpander"] li,
+[data-testid="stExpander"] td,
+[data-testid="stExpander"] th,
+[data-testid="stExpander"] code {
+    color: #274d68 !important;
+    background: transparent !important;
+}
+[data-testid="stExpander"] table {
+    background: #fff !important;
+    border-collapse: collapse;
+}
+[data-testid="stExpander"] th {
+    background: #ebf2f7 !important;
+    font-weight: 600 !important;
+}
+
 /* ── Main-area save buttons (💾 / 🗑) — transparent, beacon on hover ── */
 /* button[kind] beats Streamlit's hashed Emotion class in specificity */
 [data-testid="stAppViewContainer"] button[kind="secondary"] {
@@ -2835,30 +2866,48 @@ import urllib.request
 import urllib.parse
 
 
+@st.cache_data(ttl=300)   # cache 5 min — avoids hammering GDELT
 def _gdelt_search(query: str, n: int = 12) -> list:
     """Search GDELT global media database — free, no key needed."""
-    try:
-        url = (
+    import time as _time
+    endpoints = [
+        # v2 DOC API
+        (
             "https://api.gdeltproject.org/api/v2/doc/doc"
             f"?query={urllib.parse.quote(query)}"
             f"&mode=artlist&maxrecords={n}&format=json&sort=DateDesc"
-        )
-        req = urllib.request.Request(url, headers={"User-Agent": "Lighthouse/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read())
-        articles = data.get("articles") or []
-        return [
-            {
-                "title":   a.get("title", ""),
-                "url":     a.get("url", ""),
-                "source":  a.get("domain", ""),
-                "seendate": a.get("seendate", "")[:8],
-                "language": a.get("language", ""),
-            }
-            for a in articles
-        ]
-    except Exception as ex:
-        return [{"error": str(ex)}]
+        ),
+        # v1 API fallback (different rate limit bucket)
+        (
+            "https://api.gdeltproject.org/api/v1/search_tablerow_artlist_c"
+            f"?query={urllib.parse.quote(query)}"
+            f"&maxrows={n}&output=json"
+        ),
+    ]
+    for i, url in enumerate(endpoints):
+        try:
+            if i > 0:
+                _time.sleep(2)   # small pause before fallback
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0 (Lighthouse/1.0)"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+            articles = data.get("articles") or data.get("results") or []
+            if articles:
+                return [
+                    {
+                        "title":    a.get("title", a.get("name", "")),
+                        "url":      a.get("url", a.get("htmlurl", "")),
+                        "source":   a.get("domain", a.get("sourcename", "")),
+                        "seendate": (a.get("seendate") or a.get("date", ""))[:8],
+                        "language": a.get("language", ""),
+                    }
+                    for a in articles
+                ]
+        except Exception:
+            continue
+    return [{"error": "GDELT returned no results — try a shorter or simpler query, or wait 30 seconds and try again (rate limit)."}]
 
 
 def _exa_search(query: str, api_key: str, n: int = 10) -> list:
@@ -2877,7 +2926,7 @@ def _exa_search(query: str, api_key: str, n: int = 10) -> list:
             for r in res.results
         ]
     except ImportError:
-        return [{"error": "exa_py not installed — run: pip install exa-py"}]
+        return [{"error": "📦 exa-py not installed yet. On Streamlit Cloud: commit the updated requirements.txt and Manage App → Reboot. Locally: pip install exa-py"}]
     except Exception as ex:
         return [{"error": str(ex)}]
 
@@ -2898,7 +2947,7 @@ def _tavily_search(query: str, api_key: str, n: int = 10) -> list:
             for r in res.get("results", [])
         ]
     except ImportError:
-        return [{"error": "tavily-python not installed — run: pip install tavily-python"}]
+        return [{"error": "📦 tavily-python not installed yet. On Streamlit Cloud: commit the updated requirements.txt and Manage App → Reboot. Locally: pip install tavily-python"}]
     except Exception as ex:
         return [{"error": str(ex)}]
 
@@ -3255,7 +3304,7 @@ before it becomes a written post — an early signal layer most tools miss entir
                                    file_name=f"transcript_{vid_id}.txt",
                                    mime="text/plain")
         except ImportError:
-            st.error("youtube-transcript-api not installed. Run: `pip install youtube-transcript-api`")
+            st.error("📦 youtube-transcript-api not installed yet. On Streamlit Cloud: commit the updated requirements.txt and Manage App → Reboot. Locally: pip install youtube-transcript-api")
         except Exception as ex:
             st.error(f"Transcript error: {ex}")
 
