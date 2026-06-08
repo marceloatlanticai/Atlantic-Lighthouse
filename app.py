@@ -3254,20 +3254,12 @@ with lab_tab_yt:
     st.markdown("""
 <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;
 text-transform:uppercase;color:#0a7d8c;font-weight:700;margin-bottom:4px;">
-🎥 YouTube · Video signal showcase</div>
+🎥 YouTube · Relevant video signals</div>
 <div style="font-size:13px;color:#274d68;line-height:1.6;margin-bottom:4px;max-width:64ch;">
-Paste YouTube URLs below to preview videos as signal cards — title, channel, thumbnail and
-direct link. No API key needed. Culture moves visually first; these are the creators setting
-the agenda before it becomes a written post.</div>
+Finds YouTube videos relevant to your search topic — automatically, using Exa.ai's semantic
+search inside YouTube. No separate YouTube API key needed. Culture moves visually first;
+these are the creators setting the agenda before it becomes a written post.</div>
 """, unsafe_allow_html=True)
-
-    yt_urls_raw = st.text_area(
-        "YouTube URLs (one per line)",
-        value="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        height=120,
-        key="yt_urls_input",
-        help="Paste any YouTube video URLs — one per line. oEmbed fetches metadata with no API key."
-    )
 
     def _yt_oembed(url: str) -> dict:
         """Fetch video metadata via YouTube oEmbed — free, no API key."""
@@ -3280,29 +3272,76 @@ the agenda before it becomes a written post.</div>
         m = _re.search(r"(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})", url)
         return m.group(1) if m else ""
 
-    if st.button("🎥 Load videos", key="btn_yt_load"):
-        urls = [u.strip() for u in yt_urls_raw.splitlines() if u.strip()]
-        if not urls:
-            st.warning("Paste at least one YouTube URL above.")
-        else:
-            st.session_state["yt_cards"] = []
-            for url in urls[:12]:
-                try:
-                    meta = _yt_oembed(url)
-                    vid_id = _extract_vid_id(url)
-                    st.session_state["yt_cards"].append({
-                        "title":     meta.get("title", ""),
-                        "channel":   meta.get("author_name", ""),
-                        "thumb":     meta.get("thumbnail_url", ""),
-                        "url":       url,
-                        "vid_id":    vid_id,
-                        "width":     meta.get("thumbnail_width", 480),
-                    })
-                except Exception as ex:
-                    st.session_state["yt_cards"].append({
-                        "title": f"Could not load: {url[:50]}",
-                        "error": str(ex), "url": url,
-                    })
+    def _load_yt_cards(urls: list) -> list:
+        cards = []
+        for url in urls[:12]:
+            try:
+                meta = _yt_oembed(url)
+                cards.append({
+                    "title":   meta.get("title", ""),
+                    "channel": meta.get("author_name", ""),
+                    "thumb":   meta.get("thumbnail_url", ""),
+                    "url":     url,
+                    "vid_id":  _extract_vid_id(url),
+                })
+            except Exception as ex:
+                cards.append({"title": f"Could not load: {url[:50]}", "error": str(ex), "url": url})
+        return cards
+
+    # ── Auto-search via Exa ───────────────────────────────────────────────────
+    exa_key_yt = os.environ.get("EXA_API_KEY", "")
+
+    st.markdown(f"""
+<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #0a7d8c;
+border-radius:8px;padding:14px 16px;margin-bottom:16px;">
+  <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;
+  color:#0a7d8c;margin-bottom:6px;">⚡ Auto-search · uses Exa.ai + YouTube oEmbed</div>
+  <div style="font-size:12.5px;color:#274d68;line-height:1.55;">
+    Searches YouTube semantically using your current Signal Lab query:
+    <b>"{e(lab_query[:60])}"</b>.<br/>
+    Finds the most conceptually relevant videos — not just keyword matches.
+    {"<span style='color:#1a8a6b;font-weight:600;'>✓ EXA_API_KEY loaded</span>" if exa_key_yt
+     else "<span style='color:#c94f35;'>EXA_API_KEY not set — add to .env to enable auto-search</span>"}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    col_yt1, col_yt2 = st.columns([3, 1])
+    with col_yt2:
+        yt_n = st.slider("Videos", 4, 12, 9, key="yt_n")
+
+    if st.button("🎥 Find relevant videos", key="btn_yt_auto",
+                 disabled=not exa_key_yt):
+        with st.spinner(f"Searching YouTube for: {lab_query[:50]}…"):
+            try:
+                from exa_py import Exa
+                _exa = Exa(api_key=exa_key_yt)
+                _yt_res = _exa.search(
+                    lab_query,
+                    num_results=yt_n,
+                    include_domains=["youtube.com"],
+                    type="neural",
+                )
+                _yt_urls = [r.url for r in _yt_res.results
+                            if "watch" in r.url or "youtu.be" in r.url]
+                st.session_state["yt_cards"] = _load_yt_cards(_yt_urls)
+            except ImportError:
+                st.error("📦 exa-py not installed. Commit requirements.txt and reboot Streamlit Cloud.")
+            except Exception as ex:
+                st.error(f"Auto-search error: {ex}")
+
+    # ── Manual fallback ───────────────────────────────────────────────────────
+    with st.expander("Or paste URLs manually"):
+        yt_urls_raw = st.text_area(
+            "YouTube URLs (one per line)",
+            placeholder="https://www.youtube.com/watch?v=...",
+            height=100, key="yt_urls_input",
+        )
+        if st.button("Load these URLs", key="btn_yt_manual"):
+            urls = [u.strip() for u in yt_urls_raw.splitlines() if u.strip()]
+            if urls:
+                st.session_state["yt_cards"] = _load_yt_cards(urls)
+            else:
+                st.warning("Paste at least one URL.")
 
     cards = st.session_state.get("yt_cards", [])
     if cards:
