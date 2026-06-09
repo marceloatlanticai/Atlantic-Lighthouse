@@ -111,7 +111,46 @@ st.markdown("""
         radial-gradient(ellipse 80% 40% at 50% -10%, rgba(10,125,140,.07), transparent),
         radial-gradient(ellipse 60% 30% at 90% 110%, rgba(6,34,51,.04), transparent);
 }
-.block-container { padding: 0.5rem 0.5rem 0 !important; max-width: 100% !important; background: transparent !important; }
+.block-container { padding: 52px 0.5rem 0 !important; max-width: 100% !important; background: transparent !important; }
+
+/* ── Sticky top navigation bar ── */
+.lh-topnav {
+    position: fixed !important;
+    top: 0 !important; left: 0 !important; right: 0 !important;
+    height: 46px;
+    z-index: 999991 !important;
+    display: flex !important;
+    align-items: center;
+    padding: 0 28px;
+    gap: 16px;
+    background: rgba(6,34,51,.97) !important;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: 0 1px 24px rgba(0,0,0,.3);
+    border-bottom: 1px solid rgba(10,125,140,.3);
+}
+.lh-topnav .lh-nav-logo {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px; font-weight: 700;
+    letter-spacing: .2em; text-transform: uppercase;
+    color: #0fa3b5;
+}
+.lh-topnav .lh-nav-client {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; letter-spacing: .08em; text-transform: uppercase;
+    color: rgba(208,234,240,.55);
+}
+.lh-topnav .lh-nav-sep {
+    width: 1px; height: 16px;
+    background: rgba(255,255,255,.15); flex: none;
+}
+.lh-topnav .lh-nav-user {
+    margin-left: auto;
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Georgia', serif; font-weight: 600;
+    font-size: 11px; color: #fff; flex: none;
+}
 
 /* Prevent white text leaking into light sections */
 [data-testid="stTabsContent"] p,
@@ -446,6 +485,90 @@ with st.sidebar:
         'Claude · Gemini Embeddings · Pinecone · Apify</div>',
         unsafe_allow_html=True,
     )
+
+
+# ── Sticky top navigation bar ─────────────────────────────────────────────────
+# Injected directly into document.body via window.parent — bypasses Streamlit's
+# overflow:auto containers which prevent position:fixed from working.
+
+_nav_client  = e(client_name.split("·")[0].strip())
+_nav_user    = st.session_state.get("logged_in_user", "")
+_nav_color   = USER_COLORS.get(_nav_user, "#0a7d8c")
+_nav_initial = _nav_user[0] if _nav_user else "?"
+
+st.components.v1.html(f"""
+<script>
+(function() {{
+  try {{
+    var p = window.parent.document;
+
+    // Remove previous instance on re-render
+    var old = p.getElementById('lh-topnav');
+    if (old) old.remove();
+    var oldStyle = p.getElementById('lh-topnav-style');
+    if (oldStyle) oldStyle.remove();
+
+    // Inject CSS into parent <head>
+    var style = p.createElement('style');
+    style.id = 'lh-topnav-style';
+    style.textContent = `
+      #lh-topnav {{
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        height: 46px;
+        z-index: 999999;
+        display: flex;
+        align-items: center;
+        padding: 0 28px;
+        gap: 16px;
+        background: rgba(6,34,51,.97);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        box-shadow: 0 1px 20px rgba(0,0,0,.3);
+        border-bottom: 1px solid rgba(10,125,140,.28);
+        font-family: 'JetBrains Mono', monospace;
+        transition: background .25s;
+      }}
+      #lh-topnav .lh-logo {{
+        font-size: 10.5px; font-weight: 700;
+        letter-spacing: .2em; text-transform: uppercase;
+        color: #0fa3b5;
+      }}
+      #lh-topnav .lh-sep {{
+        width: 1px; height: 16px;
+        background: rgba(255,255,255,.15); flex-shrink: 0;
+      }}
+      #lh-topnav .lh-client {{
+        font-size: 9px; letter-spacing: .08em;
+        text-transform: uppercase; color: rgba(208,234,240,.55);
+      }}
+      #lh-topnav .lh-spacer {{ flex: 1; }}
+      #lh-topnav .lh-user {{
+        width: 26px; height: 26px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-family: Georgia, serif; font-weight: 600;
+        font-size: 11px; color: #fff; flex-shrink: 0;
+        background: {_nav_color};
+      }}
+    `;
+    p.head.appendChild(style);
+
+    // Inject nav bar into parent <body>
+    var nav = p.createElement('div');
+    nav.id = 'lh-topnav';
+    nav.innerHTML =
+      '<span class="lh-logo">🗼 Lighthouse</span>' +
+      '<span class="lh-sep"></span>' +
+      '<span class="lh-client">{_nav_client}</span>' +
+      '<span class="lh-spacer"></span>' +
+      '<div class="lh-user">{_nav_initial}</div>';
+    p.body.appendChild(nav);
+
+  }} catch(err) {{ console.warn('Lighthouse topnav:', err); }}
+}})();
+</script>
+""", height=0)
+
 
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
@@ -1366,14 +1489,6 @@ def render_content_sections(content: dict, user: str):
                 p.get("tag",""),
                 f"save_prov_{i}", user)
 
-    # Footer
-    agency = e(AGENCY_NAME)
-    st.markdown(f"""
-<div style="border-top:3px double #071828;margin-top:2rem;padding:20px 0 40px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#274d68;text-transform:uppercase;letter-spacing:.06em;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px">
-  <span>The Lighthouse · Countercurrent.ai v3</span>
-  <span style="color:{CLIENT_BEACON_COLOR};font-weight:700;letter-spacing:.14em">{agency}</span>
-  <span>Refreshes on demand · Human-reviewed before send</span>
-</div>""", unsafe_allow_html=True)
 
 
 # ── Topic / Signal Map (D3 force-directed) ────────────────────────────────────
@@ -2974,12 +3089,25 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-lab_query = st.text_input(
-    "Test query",
-    value=focus_topic.split(",")[0].strip() if focus_topic else "desk lunch UK workers",
-    help="Run this query against each source to compare results",
-    key="lab_query",
-)
+_lab_col1, _lab_col2 = st.columns([4, 1])
+with _lab_col1:
+    lab_query = st.text_input(
+        "Test query",
+        value=focus_topic.split(",")[0].strip() if focus_topic else "desk lunch UK workers",
+        help="Run this query against each source to compare results",
+        key="lab_query",
+    )
+with _lab_col2:
+    _lab_brand = client_name.split("·")[0].strip()
+    brand_focus = st.checkbox(
+        "🎯 Brand focus",
+        value=True,
+        key="lab_brand_focus",
+        help=f"Prepends '{_lab_brand}' to every search query",
+    )
+
+# Effective query used in all searches — brand-prefixed when toggled on
+effective_query = f"{_lab_brand} {lab_query}" if brand_focus else lab_query
 
 lab_tab_cur, lab_tab_exa, lab_tab_gdelt, lab_tab_tav, lab_tab_yt = st.tabs([
     "  📡 Current Stack  ",
@@ -3036,7 +3164,7 @@ Current ingestion pipeline · Apify scraping</div>""", unsafe_allow_html=True)
 </div>""", unsafe_allow_html=True)
 
     st.markdown("<br>**Sample from current signals matching your query:**", unsafe_allow_html=True)
-    q_lower = lab_query.lower()
+    q_lower = effective_query.lower()
     matches = [
         s for s in _sigs
         if any(w in f"{s.get('title','')} {s.get('content','')}".lower()
@@ -3097,7 +3225,7 @@ the exact words don't appear. Best for discovering cultural signals you didn't k
             st.warning("Add your EXA_API_KEY above or in .env to run this test.")
         else:
             with st.spinner("Exa.ai neural search running…"):
-                exa_results = _exa_search(lab_query, key_to_use, exa_n)
+                exa_results = _exa_search(effective_query, key_to_use, exa_n)
             if exa_results and "error" in exa_results[0]:
                 st.error(exa_results[0]["error"])
             else:
@@ -3142,7 +3270,7 @@ No API key needed. The largest open-access media database on earth.</div>
 
     if st.button("🌍 Search GDELT", key="btn_gdelt"):
         with st.spinner("Searching global media database…"):
-            gdelt_results = _gdelt_search(lab_query, gdelt_n)
+            gdelt_results = _gdelt_search(effective_query, gdelt_n)
 
         if gdelt_results and "error" in gdelt_results[0]:
             st.error(f"GDELT error: {gdelt_results[0]['error']}")
@@ -3209,7 +3337,7 @@ optimised for Claude to consume. Advanced search depth crawls pages fully, not j
             st.warning("Add your TAVILY_API_KEY above or in .env to run this test.")
         else:
             with st.spinner("Tavily deep search running…"):
-                tav_results = _tavily_search(lab_query, key_to_use, tav_n)
+                tav_results = _tavily_search(effective_query, key_to_use, tav_n)
             if tav_results and "error" in tav_results[0]:
                 st.error(tav_results[0]["error"])
             else:
@@ -3298,7 +3426,7 @@ border-radius:8px;padding:14px 16px;margin-bottom:16px;">
   color:#0a7d8c;margin-bottom:6px;">⚡ Auto-search · uses Exa.ai + YouTube oEmbed</div>
   <div style="font-size:12.5px;color:#274d68;line-height:1.55;">
     Searches YouTube semantically using your current Signal Lab query:
-    <b>"{e(lab_query[:60])}"</b>.<br/>
+    <b>"{e(effective_query[:60])}"</b>.<br/>
     Finds the most conceptually relevant videos — not just keyword matches.
     {"<span style='color:#1a8a6b;font-weight:600;'>✓ EXA_API_KEY loaded</span>" if exa_key_yt
      else "<span style='color:#c94f35;'>EXA_API_KEY not set — add to .env to enable auto-search</span>"}
@@ -3311,12 +3439,12 @@ border-radius:8px;padding:14px 16px;margin-bottom:16px;">
 
     if st.button("🎥 Find relevant videos", key="btn_yt_auto",
                  disabled=not exa_key_yt):
-        with st.spinner(f"Searching YouTube for: {lab_query[:50]}…"):
+        with st.spinner(f"Searching YouTube for: {effective_query[:50]}…"):
             try:
                 from exa_py import Exa
                 _exa = Exa(api_key=exa_key_yt)
                 _yt_res = _exa.search(
-                    lab_query,
+                    effective_query,
                     num_results=yt_n,
                     include_domains=["youtube.com"],
                     type="neural",
@@ -3624,3 +3752,17 @@ function show(id,btn){
 </body></html>"""
 
 st.components.v1.html(_VISION_MAP_HTML, height=550, scrolling=False)
+
+
+# ── Footer — absolute bottom of page ─────────────────────────────────────────
+
+st.markdown(f"""
+<div style="border-top:3px double #071828;margin-top:3rem;padding:24px 0 48px;
+     font-family:'JetBrains Mono',monospace;font-size:11px;color:#274d68;
+     text-transform:uppercase;letter-spacing:.06em;
+     display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;">
+  <span>The Lighthouse · Countercurrent.ai v3</span>
+  <span style="color:{CLIENT_BEACON_COLOR};font-weight:700;letter-spacing:.14em">{e(AGENCY_NAME)}</span>
+  <span>Refreshes on demand · Human-reviewed before send</span>
+</div>
+""", unsafe_allow_html=True)
