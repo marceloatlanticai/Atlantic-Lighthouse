@@ -487,6 +487,13 @@ with st.sidebar:
     )
 
 
+# ── HTML helpers (early definition needed by topnav) ──────────────────────────
+
+def e(text) -> str:
+    """HTML-escape for safe injection."""
+    return html_mod.escape(str(text))
+
+
 # ── Sticky top navigation bar ─────────────────────────────────────────────────
 # Injected directly into document.body via window.parent — bypasses Streamlit's
 # overflow:auto containers which prevent position:fixed from working.
@@ -869,10 +876,7 @@ def send_email(to: str, subject: str, html_body: str) -> bool:
 
 
 # ── HTML helpers ───────────────────────────────────────────────────────────────
-
-def e(text) -> str:
-    """HTML-escape for safe injection."""
-    return html_mod.escape(str(text))
+# (e() is defined earlier, before the topnav block)
 
 def _mclass(d: str) -> str:
     return {"up": "up", "down": "down"}.get(d, "flat")
