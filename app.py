@@ -550,19 +550,51 @@ st.components.v1.html(f"""
         font-size: 11px; color: #fff; flex-shrink: 0;
         background: {_nav_color};
       }}
+      #lh-topnav .lh-menu-btn {{
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: 4px 6px;
+        border-radius: 4px;
+        color: rgba(208,234,240,.6);
+        font-size: 16px;
+        line-height: 1;
+        transition: color .15s, background .15s;
+        flex-shrink: 0;
+      }}
+      #lh-topnav .lh-menu-btn:hover {{
+        color: #0fa3b5;
+        background: rgba(10,125,140,.15);
+      }}
     `;
     p.head.appendChild(style);
+
+    // Sidebar toggle function — tries all known Streamlit selectors
+    function toggleSidebar() {{
+      var btn =
+        p.querySelector('[data-testid="stSidebarCollapsedControl"] button') ||
+        p.querySelector('[data-testid="stSidebarNavCollapseIcon"]') ||
+        p.querySelector('header button[aria-label]') ||
+        p.querySelector('[data-testid="collapsedControl"] button') ||
+        p.querySelector('header button:first-of-type');
+      if (btn) btn.click();
+    }}
 
     // Inject nav bar into parent <body>
     var nav = p.createElement('div');
     nav.id = 'lh-topnav';
     nav.innerHTML =
+      '<button class="lh-menu-btn" id="lh-menu-btn" title="Toggle sidebar">&#9776;</button>' +
+      '<span class="lh-sep"></span>' +
       '<span class="lh-logo">🗼 Lighthouse</span>' +
       '<span class="lh-sep"></span>' +
       '<span class="lh-client">{_nav_client}</span>' +
       '<span class="lh-spacer"></span>' +
       '<div class="lh-user">{_nav_initial}</div>';
     p.body.appendChild(nav);
+
+    // Attach click to our button (re-query after append)
+    p.getElementById('lh-menu-btn').addEventListener('click', toggleSidebar);
 
   }} catch(err) {{ console.warn('Lighthouse topnav:', err); }}
 }})();
