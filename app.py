@@ -526,8 +526,8 @@ st.components.v1.html(f"""
         z-index: 999999;
         display: flex;
         align-items: center;
-        padding: 0 28px;
-        gap: 16px;
+        padding: 0 16px 0 12px;
+        gap: 10px;
         background: rgba(6,34,51,.97);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
@@ -537,19 +537,49 @@ st.components.v1.html(f"""
         transition: background .25s;
       }}
       #lh-topnav .lh-logo {{
-        font-size: 10.5px; font-weight: 700;
-        letter-spacing: .2em; text-transform: uppercase;
-        color: #0fa3b5;
+        font-size: 10px; font-weight: 700;
+        letter-spacing: .18em; text-transform: uppercase;
+        color: #0fa3b5; white-space: nowrap; flex-shrink: 0;
       }}
       #lh-topnav .lh-sep {{
         width: 1px; height: 16px;
         background: rgba(255,255,255,.15); flex-shrink: 0;
       }}
       #lh-topnav .lh-client {{
-        font-size: 9px; letter-spacing: .08em;
-        text-transform: uppercase; color: rgba(208,234,240,.55);
+        font-size: 8.5px; letter-spacing: .08em;
+        text-transform: uppercase; color: rgba(208,234,240,.45);
+        white-space: nowrap; flex-shrink: 0;
       }}
-      #lh-topnav .lh-spacer {{ flex: 1; }}
+      #lh-topnav .lh-nav-links {{
+        display: flex;
+        align-items: center;
+        gap: 1px;
+        flex: 1;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        padding: 0 4px;
+      }}
+      #lh-topnav .lh-nav-links::-webkit-scrollbar {{ display: none; }}
+      #lh-topnav .lh-nav-link {{
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 8px;
+        letter-spacing: .07em;
+        text-transform: uppercase;
+        color: rgba(208,234,240,.45);
+        padding: 4px 7px;
+        border-radius: 3px;
+        cursor: pointer;
+        border: none;
+        background: transparent;
+        white-space: nowrap;
+        transition: color .15s, background .15s;
+        line-height: 1;
+      }}
+      #lh-topnav .lh-nav-link:hover {{
+        color: #0fa3b5;
+        background: rgba(10,125,140,.18);
+      }}
       #lh-topnav .lh-user {{
         width: 26px; height: 26px; border-radius: 50%;
         display: flex; align-items: center; justify-content: center;
@@ -573,6 +603,10 @@ st.components.v1.html(f"""
         color: #0fa3b5;
         background: rgba(10,125,140,.15);
       }}
+      /* offset for sticky nav so anchors don't hide under it */
+      [id^="lh-sec-"] {{
+        scroll-margin-top: 54px;
+      }}
     `;
     p.head.appendChild(style);
 
@@ -587,6 +621,24 @@ st.components.v1.html(f"""
       if (btn) btn.click();
     }}
 
+    // Section nav items: [label, anchor-id]
+    var NAV_ITEMS = [
+      ['Lead Current',       'lh-sec-lead'],
+      ['Countercurrent',     'lh-sec-cc'],
+      ['Voices',             'lh-sec-voices'],
+      ['Provocations',       'lh-sec-provs'],
+      ['Topic Map',          'lh-sec-topicmap'],
+      ['Momentum',           'lh-sec-momentum'],
+      ['Signal Volume',      'lh-sec-volume'],
+      ['Competitive Pulse',  'lh-sec-competitive'],
+      ['Signal Lab',         'lh-sec-lab'],
+      ['Vision Map',         'lh-sec-vision'],
+    ];
+
+    var navLinksHtml = NAV_ITEMS.map(function(item) {{
+      return '<button class="lh-nav-link" data-target="' + item[1] + '">' + item[0] + '</button>';
+    }}).join('');
+
     // Inject nav bar into parent <body>
     var nav = p.createElement('div');
     nav.id = 'lh-topnav';
@@ -596,12 +648,22 @@ st.components.v1.html(f"""
       '<span class="lh-logo">🗼 Lighthouse</span>' +
       '<span class="lh-sep"></span>' +
       '<span class="lh-client">{_nav_client}</span>' +
-      '<span class="lh-spacer"></span>' +
-      '<div class="lh-user">{_nav_initial}</div>';
+      '<span class="lh-sep"></span>' +
+      '<div class="lh-nav-links">' + navLinksHtml + '</div>' +
+      '<div class="lh-user" title="{_nav_user}">{_nav_initial}</div>';
     p.body.appendChild(nav);
 
-    // Attach click to our button (re-query after append)
+    // Attach sidebar toggle
     p.getElementById('lh-menu-btn').addEventListener('click', toggleSidebar);
+
+    // Attach scroll-to for each nav link
+    p.querySelectorAll('.lh-nav-link').forEach(function(btn) {{
+      btn.addEventListener('click', function() {{
+        var targetId = btn.getAttribute('data-target');
+        var el = p.getElementById(targetId);
+        if (el) el.scrollIntoView({{behavior: 'smooth', block: 'start'}});
+      }});
+    }});
 
   }} catch(err) {{ console.warn('Lighthouse topnav:', err); }}
 }})();
@@ -1363,6 +1425,7 @@ def render_content_sections(content: dict, user: str):
 </div>""", unsafe_allow_html=True)
 
         # Countercurrent box + save
+        st.markdown('<div id="lh-sec-cc"></div>', unsafe_allow_html=True)
         col_cc, col_cc_save = st.columns([20, 1])
         with col_cc:
             st.markdown(f"""
@@ -1447,6 +1510,7 @@ def render_content_sections(content: dict, user: str):
 </div>""", unsafe_allow_html=True)
 
     # ── VOICES ────────────────────────────────────────────────────────────────
+    st.markdown('<div id="lh-sec-voices"></div>', unsafe_allow_html=True)
     st.markdown("""
 <div style="border-top:2px solid #071828;padding-top:18px;margin:8px 0 20px">
   <span class="lh-eyebrow">◎ Editorial Synthesis · Claude-Composed Voices</span>
@@ -1496,6 +1560,7 @@ def render_content_sections(content: dict, user: str):
     _render_raw_signals(load_signals(), lead.get("topic_tags", []))
 
     # ── PROVOCATIONS — single HTML block, no Streamlit columns (avoids gap bleed) ──
+    st.markdown('<div id="lh-sec-provs"></div>', unsafe_allow_html=True)
     prov_items_html = ""
     for p in provs[:3]:
         prov_items_html += f"""
@@ -2704,19 +2769,24 @@ if content:
     st.components.v1.html(masthead_html, height=390, scrolling=False)
 
     # 2. Interactive content (lead, cards, voices, provocations) — native Streamlit
+    st.markdown('<div id="lh-sec-lead"></div>', unsafe_allow_html=True)
     render_content_sections(content, current_user)
 
     # 3. Topic / signal map
+    st.markdown('<div id="lh-sec-topicmap"></div>', unsafe_allow_html=True)
     render_topic_map(content)
 
     # 4. Momentum tracker — topic evolution across dispatches
     _all_disp = load_all_dispatches()
+    st.markdown('<div id="lh-sec-momentum"></div>', unsafe_allow_html=True)
     render_momentum_tracker(_all_disp)
 
     # 5. Signal Volume Analytics
+    st.markdown('<div id="lh-sec-volume"></div>', unsafe_allow_html=True)
     render_signal_volume(signals)
 
     # 6. Competitive Pulse
+    st.markdown('<div id="lh-sec-competitive"></div>', unsafe_allow_html=True)
     render_competitive_pulse(signals, competitors_raw)
 
 else:
@@ -3112,6 +3182,7 @@ def _tavily_search(query: str, api_key: str, n: int = 10) -> list:
 
 # ── Signal Lab UI ─────────────────────────────────────────────────────────────
 
+st.markdown('<div id="lh-sec-lab"></div>', unsafe_allow_html=True)
 st.markdown("""
 <div style="border-top:3px double #071828;padding-top:2rem;margin-top:1rem;">
   <span style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.18em;
@@ -3553,6 +3624,7 @@ border-radius:8px;overflow:hidden;margin-bottom:14px;">
 # VISION MAP — strategic roadmap embedded
 # ══════════════════════════════════════════════════════════════════════════════
 
+st.markdown('<div id="lh-sec-vision"></div>', unsafe_allow_html=True)
 st.markdown("""
 <div style="border-top:3px double #071828;padding-top:2rem;margin-top:1rem;">
   <span style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.18em;
