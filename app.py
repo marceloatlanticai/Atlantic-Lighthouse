@@ -50,6 +50,82 @@ USER_COLORS = {
     "Joao":    "#0a4a6e",
 }
 
+def e(text) -> str:
+    """HTML-escape for safe injection."""
+    return html_mod.escape(str(text))
+
+
+# ── Client View — accounts & permission gating ─────────────────────────────────
+# Clients get their own login, scoped to a read-only, polished view of the
+# dispatch. Internal sections (Project Board, Signal Lab, Vision Map) are never
+# shown to clients. A few "deeper" analytical sections can be switched on
+# per-client below.
+CLIENT_ACCESS_PATH = "data/client_access.json"
+
+CLIENT_PERM_DEFS = [
+    ("competitive_pulse", "⚔ Competitive Pulse — charts comparing brand vs competitors"),
+    ("topic_map",         "◎ Topic / Signal Map — interactive force-directed map"),
+    ("momentum",          "📈 Momentum Tracker — topic evolution over time"),
+    ("signal_volume",     "▦ Signal Volume Analytics — raw signal counts by source"),
+]
+CLIENT_PERM_DEFAULTS = {key: False for key, _ in CLIENT_PERM_DEFS}
+
+
+def load_client_accounts() -> list:
+    os.makedirs("data", exist_ok=True)
+    if not os.path.exists(CLIENT_ACCESS_PATH):
+        return []
+    try:
+        with open(CLIENT_ACCESS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_client_accounts(accounts: list):
+    os.makedirs("data", exist_ok=True)
+    with open(CLIENT_ACCESS_PATH, "w") as f:
+        json.dump(accounts, f, ensure_ascii=False, indent=2)
+
+
+def create_client_account(username: str, password: str, label: str) -> bool:
+    """Create a client login. Returns False if username is empty/duplicate."""
+    username = (username or "").strip()
+    password = (password or "").strip()
+    if not username or not password:
+        return False
+    accounts = load_client_accounts()
+    if any(a["username"].lower() == username.lower() for a in accounts):
+        return False
+    accounts.append({
+        "username":     username,
+        "password":     password,
+        "client_label": (label or username).strip(),
+        "perms":        dict(CLIENT_PERM_DEFAULTS),
+    })
+    _save_client_accounts(accounts)
+    return True
+
+
+def delete_client_account(username: str):
+    accounts = [a for a in load_client_accounts() if a["username"] != username]
+    _save_client_accounts(accounts)
+
+
+def update_client_perms(username: str, perms: dict):
+    accounts = load_client_accounts()
+    for a in accounts:
+        if a["username"] == username:
+            a["perms"] = perms
+    _save_client_accounts(accounts)
+
+
+def authenticate_client(username: str, password: str):
+    for a in load_client_accounts():
+        if a["username"] == username and a.get("password") == password:
+            return a
+    return None
+
 # ── Curadoria helpers ──────────────────────────────────────────────────────────
 CURADORIA_PATH = "data/curadoria.json"
 
@@ -82,6 +158,7 @@ def add_curadoria_item(user: str, type_: str, title: str, content: str) -> bool:
         "title":      title,
         "content":    content,
         "saved_at":   datetime.utcnow().strftime("%d %b %Y · %H:%M"),
+        "folder_ids": [],
     })
     _save_curadoria(items)
     return True
@@ -89,6 +166,125 @@ def add_curadoria_item(user: str, type_: str, title: str, content: str) -> bool:
 def remove_curadoria_item(item_id: str):
     items = [i for i in load_curadoria() if i["id"] != item_id]
     _save_curadoria(items)
+
+
+# ── Project Folders ─────────────────────────────────────────────────────────────
+# Evolution of the Board: saved insights can be organized into project/client
+# folders (e.g. "Heinz Q3 Campaign"). An item can belong to several folders, or
+# none ("Unsorted").
+PROJECT_FOLDERS_PATH = "data/project_folders.json"
+
+def load_project_folders() -> list:
+    os.makedirs("data", exist_ok=True)
+    if not os.path.exists(PROJECT_FOLDERS_PATH):
+        return []
+    try:
+        with open(PROJECT_FOLDERS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _save_project_folders(folders: list):
+    os.makedirs("data", exist_ok=True)
+    with open(PROJECT_FOLDERS_PATH, "w") as f:
+        json.dump(folders, f, ensure_ascii=False, indent=2)
+
+def create_project_folder(name: str, user: str):
+    """Create a new project folder. Returns the folder dict, or None if the
+    name is empty or already taken (case-insensitive)."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    folders = load_project_folders()
+    if any(f["name"].lower() == name.lower() for f in folders):
+        return None
+    folder = {
+        "id":         str(uuid.uuid4())[:8],
+        "name":       name,
+        "created_by": user,
+        "created_at": datetime.utcnow().strftime("%d %b %Y · %H:%M"),
+    }
+    folders.append(folder)
+    _save_project_folders(folders)
+    return folder
+
+def delete_project_folder(folder_id: str):
+    folders = [f for f in load_project_folders() if f["id"] != folder_id]
+    _save_project_folders(folders)
+    # Detach the deleted folder from any items that referenced it
+    items = load_curadoria()
+    changed = False
+    for it in items:
+        fids = it.get("folder_ids", [])
+        if folder_id in fids:
+            it["folder_ids"] = [x for x in fids if x != folder_id]
+            changed = True
+    if changed:
+        _save_curadoria(items)
+
+def set_item_folders(item_id: str, folder_ids: list):
+    items = load_curadoria()
+    for it in items:
+        if it["id"] == item_id:
+            it["folder_ids"] = folder_ids
+    _save_curadoria(items)
+
+def _filter_items_by_active_folder(items: list) -> list:
+    """Filter board items by the folder selected in the Project Folders bar."""
+    active = st.session_state.get("active_folder", "all")
+    if active == "all":
+        return items
+    if active == "unsorted":
+        return [i for i in items if not i.get("folder_ids")]
+    return [i for i in items if active in (i.get("folder_ids") or [])]
+
+def _render_board_item(item: dict, folders: list, color: str = "#0a7d8c",
+                        show_user_pill: bool = False, allow_delete: bool = False):
+    """Renders a single board item as a card, with folder-assignment popover
+    and optional delete button."""
+    folder_map = {f["id"]: f["name"] for f in folders}
+    item_folder_ids = [fid for fid in item.get("folder_ids", []) if fid in folder_map]
+    folder_pills = "".join(
+        f'<span class="cur-folder-pill">📁 {e(folder_map[fid])}</span>' for fid in item_folder_ids
+    )
+    user_pill = (
+        f'<span class="cur-user-pill" style="background:{color}">{e(item["user"])}</span>'
+        if show_user_pill else ""
+    )
+
+    col_a, col_b, col_c = st.columns([16, 1, 1])
+    with col_a:
+        st.markdown(f"""
+<div class="cur-item" style="border-left-color:{color}">
+  <div class="cur-item-type">{e(item['type'])}</div>
+  <div class="cur-item-title">{e(item['title'][:120])}</div>
+  <div class="cur-item-content">{e(item['content'][:240])}{"…" if len(item['content']) > 240 else ""}</div>
+  <div class="cur-item-meta">
+    {user_pill}{folder_pills}
+    Saved on {e(item['saved_at'])}
+  </div>
+</div>""", unsafe_allow_html=True)
+    with col_b:
+        st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+        with st.popover("📁", use_container_width=True, help="Organize into project folders"):
+            if not folders:
+                st.caption("No project folders yet — create one above.")
+            else:
+                selected = st.multiselect(
+                    "Folders", options=[f["id"] for f in folders],
+                    default=item_folder_ids,
+                    format_func=lambda fid: folder_map.get(fid, fid),
+                    key=f"folders_{item['id']}", label_visibility="collapsed",
+                )
+                if st.button("Apply", key=f"apply_folders_{item['id']}", use_container_width=True):
+                    set_item_folders(item["id"], selected)
+                    st.rerun()
+    with col_c:
+        st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+        if allow_delete:
+            if st.button("🗑", key=f"del_{item['id']}", help="Remove from board"):
+                remove_curadoria_item(item["id"])
+                st.rerun()
 
 
 # ── Countercurrent overrides ────────────────────────────────────────────────────
@@ -392,21 +588,61 @@ def show_login():
     # Use st.columns to center the form under the HTML above
     _, col, _ = st.columns([1, 2, 1])
     with col:
-        with st.form("login_form", clear_on_submit=False):
-            user_sel = st.selectbox("Username", list(USERS.keys()), label_visibility="visible")
-            password = st.text_input("Password", type="password", placeholder="••••••••")
-            submitted = st.form_submit_button("Sign in →", use_container_width=True)
-            if submitted:
-                if USERS.get(user_sel) == password:
-                    st.session_state.logged_in_user = user_sel
-                    st.rerun()
-                else:
-                    st.error("Incorrect password.")
+        tab_team, tab_client = st.tabs(["Agency Team", "Client Access"])
+
+        with tab_team:
+            with st.form("login_form", clear_on_submit=False):
+                user_sel = st.selectbox("Username", list(USERS.keys()), label_visibility="visible")
+                password = st.text_input("Password", type="password", placeholder="••••••••")
+                submitted = st.form_submit_button("Sign in →", use_container_width=True)
+                if submitted:
+                    if USERS.get(user_sel) == password:
+                        st.session_state.logged_in_user = user_sel
+                        st.session_state.user_role = "internal"
+                        st.rerun()
+                    else:
+                        st.error("Incorrect password.")
+
+        with tab_client:
+            client_accounts = load_client_accounts()
+            if not client_accounts:
+                st.caption("No client accounts configured yet. Ask your agency contact for access.")
+            else:
+                with st.form("client_login_form", clear_on_submit=False):
+                    cl_user_sel = st.selectbox(
+                        "Client login", [a["username"] for a in client_accounts],
+                        label_visibility="visible",
+                    )
+                    cl_password = st.text_input("Password", type="password",
+                                                 placeholder="••••••••", key="cl_password")
+                    cl_submitted = st.form_submit_button("Sign in →", use_container_width=True)
+                    if cl_submitted:
+                        acct = authenticate_client(cl_user_sel, cl_password)
+                        if acct:
+                            st.session_state.logged_in_user = acct["username"]
+                            st.session_state.user_role = "client"
+                            st.session_state.client_label = acct.get("client_label", acct["username"])
+                            st.session_state.client_perms = acct.get("perms", {})
+                            st.rerun()
+                        else:
+                            st.error("Incorrect password.")
 
 
 if "logged_in_user" not in st.session_state:
     show_login()
     st.stop()
+
+# ── Role / permissions for the current session ─────────────────────────────────
+USER_ROLE     = st.session_state.get("user_role", "internal")
+IS_CLIENT     = USER_ROLE == "client"
+CLIENT_LABEL  = st.session_state.get("client_label", "")
+CLIENT_PERMS  = st.session_state.get("client_perms", {})
+
+def _has_perm(key: str) -> bool:
+    """True for internal team members; for clients, checks their permission set."""
+    if not IS_CLIENT:
+        return True
+    return bool(CLIENT_PERMS.get(key, False))
 
 # ── Client brand config (from .env) ───────────────────────────────────────────
 # Set these in .env to customise per client:
@@ -423,7 +659,25 @@ AGENCY_NAME         = os.environ.get("AGENCY_NAME",         "Atlantic · New Yor
 with st.sidebar:
     current_user  = st.session_state.logged_in_user
     user_color    = USER_COLORS.get(current_user, "#0a7d8c")
-    st.markdown(f"""
+
+    if IS_CLIENT:
+        st.markdown(f"""
+<div style="font-family:'Georgia',serif;font-size:20px;color:#d0eaf0;margin-bottom:4px">
+  🗼 THE LIGHTHOUSE
+</div>
+<div style="font-family:monospace;font-size:10px;color:#0fa3b5;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:12px">
+  Client View · {e(CLIENT_LABEL)}
+</div>
+<div style="display:flex;align-items:center;gap:10px;background:#1a2a3a;border-radius:6px;padding:8px 12px;margin-bottom:4px">
+  <div style="width:28px;height:28px;border-radius:50%;background:{user_color};display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;font-weight:600;font-size:12px;color:#fff;flex:none">{e(CLIENT_LABEL[:1].upper() or "C")}</div>
+  <div>
+    <div style="font-size:13px;color:#d0eaf0;font-weight:500">{e(CLIENT_LABEL)}</div>
+    <div style="font-family:monospace;font-size:9px;color:#0a7d8c;letter-spacing:.08em;text-transform:uppercase">Client access</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
 <div style="font-family:'Georgia',serif;font-size:20px;color:#d0eaf0;margin-bottom:4px">
   🗼 THE LIGHTHOUSE
 </div>
@@ -438,97 +692,113 @@ with st.sidebar:
   </div>
 </div>
 """, unsafe_allow_html=True)
+
     if st.button("Sign out", use_container_width=True, key="logout_btn"):
-        del st.session_state.logged_in_user
+        for _k in ("logged_in_user", "user_role", "client_label", "client_perms"):
+            st.session_state.pop(_k, None)
         st.rerun()
 
-    client_name   = st.text_input("Client", value="Heinz Soup · United Kingdom")
-    brief_tagline = st.text_input("Brief tagline", value="Reading Britain's lunch currents so Heinz can build the countercurrent.")
-    focus_topic   = st.text_area(
-        "Focus topic / brief",
-        value="desk lunch, comfort food, cost of living, office return-to-work culture, UK workers",
-        height=80,
-    )
-    client_filter   = st.text_input("Client tag filter", value="", placeholder="Leave blank = all signals")
-    competitors_raw = st.text_input(
-        "Competitor brands",
-        value="Cully & Sully, New Covent Garden, Batchelors, Cup-a-Soup",
-        help="Comma-separated — used in Competitive Pulse",
-    )
+    if IS_CLIENT:
+        # Read-only client session — no editorial controls. Reasonable
+        # defaults so the rest of the app (which expects these names) works.
+        client_name     = CLIENT_LABEL or "Client"
+        brief_tagline   = ""
+        focus_topic     = ""
+        client_filter   = ""
+        competitors_raw = ""
+        use_pinecone    = True
+        signal_limit    = 20
+        live_mode       = False
+        regenerate      = False
+        email_to        = ""
+        send_email_btn  = False
+        _has_content    = bool(st.session_state.get("lh_content"))
+        _download_placeholder = st.empty()
+        _date_str       = datetime.utcnow().strftime("%Y-%m-%d")
 
-    st.markdown("---")
-    use_pinecone  = st.checkbox("Use Pinecone semantic search", value=True)
-    signal_limit  = st.slider("Signals to analyse", 10, 50, 20)
-
-    st.markdown("---")
-    st.markdown(
-        '<div style="font-size:10px;color:#0fa3b5;font-family:monospace;'
-        'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">'
-        'Mode</div>',
-        unsafe_allow_html=True,
-    )
-    live_mode = st.toggle("Live — call Claude", value=False,
-                          help="OFF = shows last saved dispatch (no cost).\nON = generates new content via Claude.")
-    regenerate = st.button("⚡  Sweep & Generate", use_container_width=True,
-                           disabled=not live_mode)
-
-    st.markdown("---")
-    st.markdown(
-        '<div style="font-size:10px;color:#555;font-family:monospace;'
-        'text-transform:uppercase;letter-spacing:0.08em">Email Dispatch</div>',
-        unsafe_allow_html=True,
-    )
-    email_to      = st.text_input("Send to", placeholder="strategist@agency.com", label_visibility="collapsed")
-    send_email_btn = st.button("Send via SendGrid", use_container_width=True)
-
-    # ── PDF / HTML Report download ──────────────────────────────────────────
-    st.markdown("---")
-    st.markdown(
-        '<div style="font-size:10px;color:#0fa3b5;font-family:monospace;'
-        'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">'
-        '↓ Report</div>',
-        unsafe_allow_html=True,
-    )
-    # Download button placeholder — filled after build_html is defined
-    _has_content = bool(st.session_state.get("lh_content"))
-    _download_placeholder = st.empty()
-    _date_str = datetime.utcnow().strftime("%Y-%m-%d")
-    if not _has_content:
-        _download_placeholder.caption("Generate a dispatch first to download the report.")
-
-    # ── Dispatch archive ────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown(
-        '<div style="font-size:10px;color:#0fa3b5;font-family:monospace;'
-        'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">'
-        '◷ Dispatch Archive</div>',
-        unsafe_allow_html=True,
-    )
-    _all_dispatches = load_all_dispatches()
-    if _all_dispatches:
-        _archive_labels = ["— current dispatch —"] + [dispatch_label(r) for r in _all_dispatches]
-        _sel = st.selectbox("Browse history", _archive_labels, label_visibility="collapsed")
-        if _sel != "— current dispatch —":
-            _idx = _archive_labels.index(_sel) - 1
-            if st.button("Load this dispatch", use_container_width=True):
-                st.session_state.lh_content = _all_dispatches[_idx]["full"]
-                st.rerun()
+        st.markdown("---")
+        st.caption("You're viewing a read-only client dispatch. Some sections may be hidden based on your access level.")
     else:
-        st.caption("No archived dispatches yet.")
+        client_name   = st.text_input("Client", value="Heinz Soup · United Kingdom")
+        brief_tagline = st.text_input("Brief tagline", value="Reading Britain's lunch currents so Heinz can build the countercurrent.")
+        focus_topic   = st.text_area(
+            "Focus topic / brief",
+            value="desk lunch, comfort food, cost of living, office return-to-work culture, UK workers",
+            height=80,
+        )
+        client_filter   = st.text_input("Client tag filter", value="", placeholder="Leave blank = all signals")
+        competitors_raw = st.text_input(
+            "Competitor brands",
+            value="Cully & Sully, New Covent Garden, Batchelors, Cup-a-Soup",
+            help="Comma-separated — used in Competitive Pulse",
+        )
 
-    st.markdown("---")
-    st.markdown(
-        '<div style="font-size:10px;color:#444;font-family:monospace">'
-        'Claude · Gemini Embeddings · Pinecone · Apify</div>',
-        unsafe_allow_html=True,
-    )
+        st.markdown("---")
+        use_pinecone  = st.checkbox("Use Pinecone semantic search", value=True)
+        signal_limit  = st.slider("Signals to analyse", 10, 50, 20)
 
+        st.markdown("---")
+        st.markdown(
+            '<div style="font-size:10px;color:#0fa3b5;font-family:monospace;'
+            'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">'
+            'Mode</div>',
+            unsafe_allow_html=True,
+        )
+        live_mode = st.toggle("Live — call Claude", value=False,
+                              help="OFF = shows last saved dispatch (no cost).\nON = generates new content via Claude.")
+        regenerate = st.button("⚡  Sweep & Generate", use_container_width=True,
+                               disabled=not live_mode)
 
-# ── HTML helpers (early definition needed by topnav) ──────────────────────────
+        st.markdown("---")
+        st.markdown(
+            '<div style="font-size:10px;color:#555;font-family:monospace;'
+            'text-transform:uppercase;letter-spacing:0.08em">Email Dispatch</div>',
+            unsafe_allow_html=True,
+        )
+        email_to      = st.text_input("Send to", placeholder="strategist@agency.com", label_visibility="collapsed")
+        send_email_btn = st.button("Send via SendGrid", use_container_width=True)
 
-def e(text) -> str:
-    """HTML-escape for safe injection."""
-    return html_mod.escape(str(text))
+        # ── PDF / HTML Report download ──────────────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            '<div style="font-size:10px;color:#0fa3b5;font-family:monospace;'
+            'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">'
+            '↓ Report</div>',
+            unsafe_allow_html=True,
+        )
+        # Download button placeholder — filled after build_html is defined
+        _has_content = bool(st.session_state.get("lh_content"))
+        _download_placeholder = st.empty()
+        _date_str = datetime.utcnow().strftime("%Y-%m-%d")
+        if not _has_content:
+            _download_placeholder.caption("Generate a dispatch first to download the report.")
+
+        # ── Dispatch archive ──────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            '<div style="font-size:10px;color:#0fa3b5;font-family:monospace;'
+            'text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px">'
+            '◷ Dispatch Archive</div>',
+            unsafe_allow_html=True,
+        )
+        _all_dispatches = load_all_dispatches()
+        if _all_dispatches:
+            _archive_labels = ["— current dispatch —"] + [dispatch_label(r) for r in _all_dispatches]
+            _sel = st.selectbox("Browse history", _archive_labels, label_visibility="collapsed")
+            if _sel != "— current dispatch —":
+                _idx = _archive_labels.index(_sel) - 1
+                if st.button("Load this dispatch", use_container_width=True):
+                    st.session_state.lh_content = _all_dispatches[_idx]["full"]
+                    st.rerun()
+        else:
+            st.caption("No archived dispatches yet.")
+
+        st.markdown("---")
+        st.markdown(
+            '<div style="font-size:10px;color:#444;font-family:monospace">'
+            'Claude · Gemini Embeddings · Pinecone · Apify</div>',
+            unsafe_allow_html=True,
+        )
 
 
 # ── Sticky top navigation bar ─────────────────────────────────────────────────
@@ -539,6 +809,36 @@ _nav_client  = e(client_name.split("·")[0].strip())
 _nav_user    = st.session_state.get("logged_in_user", "")
 _nav_color   = USER_COLORS.get(_nav_user, "#0a7d8c")
 _nav_initial = _nav_user[0] if _nav_user else "?"
+
+# Section nav items: (label, anchor-id, visibility rule)
+#   "always"   → shown to everyone
+#   "internal" → hidden from clients
+#   <perm key> → shown to internal users, or to clients with that permission
+_NAV_ITEMS_ALL = [
+    ("Lead Current",      "lh-sec-lead",        "always"),
+    ("Countercurrent",    "lh-sec-cc",          "always"),
+    ("Currents",          "lh-sec-currents",    "always"),
+    ("Voices",            "lh-sec-voices",      "always"),
+    ("Provocations",      "lh-sec-provs",       "always"),
+    ("Topic Map",         "lh-sec-topicmap",    "topic_map"),
+    ("Momentum",          "lh-sec-momentum",    "momentum"),
+    ("Signal Volume",     "lh-sec-volume",      "signal_volume"),
+    ("Competitive Pulse", "lh-sec-competitive", "competitive_pulse"),
+    ("Signal Lab",        "lh-sec-lab",         "internal"),
+    ("Vision Map",        "lh-sec-vision",      "internal"),
+]
+
+def _nav_item_visible(rule: str) -> bool:
+    if rule == "always":
+        return True
+    if rule == "internal":
+        return not IS_CLIENT
+    return _has_perm(rule)
+
+_nav_items_filtered = [(label, anchor) for label, anchor, rule in _NAV_ITEMS_ALL if _nav_item_visible(rule)]
+_nav_items_js = ",\n      ".join(
+    "['%s', '%s']" % (label.replace("'", "\\'"), anchor) for label, anchor in _nav_items_filtered
+)
 
 st.components.v1.html(f"""
 <script>
@@ -658,18 +958,9 @@ st.components.v1.html(f"""
       if (btn) btn.click();
     }}
 
-    // Section nav items: [label, anchor-id]
+    // Section nav items: [label, anchor-id] — filtered server-side by role/permissions
     var NAV_ITEMS = [
-      ['Lead Current',       'lh-sec-lead'],
-      ['Countercurrent',     'lh-sec-cc'],
-      ['Voices',             'lh-sec-voices'],
-      ['Provocations',       'lh-sec-provs'],
-      ['Topic Map',          'lh-sec-topicmap'],
-      ['Momentum',           'lh-sec-momentum'],
-      ['Signal Volume',      'lh-sec-volume'],
-      ['Competitive Pulse',  'lh-sec-competitive'],
-      ['Signal Lab',         'lh-sec-lab'],
-      ['Vision Map',         'lh-sec-vision'],
+      {_nav_items_js}
     ];
 
     var navLinksHtml = NAV_ITEMS.map(function(item) {{
@@ -853,6 +1144,7 @@ Generate a complete Lighthouse briefing. Return a single JSON object with EXACTL
     {{
       "momentum_pct": "+XX%",
       "momentum_dir": "up | down | flat",
+      "category": "competitive | cultural | social",
       "tags": "Category · Signal type",
       "title": "Card headline — max 12 words",
       "body": "2 sentences. Specific to signals.",
@@ -860,9 +1152,11 @@ Generate a complete Lighthouse briefing. Return a single JSON object with EXACTL
       "reach": "X.XM reach",
       "spark": [30, 40, 55, 65, 75, 85, 95]
     }},
-    {{"momentum_pct": "+XX%", "momentum_dir": "up", "tags": "...", "title": "...", "body": "...", "sources": "...", "reach": "...", "spark": [20, 35, 45, 55, 65, 75, 88]}},
-    {{"momentum_pct": "+XX%", "momentum_dir": "up", "tags": "...", "title": "...", "body": "...", "sources": "...", "reach": "...", "spark": [25, 38, 48, 58, 68, 78, 90]}},
-    {{"momentum_pct": "-XX%", "momentum_dir": "down", "tags": "Format War · Watch", "title": "A declining signal worth watching", "body": "...", "sources": "...", "reach": "...", "spark": [90, 82, 70, 60, 52, 44, 38]}}
+    {{"momentum_pct": "+XX%", "momentum_dir": "up", "category": "competitive", "tags": "...", "title": "A rival brand's move worth tracking", "body": "...", "sources": "...", "reach": "...", "spark": [20, 35, 45, 55, 65, 75, 88]}},
+    {{"momentum_pct": "+XX%", "momentum_dir": "up", "category": "cultural", "tags": "...", "title": "...", "body": "...", "sources": "...", "reach": "...", "spark": [25, 38, 48, 58, 68, 78, 90]}},
+    {{"momentum_pct": "+XX%", "momentum_dir": "up", "category": "cultural", "tags": "...", "title": "...", "body": "...", "sources": "...", "reach": "...", "spark": [22, 34, 46, 58, 66, 76, 86]}},
+    {{"momentum_pct": "+XX%", "momentum_dir": "up", "category": "social", "tags": "...", "title": "A platform-native trend or meme gaining steam", "body": "...", "sources": "...", "reach": "...", "spark": [18, 30, 42, 54, 66, 78, 92]}},
+    {{"momentum_pct": "-XX%", "momentum_dir": "down", "category": "social", "tags": "Format War · Watch", "title": "A declining signal worth watching", "body": "...", "sources": "...", "reach": "...", "spark": [90, 82, 70, 60, 52, 44, 38]}}
   ],
   "voices": [
     {{"platform_class": "p-reddit", "platform_label": "Reddit · r/SubName", "engagement": "▲ 3.1k", "quote": "Vivid, specific, casual voice.", "handle": "u/realistic_handle", "rel_tag": "Short tag", "url": "https://reddit.com/r/SubName/comments/..."}},
@@ -889,6 +1183,9 @@ Generate a complete Lighthouse briefing. Return a single JSON object with EXACTL
 }}
 
 Be specific. Steal language from the actual signals. Write like a world-class strategist.
+For "cards": provide 4-6 items covering all three lenses — at least one "competitive" (a rival
+brand's move), at least one "cultural" (a broader shift in the conversation), and at least one
+"social" (platform-native chatter, memes, trends). Set each card's "category" field accordingly.
 For the "url" field in each voice: use the exact URL from the SIGNAL context above that best matches the quote. If no URL is available for that platform, leave it as an empty string ""."""
 
     try:
@@ -1112,8 +1409,19 @@ def _native_css(beacon: str, beacon_2: str) -> str:
 .lh-cc-edited{{color:#0fa3b5;background:rgba(10,125,140,.18);border:1px solid rgba(10,125,140,.35);}}
 .lh-cc-edit-lbl{{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:{beacon};font-weight:700;margin:20px 0 8px;}}
 .lh-card{{border-top:2px solid var(--lh-ink);padding-top:14px;}}
-.lh-card-top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}}
+.lh-card-top{{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;}}
 .lh-card-brands{{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:var(--lh-ink-soft);}}
+/* Currents — 3-lens categorization (Competitive / Cultural / Social) */
+.lh-cat-head{{display:flex;align-items:center;gap:12px;margin:26px 0 14px;}}
+.lh-cat-head .lh-cat-line{{flex:1;height:1px;display:block;background:var(--lh-line-strong);}}
+.lh-cat-lbl{{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;white-space:nowrap;}}
+.lh-cat-competitive{{color:#c94f35;}}
+.lh-cat-cultural{{color:{beacon};}}
+.lh-cat-social{{color:#6b4e8c;}}
+.lh-card-cat{{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;padding:2px 8px;border-radius:4px;font-weight:700;}}
+.lh-card-cat-competitive{{background:rgba(201,79,53,.12);color:#c94f35;}}
+.lh-card-cat-cultural{{background:rgba(10,125,140,.12);color:{beacon};}}
+.lh-card-cat-social{{background:rgba(107,78,140,.12);color:#6b4e8c;}}
 .lh-card-title{{font-family:'Fraunces',serif;font-weight:600;font-size:1.2rem;line-height:1.1;color:var(--lh-ink);margin:0 0 8px;}}
 .lh-card-body{{font-size:13.5px;line-height:1.5;color:var(--lh-ink-soft);margin:0 0 10px;}}
 .lh-spark{{height:28px;display:flex;align-items:flex-end;gap:3px;margin-bottom:10px;}}
@@ -1405,6 +1713,45 @@ def _mdir(d):
 def _mcls(d):
     return {"up": "lh-momentum-up", "down": "lh-momentum-down"}.get(d, "lh-momentum-flat")
 
+# ── "More Currents" — 3-lens categorization ───────────────────────────────────
+# The dispatch groups currents into three lenses (per the Lighthouse.ai wireframe):
+#   competitive — what rival brands are doing
+#   cultural    — broader shifts in culture/conversation
+#   social      — chatter, memes, platform-native noise
+CATEGORY_META = {
+    "competitive": ("⚔", "Competitive Maneuvers", "lh-cat-competitive"),
+    "cultural":    ("〰", "Cultural Waves",        "lh-cat-cultural"),
+    "social":      ("💬", "Social Chatter",        "lh-cat-social"),
+}
+CATEGORY_ORDER = ["competitive", "cultural", "social"]
+
+_CAT_KEYWORDS = {
+    "competitive": [
+        "competitor", "rival", "brand war", "market share", "launch", "campaign",
+        " vs ", "competing", "rebrand", "ad spend", "pricing", "shelf",
+    ],
+    "social": [
+        "tiktok", "reddit", "meme", "viral", "comment section", "thread",
+        "forum", "hashtag", "duet", "stitch", "influencer", "creator",
+    ],
+}
+
+def _card_category(card: dict) -> str:
+    """Return 'competitive' | 'cultural' | 'social' for a card.
+
+    Uses the explicit `category` field when present (new dispatches). Older
+    saved dispatches won't have it, so fall back to a keyword heuristic over
+    the card's tags/title/body — defaulting to 'cultural' (the broadest lens).
+    """
+    cat = (card.get("category") or "").strip().lower()
+    if cat in CATEGORY_META:
+        return cat
+    text = f"{card.get('tags','')} {card.get('title','')} {card.get('body','')}".lower()
+    for cat_name in ("competitive", "social"):
+        if any(kw in text for kw in _CAT_KEYWORDS[cat_name]):
+            return cat_name
+    return "cultural"
+
 def _save_button(label: str, type_: str, title: str, content_str: str, key: str, user: str):
     """Renders a 💾 save button."""
     if st.button("💾", key=key, help="Save to curation board"):
@@ -1415,7 +1762,7 @@ def _save_button(label: str, type_: str, title: str, content_str: str, key: str,
             st.toast("Already saved to your board.")
 
 
-def render_content_sections(content: dict, user: str):
+def render_content_sections(content: dict, user: str, show_competitive: bool = True):
     """Renders lead, cards, rail, voices, provocations with native Streamlit + save buttons."""
     beacon   = CLIENT_BEACON_COLOR
     beacon_2 = CLIENT_BEACON_2
@@ -1538,36 +1885,55 @@ def render_content_sections(content: dict, user: str):
                 _save_button("🔖", "Countercurrent", cc_title, cc_body, "save_cc_main", user)
 
         # Section divider
+        st.markdown('<div id="lh-sec-currents"></div>', unsafe_allow_html=True)
         st.markdown(f"""
-<div style="display:flex;align-items:center;gap:14px;margin:28px 0 18px">
+<div style="display:flex;align-items:center;gap:14px;margin:28px 0 6px">
   <span class="lh-eyebrow">More currents worth watching</span>
   <span style="flex:1;height:1px;background:#6ea8c4;display:block"></span>
 </div>""", unsafe_allow_html=True)
 
-        # Cards 2×2
-        card_cols = st.columns(2, gap="large")
-        for i, card in enumerate(cards[:4]):
-            d = card.get("momentum_dir", "up")
-            spark_bars = "".join(f'<i style="height:{v}%"></i>' for v in (card.get("spark") or [30,45,55,65,75,82,90]))
-            with card_cols[i % 2]:
-                col_card, col_card_save = st.columns([10, 1])
-                with col_card:
-                    st.markdown(f"""
+        # Group cards into the 3 Lighthouse lenses: Competitive / Cultural / Social
+        cards_by_cat = {c: [] for c in CATEGORY_ORDER}
+        for i, card in enumerate(cards):
+            cards_by_cat[_card_category(card)].append((i, card))
+
+        for cat in CATEGORY_ORDER:
+            if cat == "competitive" and not show_competitive:
+                continue
+            group = cards_by_cat[cat]
+            if not group:
+                continue
+            icon, label, css_cls = CATEGORY_META[cat]
+            st.markdown(f"""
+<div class="lh-cat-head">
+  <span class="lh-cat-lbl {css_cls}">{icon} {e(label)}</span>
+  <span class="lh-cat-line"></span>
+</div>""", unsafe_allow_html=True)
+
+            card_cols = st.columns(2, gap="large")
+            for j, (i, card) in enumerate(group):
+                d = card.get("momentum_dir", "up")
+                spark_bars = "".join(f'<i style="height:{v}%"></i>' for v in (card.get("spark") or [30,45,55,65,75,82,90]))
+                with card_cols[j % 2]:
+                    col_card, col_card_save = st.columns([10, 1])
+                    with col_card:
+                        st.markdown(f"""
 <div class="lh-card">
   <div class="lh-card-top">
     <span class="{_mcls(d)}">{_mdir(d)} {e(card.get("momentum_pct",""))}</span>
     <span class="lh-card-brands">{e(card.get("tags",""))}</span>
+    <span class="lh-card-cat {css_cls.replace('lh-cat-', 'lh-card-cat-')}">{icon} {e(label)}</span>
   </div>
   <div class="lh-card-title">{e(card.get("title",""))}</div>
   <div class="lh-card-body">{e(card.get("body",""))}</div>
   <div class="lh-spark">{spark_bars}</div>
   <div class="lh-card-foot"><span>{e(card.get("sources",""))}</span><span class="lh-reach">{e(card.get("reach",""))}</span></div>
 </div>""", unsafe_allow_html=True)
-                with col_card_save:
-                    st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-                    _save_button("🔖", f"Card — {card.get('tags','')}",
-                        card.get("title",""), card.get("body",""),
-                        f"save_card_{i}", user)
+                    with col_card_save:
+                        st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+                        _save_button("🔖", f"Card — {card.get('tags','')}",
+                            card.get("title",""), card.get("body",""),
+                            f"save_card_{i}", user)
 
     # ── RAIL SIDEBAR ──────────────────────────────────────────────────────────
     with col_rail:
@@ -2858,6 +3224,21 @@ else:
     _download_placeholder.caption("Generate a dispatch first to download the report.")
 
 
+# ── Footer (factored out so both the client view and the full page can use it) ─
+
+def render_footer():
+    st.markdown(f"""
+<div style="border-top:3px double #071828;margin-top:3rem;padding:24px 0 48px;
+     font-family:'JetBrains Mono',monospace;font-size:11px;color:#274d68;
+     text-transform:uppercase;letter-spacing:.06em;
+     display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;">
+  <span>The Lighthouse · Countercurrent.ai v3</span>
+  <span style="color:{CLIENT_BEACON_COLOR};font-weight:700;letter-spacing:.14em">{e(AGENCY_NAME)}</span>
+  <span>Refreshes on demand · Human-reviewed before send</span>
+</div>
+""", unsafe_allow_html=True)
+
+
 # ── Render ─────────────────────────────────────────────────────────────────────
 
 if content:
@@ -2869,27 +3250,40 @@ if content:
 
     # 2. Interactive content (lead, cards, voices, provocations) — native Streamlit
     st.markdown('<div id="lh-sec-lead"></div>', unsafe_allow_html=True)
-    render_content_sections(content, current_user)
+    render_content_sections(content, current_user, show_competitive=_has_perm("competitive_pulse"))
 
     # 3. Topic / signal map
-    st.markdown('<div id="lh-sec-topicmap"></div>', unsafe_allow_html=True)
-    render_topic_map(content)
+    if _has_perm("topic_map"):
+        st.markdown('<div id="lh-sec-topicmap"></div>', unsafe_allow_html=True)
+        render_topic_map(content)
 
     # 4. Momentum tracker — topic evolution across dispatches
-    _all_disp = load_all_dispatches()
-    st.markdown('<div id="lh-sec-momentum"></div>', unsafe_allow_html=True)
-    render_momentum_tracker(_all_disp)
+    if _has_perm("momentum"):
+        _all_disp = load_all_dispatches()
+        st.markdown('<div id="lh-sec-momentum"></div>', unsafe_allow_html=True)
+        render_momentum_tracker(_all_disp)
 
     # 5. Signal Volume Analytics
-    st.markdown('<div id="lh-sec-volume"></div>', unsafe_allow_html=True)
-    render_signal_volume(signals)
+    if _has_perm("signal_volume"):
+        st.markdown('<div id="lh-sec-volume"></div>', unsafe_allow_html=True)
+        render_signal_volume(signals)
 
     # 6. Competitive Pulse
-    st.markdown('<div id="lh-sec-competitive"></div>', unsafe_allow_html=True)
-    render_competitive_pulse(signals, competitors_raw)
+    if _has_perm("competitive_pulse"):
+        st.markdown('<div id="lh-sec-competitive"></div>', unsafe_allow_html=True)
+        render_competitive_pulse(signals, competitors_raw)
 
 else:
-    st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
+    if IS_CLIENT:
+        st.info("No dispatch available yet. Please check back soon.")
+    else:
+        st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
+
+# ── Clients only see the dispatch above — Project Board, Signal Lab and the
+#    Vision Map are internal-only tools and stop here.
+if IS_CLIENT:
+    render_footer()
+    st.stop()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2938,6 +3332,12 @@ st.markdown("""
     font-family: monospace; font-size: 9px; font-weight: 700;
     text-transform: uppercase; letter-spacing: .06em; color: #fff !important; margin-right: 6px;
 }
+.cur-folder-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-family: monospace; font-size: 9px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .06em; color: #fff !important;
+    background: #1f4e80 !important; margin-right: 6px;
+}
 /* Thought Partner (Socratic) panel */
 .tp {
     background: #eef5fc !important; border: 1px solid #cfe0f2; border-radius: 8px;
@@ -2985,6 +3385,107 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ── Project Folders bar ───────────────────────────────────────────────────────
+# Lets the team organize saved insights into per-client/per-project folders.
+# An item can live in several folders, or none ("Unsorted"). The active folder
+# filters both the My Board and Team Board tabs below.
+project_folders   = load_project_folders()
+_all_board_items  = load_curadoria()
+
+if "active_folder" not in st.session_state:
+    st.session_state["active_folder"] = "all"
+
+_folder_options = ["all", "unsorted"] + [f["id"] for f in project_folders]
+if st.session_state["active_folder"] not in _folder_options:
+    st.session_state["active_folder"] = "all"
+
+_folder_labels = {
+    "all":      f"All ({len(_all_board_items)})",
+    "unsorted": f"Unsorted ({sum(1 for i in _all_board_items if not i.get('folder_ids'))})",
+}
+for _f in project_folders:
+    _cnt = sum(1 for i in _all_board_items if _f["id"] in (i.get("folder_ids") or []))
+    _folder_labels[_f["id"]] = f"📁 {_f['name']} ({_cnt})"
+
+col_folder_filter, col_folder_new = st.columns([5, 2])
+with col_folder_filter:
+    st.session_state["active_folder"] = st.radio(
+        "Project folder",
+        options=_folder_options,
+        format_func=lambda k: _folder_labels.get(k, k),
+        horizontal=True,
+        key="folder_filter_radio",
+        index=_folder_options.index(st.session_state["active_folder"]),
+        label_visibility="collapsed",
+    )
+with col_folder_new:
+    with st.popover("📁 Project folders", use_container_width=True):
+        with st.form("new_folder_form", clear_on_submit=True):
+            new_folder_name = st.text_input("New folder", placeholder="e.g. Heinz Q3 Campaign", label_visibility="collapsed")
+            if st.form_submit_button("+ Create folder", use_container_width=True):
+                if create_project_folder(new_folder_name, st.session_state.logged_in_user):
+                    st.rerun()
+                else:
+                    st.warning("Enter a unique, non-empty folder name.")
+        if project_folders:
+            st.markdown("---")
+            st.caption("Manage folders")
+            for _f in project_folders:
+                fcol1, fcol2 = st.columns([4, 1])
+                with fcol1:
+                    st.caption(f"📁 {_f['name']}")
+                with fcol2:
+                    if st.button("🗑", key=f"delfolder_{_f['id']}", help=f"Delete '{_f['name']}'"):
+                        delete_project_folder(_f["id"])
+                        if st.session_state.get("active_folder") == _f["id"]:
+                            st.session_state["active_folder"] = "all"
+                        st.rerun()
+
+# ── Client Access — admin panel ─────────────────────────────────────────────────
+# Internal-only (clients st.stop() before reaching this point). Lets the team
+# create read-only client logins and switch on individual analytics sections
+# for each client (Topic Map, Momentum, Signal Volume, Competitive Pulse).
+with st.popover("🔑 Client access", use_container_width=False):
+    st.caption("Create read-only logins for clients and choose which sections they can see.")
+    with st.form("new_client_form", clear_on_submit=True):
+        new_client_label = st.text_input("Client name", placeholder="e.g. Heinz Soup UK")
+        col_cu, col_cp = st.columns(2)
+        with col_cu:
+            new_client_user = st.text_input("Username")
+        with col_cp:
+            new_client_pass = st.text_input("Password", type="password")
+        if st.form_submit_button("+ Create client login", use_container_width=True):
+            if create_client_account(new_client_user, new_client_pass, new_client_label):
+                st.rerun()
+            else:
+                st.warning("Enter a unique username and a non-empty password.")
+
+    _client_accounts = load_client_accounts()
+    if _client_accounts:
+        st.markdown("---")
+        st.caption("Manage access")
+        for _acct in _client_accounts:
+            st.markdown(f"**{e(_acct.get('client_label', _acct['username']))}** · `{e(_acct['username'])}`")
+            _perms = dict(CLIENT_PERM_DEFAULTS, **_acct.get("perms", {}))
+            _new_perms = {}
+            for _pkey, _plabel in CLIENT_PERM_DEFS:
+                _new_perms[_pkey] = st.checkbox(
+                    _plabel, value=_perms.get(_pkey, False),
+                    key=f"perm_{_acct['username']}_{_pkey}",
+                )
+            pcol1, pcol2 = st.columns([3, 1])
+            with pcol1:
+                if st.button("Save permissions", key=f"saveperm_{_acct['username']}", use_container_width=True):
+                    update_client_perms(_acct["username"], _new_perms)
+                    st.toast(f"✓ Permissions updated for {_acct.get('client_label', _acct['username'])}")
+            with pcol2:
+                if st.button("🗑", key=f"delclient_{_acct['username']}", help="Delete this client login"):
+                    delete_client_account(_acct["username"])
+                    st.rerun()
+            st.markdown("---")
+    else:
+        st.caption("No client logins yet — create one above.")
+
 cur_tab2, cur_tab3, cur_tab_brief = st.tabs([
     f"  My Board ({st.session_state.logged_in_user})  ",
     "  Team Board  ",
@@ -2994,35 +3495,32 @@ cur_tab2, cur_tab3, cur_tab_brief = st.tabs([
 # ── TAB 2: Meu Board ──────────────────────────────────────────────────────────
 with cur_tab2:
     current_user = st.session_state.logged_in_user
-    my_items = [i for i in load_curadoria() if i["user"] == current_user]
+    my_items_all = [i for i in load_curadoria() if i["user"] == current_user]
+    my_items     = _filter_items_by_active_folder(my_items_all)
 
-    if not my_items:
+    if not my_items_all:
         st.info("Your board is empty. Use the 🔖 buttons throughout the dispatch to save insights.")
+    elif not my_items:
+        st.info("No items in this folder yet. Use the 📁 button on a saved item to add it here.")
     else:
         st.markdown(f"**{len(my_items)} item{'s' if len(my_items) != 1 else ''} saved**")
         for item in reversed(my_items):
-            col_a, col_b = st.columns([6, 1])
-            with col_a:
-                st.markdown(f"""
-<div class="cur-item">
-  <div class="cur-item-type">{e(item['type'])}</div>
-  <div class="cur-item-title">{e(item['title'][:120])}</div>
-  <div class="cur-item-content">{e(item['content'][:240])}{"…" if len(item['content']) > 240 else ""}</div>
-  <div class="cur-item-meta">Saved on {e(item['saved_at'])}</div>
-</div>""", unsafe_allow_html=True)
-            with col_b:
-                st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-                if st.button("🗑", key=f"del_{item['id']}", help="Remove from board"):
-                    remove_curadoria_item(item["id"])
-                    st.rerun()
+            _render_board_item(
+                item, project_folders,
+                color=USER_COLORS.get(current_user, "#0a7d8c"),
+                show_user_pill=False, allow_delete=True,
+            )
 
 
 # ── TAB 3: Board Coletivo ─────────────────────────────────────────────────────
 with cur_tab3:
-    all_items = load_curadoria()
+    all_items_all = load_curadoria()
+    all_items     = _filter_items_by_active_folder(all_items_all)
 
-    if not all_items:
+    if not all_items_all:
         st.info("No items saved yet. Use the 🔖 buttons throughout the dispatch to save insights.")
+    elif not all_items:
+        st.info("No items in this folder yet. Use the 📁 button on a saved item to add it here.")
     else:
         # Group by user
         by_user = {}
@@ -3033,6 +3531,7 @@ with cur_tab3:
         st.markdown(f"**{total} insight{'s' if total != 1 else ''} saved by the team** · {len(by_user)} member{'s' if len(by_user) != 1 else ''}")
         st.markdown("---")
 
+        current_user = st.session_state.logged_in_user
         for user_name, items in by_user.items():
             color = USER_COLORS.get(user_name, "#0a7d8c")
             st.markdown(f"""
@@ -3043,16 +3542,10 @@ with cur_tab3:
 </div>""", unsafe_allow_html=True)
 
             for item in reversed(items):
-                st.markdown(f"""
-<div class="cur-item" style="border-left-color:{color}">
-  <div class="cur-item-type">{e(item['type'])}</div>
-  <div class="cur-item-title">{e(item['title'][:120])}</div>
-  <div class="cur-item-content">{e(item['content'][:240])}{"…" if len(item['content']) > 240 else ""}</div>
-  <div class="cur-item-meta">
-    <span class="cur-user-pill" style="background:{color}">{e(user_name)}</span>
-    Saved on {e(item['saved_at'])}
-  </div>
-</div>""", unsafe_allow_html=True)
+                _render_board_item(
+                    item, project_folders, color=color,
+                    show_user_pill=True, allow_delete=(user_name == current_user),
+                )
 
 
 # ── TAB: Briefing Builder ─────────────────────────────────────────────────────
@@ -3465,12 +3958,9 @@ with _lab_col2:
 # Effective query used in all searches — brand-prefixed when toggled on
 effective_query = f"{_lab_brand} {lab_query}" if brand_focus else lab_query
 
-lab_tab_cur, lab_tab_exa, lab_tab_gdelt, lab_tab_tav, lab_tab_yt = st.tabs([
+lab_tab_cur, lab_tab_unified = st.tabs([
     "  📡 Current Stack  ",
-    "  🧠 Exa.ai  ",
-    "  🌍 GDELT  ",
-    "  ⚡ Tavily  ",
-    "  🎥 YouTube  ",
+    "  🔎 Unified Search  ",
 ])
 
 
@@ -3552,197 +4042,17 @@ border-radius:6px;padding:12px;margin-bottom:10px;">
         st.caption("No keyword matches found — try a different query.")
 
 
-# ── TAB: Exa.ai ───────────────────────────────────────────────────────────────
-with lab_tab_exa:
-    exa_key = os.environ.get("EXA_API_KEY", "")
-    st.markdown("""
-<div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;
-text-transform:uppercase;color:#0a7d8c;font-weight:700;margin-bottom:4px;">
-Exa.ai · Neural semantic search</div>
-<div style="font-size:13px;color:#274d68;line-height:1.6;margin-bottom:16px;max-width:64ch;">
-Searches the web by <em>meaning</em>, not keywords. Finds content about the concept even when
-the exact words don't appear. Best for discovering cultural signals you didn't know to look for.</div>
-""", unsafe_allow_html=True)
-
-    col_e1, col_e2 = st.columns([3, 1])
-    with col_e1:
-        if not exa_key:
-            exa_key_input = st.text_input("EXA_API_KEY", type="password",
-                                          help="Get free key at exa.ai — 1,000 searches/month free")
-        else:
-            st.success("✓ EXA_API_KEY loaded from environment")
-            exa_key_input = exa_key
-    with col_e2:
-        exa_n = st.slider("Results", 5, 20, 10, key="exa_n")
-
-    if st.button("🔍 Search with Exa.ai", key="btn_exa"):
-        key_to_use = exa_key_input if not exa_key else exa_key
-        if not key_to_use:
-            st.warning("Add your EXA_API_KEY above or in .env to run this test.")
-        else:
-            with st.spinner("Exa.ai neural search running…"):
-                exa_results = _exa_search(effective_query, key_to_use, exa_n)
-            if exa_results and "error" in exa_results[0]:
-                st.error(exa_results[0]["error"])
-            else:
-                st.markdown(f"**{len(exa_results)} semantically relevant results:**")
-                for r in exa_results:
-                    st.markdown(f"""
-<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #0a7d8c;
-border-radius:6px;padding:12px 14px;margin-bottom:10px;">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-    <div style="font-size:13px;font-weight:600;color:#071828;">{e(r.get('title','')[:80])}</div>
-    <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#9dc4d8;">{r.get('published','')}</div>
-  </div>
-  <div style="font-size:12px;color:#274d68;line-height:1.55;margin-bottom:8px;">{e(r.get('snippet',''))}</div>
-  <a href="{e(r.get('url',''))}" target="_blank" style="font-family:'JetBrains Mono',monospace;
-  font-size:9px;color:#0a7d8c;text-decoration:none;">↗ {e(r.get('url','')[:60])}</a>
-</div>""", unsafe_allow_html=True)
-
-    with st.expander("Why Exa.ai is different"):
-        st.markdown("""
-**Traditional search:** finds documents containing the words "desk lunch sad office"
-
-**Exa.ai:** finds documents about *the cultural phenomenon of eating alone at your desk as a symbol of overwork* — even if those exact words don't appear.
-
-This means the Lighthouse finds signals it currently misses entirely — the adjacent conversations that reveal the deeper cultural tension. Free tier: 1,000 searches/month. Paid: $0.001/search.
-""")
-
-
-# ── TAB: GDELT ────────────────────────────────────────────────────────────────
-with lab_tab_gdelt:
-    st.markdown("""
-<div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;
-text-transform:uppercase;color:#0a7d8c;font-weight:700;margin-bottom:4px;">
-GDELT · Global media intelligence · 100% free</div>
-<div style="font-size:13px;color:#274d68;line-height:1.6;margin-bottom:16px;max-width:64ch;">
-Updated every 15 minutes. Covers 65+ languages. Monitors 100,000+ media sources worldwide.
-No API key needed. The largest open-access media database on earth.</div>
-""", unsafe_allow_html=True)
-
-    col_g1, col_g2 = st.columns([3, 1])
-    with col_g2:
-        gdelt_n = st.slider("Results", 5, 25, 12, key="gdelt_n")
-
-    if st.button("🌍 Search GDELT", key="btn_gdelt"):
-        with st.spinner("Searching global media database…"):
-            gdelt_results = _gdelt_search(effective_query, gdelt_n)
-
-        if gdelt_results and "error" in gdelt_results[0]:
-            st.error(f"GDELT error: {gdelt_results[0]['error']}")
-        else:
-            st.markdown(f"**{len(gdelt_results)} articles from global media:**")
-            g_cols = st.columns(2)
-            for i, r in enumerate(gdelt_results):
-                with g_cols[i % 2]:
-                    lang = r.get("language", "")
-                    lang_tag = f'<span style="font-size:8px;background:#ebf2f7;padding:1px 6px;border-radius:3px;color:#274d68;">{lang}</span>' if lang else ""
-                    st.markdown(f"""
-<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #6ea8c4;
-border-radius:6px;padding:12px;margin-bottom:10px;">
-  <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-    <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#6ea8c4;">{e(r.get('source',''))}</div>
-    <div style="display:flex;gap:6px;align-items:center;">
-      {lang_tag}
-      <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#9dc4d8;">{r.get('seendate','')}</span>
-    </div>
-  </div>
-  <div style="font-size:13px;font-weight:600;color:#071828;line-height:1.3;margin-bottom:8px;">
-    {e(r.get('title','')[:90])}</div>
-  <a href="{e(r.get('url',''))}" target="_blank"
-  style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#6ea8c4;text-decoration:none;">
-  ↗ read article</a>
-</div>""", unsafe_allow_html=True)
-
-    with st.expander("When to use GDELT"):
-        st.markdown("""
-GDELT is best for **macro trend validation** — when you want to know if a cultural signal you're seeing on Reddit/TikTok is also appearing in mainstream journalism worldwide.
-
-It answers questions like: *"Is the 'sad desk lunch' story being covered in international media? In what countries? With what tone?"*
-
-Add this to the Lighthouse ingestion and every dispatch gains a global media dimension — zero cost, zero API key.
-""")
-
-
-# ── TAB: Tavily ───────────────────────────────────────────────────────────────
-with lab_tab_tav:
-    tav_key = os.environ.get("TAVILY_API_KEY", "")
-    st.markdown("""
-<div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;
-text-transform:uppercase;color:#0a7d8c;font-weight:700;margin-bottom:4px;">
-Tavily · AI-optimised search for LLMs</div>
-<div style="font-size:13px;color:#274d68;line-height:1.6;margin-bottom:16px;max-width:64ch;">
-Built specifically to feed AI models. Returns clean, structured, relevance-scored results
-optimised for Claude to consume. Advanced search depth crawls pages fully, not just snippets.</div>
-""", unsafe_allow_html=True)
-
-    col_t1, col_t2 = st.columns([3, 1])
-    with col_t1:
-        if not tav_key:
-            tav_key_input = st.text_input("TAVILY_API_KEY", type="password",
-                                          help="Get free key at tavily.com — 1,000 searches/month free")
-        else:
-            st.success("✓ TAVILY_API_KEY loaded from environment")
-            tav_key_input = tav_key
-    with col_t2:
-        tav_n = st.slider("Results", 5, 15, 8, key="tav_n")
-
-    if st.button("⚡ Search with Tavily", key="btn_tav"):
-        key_to_use = tav_key_input if not tav_key else tav_key
-        if not key_to_use:
-            st.warning("Add your TAVILY_API_KEY above or in .env to run this test.")
-        else:
-            with st.spinner("Tavily deep search running…"):
-                tav_results = _tavily_search(effective_query, key_to_use, tav_n)
-            if tav_results and "error" in tav_results[0]:
-                st.error(tav_results[0]["error"])
-            else:
-                st.markdown(f"**{len(tav_results)} AI-optimised results:**")
-                for r in tav_results:
-                    score = r.get("score", 0)
-                    score_color = "#1a8a6b" if score > 0.7 else "#0a7d8c" if score > 0.4 else "#9dc4d8"
-                    st.markdown(f"""
-<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #0fa3b5;
-border-radius:6px;padding:12px 14px;margin-bottom:10px;">
-  <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-    <div style="font-size:13px;font-weight:600;color:#071828;">{e(r.get('title','')[:80])}</div>
-    <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:{score_color};
-    background:rgba(10,125,140,.08);padding:2px 6px;border-radius:3px;">
-    rel {score}</div>
-  </div>
-  <div style="font-size:12px;color:#274d68;line-height:1.55;margin-bottom:8px;">
-    {e(r.get('snippet',''))}</div>
-  <a href="{e(r.get('url',''))}" target="_blank"
-  style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#0fa3b5;text-decoration:none;">
-  ↗ {e(r.get('url','')[:60])}</a>
-</div>""", unsafe_allow_html=True)
-
-    with st.expander("Exa.ai vs Tavily — when to use which"):
-        st.markdown("""
-| | **Exa.ai** | **Tavily** |
-|---|---|---|
-| Best for | Conceptual/semantic discovery | Factual, structured results |
-| How it works | Neural embedding similarity | Advanced crawl + AI ranking |
-| Free tier | 1,000/month | 1,000/month |
-| Paid | $0.001/search | $0.004/search |
-| Ideal use case | "Find cultural conversations about X" | "Find recent news and data about X" |
-
-**Recommendation:** run both in parallel. Exa for cultural discovery, Tavily for current events and facts. Feed both into Claude for the richest possible context.
-""")
-
-
-# ── TAB: YouTube ──────────────────────────────────────────────────────────────
-with lab_tab_yt:
+# ── TAB: Unified Search ───────────────────────────────────────────────────────
+with lab_tab_unified:
     import re as _re
 
     st.markdown("""
 <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;
 text-transform:uppercase;color:#0a7d8c;font-weight:700;margin-bottom:4px;">
-🎥 YouTube · Relevant video signals</div>
-<div style="font-size:13px;color:#274d68;line-height:1.6;margin-bottom:4px;max-width:64ch;">
-Finds YouTube videos relevant to your search topic — automatically, using Exa.ai's semantic
-search inside YouTube. No separate YouTube API key needed. Culture moves visually first;
-these are the creators setting the agenda before it becomes a written post.</div>
+🔎 Unified search · Exa · GDELT · Tavily · YouTube</div>
+<div style="font-size:13px;color:#274d68;line-height:1.6;margin-bottom:16px;max-width:64ch;">
+One query, every next-gen source at once. Compare semantic search (Exa), global media (GDELT),
+AI-optimised search (Tavily) and video signals (YouTube) side by side — grouped below.</div>
 """, unsafe_allow_html=True)
 
     def _yt_oembed(url: str) -> dict:
@@ -3772,74 +4082,179 @@ these are the creators setting the agenda before it becomes a written post.</div
                 cards.append({"title": f"Could not load: {url[:50]}", "error": str(ex), "url": url})
         return cards
 
-    # ── Auto-search via Exa ───────────────────────────────────────────────────
-    exa_key_yt = os.environ.get("EXA_API_KEY", "")
+    exa_key = os.environ.get("EXA_API_KEY", "")
+    tav_key = os.environ.get("TAVILY_API_KEY", "")
 
-    st.markdown(f"""
-<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #0a7d8c;
-border-radius:8px;padding:14px 16px;margin-bottom:16px;">
-  <div style="font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;
-  color:#0a7d8c;margin-bottom:6px;">⚡ Auto-search · uses Exa.ai + YouTube oEmbed</div>
-  <div style="font-size:12.5px;color:#274d68;line-height:1.55;">
-    Searches YouTube semantically using your current Signal Lab query:
-    <b>"{e(effective_query[:60])}"</b>.<br/>
-    Finds the most conceptually relevant videos — not just keyword matches.
-    {"<span style='color:#1a8a6b;font-weight:600;'>✓ EXA_API_KEY loaded</span>" if exa_key_yt
-     else "<span style='color:#c94f35;'>EXA_API_KEY not set — add to .env to enable auto-search</span>"}
-  </div>
-</div>""", unsafe_allow_html=True)
-
-    col_yt1, col_yt2 = st.columns([3, 1])
-    with col_yt2:
-        yt_n = st.slider("Videos", 4, 12, 9, key="yt_n")
-
-    if st.button("🎥 Find relevant videos", key="btn_yt_auto",
-                 disabled=not exa_key_yt):
-        with st.spinner(f"Searching YouTube for: {effective_query[:50]}…"):
-            try:
-                from exa_py import Exa
-                _exa = Exa(api_key=exa_key_yt)
-                _yt_res = _exa.search(
-                    effective_query,
-                    num_results=yt_n,
-                    include_domains=["youtube.com"],
-                    type="neural",
-                )
-                _yt_urls = [r.url for r in _yt_res.results
-                            if "watch" in r.url or "youtu.be" in r.url]
-                st.session_state["yt_cards"] = _load_yt_cards(_yt_urls)
-            except ImportError:
-                st.error("📦 exa-py not installed. Commit requirements.txt and reboot Streamlit Cloud.")
-            except Exception as ex:
-                st.error(f"Auto-search error: {ex}")
-
-    # ── Manual fallback ───────────────────────────────────────────────────────
-    with st.expander("Or paste URLs manually"):
-        yt_urls_raw = st.text_area(
-            "YouTube URLs (one per line)",
-            placeholder="https://www.youtube.com/watch?v=...",
-            height=100, key="yt_urls_input",
-        )
-        if st.button("Load these URLs", key="btn_yt_manual"):
-            urls = [u.strip() for u in yt_urls_raw.splitlines() if u.strip()]
-            if urls:
-                st.session_state["yt_cards"] = _load_yt_cards(urls)
+    with st.expander("⚙ API keys & settings", expanded=not (exa_key and tav_key)):
+        kcol1, kcol2, kcol3 = st.columns(3)
+        with kcol1:
+            if exa_key:
+                st.success("✓ EXA_API_KEY loaded")
+                exa_key_input = exa_key
             else:
-                st.warning("Paste at least one URL.")
+                exa_key_input = st.text_input(
+                    "EXA_API_KEY", type="password",
+                    help="Get free key at exa.ai — 1,000 searches/month free",
+                    key="unified_exa_key",
+                )
+        with kcol2:
+            if tav_key:
+                st.success("✓ TAVILY_API_KEY loaded")
+                tav_key_input = tav_key
+            else:
+                tav_key_input = st.text_input(
+                    "TAVILY_API_KEY", type="password",
+                    help="Get free key at tavily.com — 1,000 searches/month free",
+                    key="unified_tav_key",
+                )
+        with kcol3:
+            unified_n = st.slider("Results per source", 4, 15, 8, key="unified_n")
 
-    cards = st.session_state.get("yt_cards", [])
-    if cards:
-        st.markdown(f"**{len(cards)} video{'s' if len(cards)!=1 else ''} loaded:**")
-        yt_cols = st.columns(3, gap="medium")
-        for i, c in enumerate(cards):
-            with yt_cols[i % 3]:
-                if "error" in c:
+    src_enabled = {
+        "Exa.ai":  bool(exa_key_input),
+        "GDELT":   True,
+        "Tavily":  bool(tav_key_input),
+        "YouTube": bool(exa_key_input),
+    }
+    enabled_list = " · ".join(s for s, v in src_enabled.items() if v)
+    missing_note = "" if (exa_key_input and tav_key_input) else " — add the missing API key(s) above to unlock more sources"
+    st.caption(f"Will search: {enabled_list}{missing_note}")
+
+    if st.button("🔍 Search all sources", key="btn_unified_search", type="primary"):
+        results = {}
+        with st.spinner(f"Searching {sum(src_enabled.values())} sources for \"{effective_query[:50]}\"…"):
+            results["GDELT"] = _gdelt_search(effective_query, unified_n)
+
+            if exa_key_input:
+                results["Exa.ai"] = _exa_search(effective_query, exa_key_input, unified_n)
+
+            if tav_key_input:
+                results["Tavily"] = _tavily_search(effective_query, tav_key_input, unified_n)
+
+            if exa_key_input:
+                try:
+                    from exa_py import Exa
+                    _exa = Exa(api_key=exa_key_input)
+                    _yt_res = _exa.search(
+                        effective_query,
+                        num_results=min(unified_n, 9),
+                        include_domains=["youtube.com"],
+                        type="neural",
+                    )
+                    _yt_urls = [r.url for r in _yt_res.results
+                                if "watch" in r.url or "youtu.be" in r.url]
+                    results["YouTube"] = _load_yt_cards(_yt_urls)
+                except ImportError:
+                    results["YouTube"] = [{"error": "📦 exa-py not installed. Commit requirements.txt and reboot Streamlit Cloud."}]
+                except Exception as ex:
+                    results["YouTube"] = [{"error": str(ex)}]
+
+        st.session_state["unified_results"] = results
+        st.session_state["unified_query"] = effective_query
+
+    unified_results = st.session_state.get("unified_results")
+    if unified_results:
+        st.markdown("---")
+        st.markdown(f"**Results for:** `{e(st.session_state.get('unified_query',''))}`")
+
+        # ---- GDELT ----
+        gdelt_results = unified_results.get("GDELT", [])
+        if gdelt_results and "error" in gdelt_results[0]:
+            st.caption(f"GDELT: {gdelt_results[0]['error']}")
+        elif gdelt_results:
+            st.markdown(f"""<div class="lh-cat-head"><span class="lh-cat-line"></span>
+<span class="lh-cat-lbl" style="color:#6ea8c4;">🌍 GDELT · {len(gdelt_results)} articles</span>
+<span class="lh-cat-line"></span></div>""", unsafe_allow_html=True)
+            g_cols = st.columns(2)
+            for i, r in enumerate(gdelt_results):
+                with g_cols[i % 2]:
+                    lang = r.get("language", "")
+                    lang_tag = f'<span style="font-size:8px;background:#ebf2f7;padding:1px 6px;border-radius:3px;color:#274d68;">{lang}</span>' if lang else ""
                     st.markdown(f"""
-<div style="background:#fff;border:1px solid #c94f35;border-left:3px solid #c94f35;
-border-radius:8px;padding:12px;margin-bottom:12px;font-size:12px;color:#c94f35;">
-{e(c['title'])}</div>""", unsafe_allow_html=True)
-                else:
+<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #6ea8c4;
+border-radius:6px;padding:12px;margin-bottom:10px;">
+  <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#6ea8c4;">{e(r.get('source',''))}</div>
+    <div style="display:flex;gap:6px;align-items:center;">
+      {lang_tag}
+      <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#9dc4d8;">{r.get('seendate','')}</span>
+    </div>
+  </div>
+  <div style="font-size:13px;font-weight:600;color:#071828;line-height:1.3;margin-bottom:8px;">
+    {e(r.get('title','')[:90])}</div>
+  <a href="{e(r.get('url',''))}" target="_blank"
+  style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#6ea8c4;text-decoration:none;">
+  ↗ read article</a>
+</div>""", unsafe_allow_html=True)
+        else:
+            st.caption("GDELT: no results for this query.")
+
+        # ---- Exa ----
+        exa_results = unified_results.get("Exa.ai")
+        if exa_results is not None:
+            if exa_results and "error" in exa_results[0]:
+                st.caption(f"Exa.ai: {exa_results[0]['error']}")
+            elif exa_results:
+                st.markdown(f"""<div class="lh-cat-head"><span class="lh-cat-line"></span>
+<span class="lh-cat-lbl" style="color:#0a7d8c;">🧠 Exa.ai · {len(exa_results)} semantic results</span>
+<span class="lh-cat-line"></span></div>""", unsafe_allow_html=True)
+                for r in exa_results:
                     st.markdown(f"""
+<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #0a7d8c;
+border-radius:6px;padding:12px 14px;margin-bottom:10px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+    <div style="font-size:13px;font-weight:600;color:#071828;">{e(r.get('title','')[:80])}</div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#9dc4d8;">{r.get('published','')}</div>
+  </div>
+  <div style="font-size:12px;color:#274d68;line-height:1.55;margin-bottom:8px;">{e(r.get('snippet',''))}</div>
+  <a href="{e(r.get('url',''))}" target="_blank" style="font-family:'JetBrains Mono',monospace;
+  font-size:9px;color:#0a7d8c;text-decoration:none;">↗ {e(r.get('url','')[:60])}</a>
+</div>""", unsafe_allow_html=True)
+            else:
+                st.caption("Exa.ai: no results for this query.")
+
+        # ---- Tavily ----
+        tav_results = unified_results.get("Tavily")
+        if tav_results is not None:
+            if tav_results and "error" in tav_results[0]:
+                st.caption(f"Tavily: {tav_results[0]['error']}")
+            elif tav_results:
+                st.markdown(f"""<div class="lh-cat-head"><span class="lh-cat-line"></span>
+<span class="lh-cat-lbl" style="color:#0fa3b5;">⚡ Tavily · {len(tav_results)} AI-optimised results</span>
+<span class="lh-cat-line"></span></div>""", unsafe_allow_html=True)
+                for r in tav_results:
+                    score = r.get("score", 0)
+                    score_color = "#1a8a6b" if score > 0.7 else "#0a7d8c" if score > 0.4 else "#9dc4d8"
+                    st.markdown(f"""
+<div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #0fa3b5;
+border-radius:6px;padding:12px 14px;margin-bottom:10px;">
+  <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+    <div style="font-size:13px;font-weight:600;color:#071828;">{e(r.get('title','')[:80])}</div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:{score_color};
+    background:rgba(10,125,140,.08);padding:2px 6px;border-radius:3px;">
+    rel {score}</div>
+  </div>
+  <div style="font-size:12px;color:#274d68;line-height:1.55;margin-bottom:8px;">
+    {e(r.get('snippet',''))}</div>
+  <a href="{e(r.get('url',''))}" target="_blank"
+  style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#0fa3b5;text-decoration:none;">
+  ↗ {e(r.get('url','')[:60])}</a>
+</div>""", unsafe_allow_html=True)
+            else:
+                st.caption("Tavily: no results for this query.")
+
+        # ---- YouTube ----
+        yt_results = unified_results.get("YouTube")
+        if yt_results is not None:
+            valid_yt = [c for c in yt_results if "error" not in c]
+            if valid_yt:
+                st.markdown(f"""<div class="lh-cat-head"><span class="lh-cat-line"></span>
+<span class="lh-cat-lbl" style="color:#d44800;">🎥 YouTube · {len(valid_yt)} videos</span>
+<span class="lh-cat-line"></span></div>""", unsafe_allow_html=True)
+                yt_cols = st.columns(3, gap="medium")
+                for i, c in enumerate(valid_yt):
+                    with yt_cols[i % 3]:
+                        st.markdown(f"""
 <div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #d44800;
 border-radius:8px;overflow:hidden;margin-bottom:14px;">
   <img src="{e(c['thumb'])}" style="width:100%;display:block;"/>
@@ -3854,18 +4269,25 @@ border-radius:8px;overflow:hidden;margin-bottom:14px;">
     border-bottom:1px solid #d44800;padding-bottom:1px;">↗ watch on YouTube</a>
   </div>
 </div>""", unsafe_allow_html=True)
+            elif yt_results:
+                st.caption(f"YouTube: {yt_results[0].get('error', 'no results for this query.')}")
+            else:
+                st.caption("YouTube: no results for this query.")
+    else:
+        st.caption('Click "Search all sources" to run the unified query across every available engine.')
 
-    with st.expander("How to integrate YouTube into the Lighthouse pipeline"):
+    with st.expander("Source guide — when to use which"):
         st.markdown("""
-**Recommended workflow once YOUTUBE_API_KEY is added:**
+| Source | Best for | Notes |
+|---|---|---|
+| **GDELT** | Macro trend validation in global media | Free, no key, 65+ languages, updated every 15 min |
+| **Exa.ai** | Conceptual/semantic discovery — "find conversations about X" | Free tier: 1,000/month |
+| **Tavily** | Recent news & facts, AI-optimised, relevance-scored | Free tier: 1,000/month |
+| **YouTube** | Video signals — creators setting the agenda before it's written about | Powered by Exa neural search, no separate key |
 
-1. Search for videos about your topic each morning using YouTube Data API v3
-2. Filter for videos with 10K+ views published in the last 7 days
-3. Extract transcripts using `youtube-transcript-api` (free, no quota limit)
-4. Chunk transcripts into 500-word segments and embed into Pinecone
-5. Claude now has access to what creators said — days before it becomes a written post
+**Recommendation:** run all sources together. GDELT validates scale and global reach, Exa and Tavily surface conceptual and factual angles, YouTube catches what's brewing visually before it goes viral. Feed the combined results into Claude for the richest possible context.
 
-**Signal value:** TikTok creators often post on YouTube first. Catching it there gives 24-72h advance notice before the TikTok version goes viral.
+**Pipeline integration:** add transcripts via `youtube-transcript-api`, chunk into ~500-word segments, and embed alongside the other sources for the deepest searchable signal base.
 """)
 
 
@@ -4113,13 +4535,4 @@ st.components.v1.html(_VISION_MAP_HTML, height=550, scrolling=False)
 
 # ── Footer — absolute bottom of page ─────────────────────────────────────────
 
-st.markdown(f"""
-<div style="border-top:3px double #071828;margin-top:3rem;padding:24px 0 48px;
-     font-family:'JetBrains Mono',monospace;font-size:11px;color:#274d68;
-     text-transform:uppercase;letter-spacing:.06em;
-     display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;">
-  <span>The Lighthouse · Countercurrent.ai v3</span>
-  <span style="color:{CLIENT_BEACON_COLOR};font-weight:700;letter-spacing:.14em">{e(AGENCY_NAME)}</span>
-  <span>Refreshes on demand · Human-reviewed before send</span>
-</div>
-""", unsafe_allow_html=True)
+render_footer()
