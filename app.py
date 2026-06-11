@@ -90,6 +90,43 @@ def remove_curadoria_item(item_id: str):
     items = [i for i in load_curadoria() if i["id"] != item_id]
     _save_curadoria(items)
 
+
+# ── Countercurrent overrides ────────────────────────────────────────────────────
+# The AI-generated countercurrent is a *starting point*. The team can rewrite it
+# manually per dispatch — the edited version then takes precedence over the draft.
+COUNTERCURRENT_OVERRIDES_PATH = "data/countercurrent_overrides.json"
+
+def load_countercurrent_overrides() -> dict:
+    os.makedirs("data", exist_ok=True)
+    if not os.path.exists(COUNTERCURRENT_OVERRIDES_PATH):
+        return {}
+    try:
+        with open(COUNTERCURRENT_OVERRIDES_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_countercurrent_override(dispatch_id: str, title: str, body: str, user: str):
+    overrides = load_countercurrent_overrides()
+    overrides[dispatch_id] = {
+        "title":     title,
+        "body":      body,
+        "edited_by": user,
+        "edited_at": datetime.utcnow().strftime("%d %b %Y · %H:%M"),
+    }
+    os.makedirs("data", exist_ok=True)
+    with open(COUNTERCURRENT_OVERRIDES_PATH, "w") as f:
+        json.dump(overrides, f, ensure_ascii=False, indent=2)
+
+def clear_countercurrent_override(dispatch_id: str):
+    overrides = load_countercurrent_overrides()
+    if dispatch_id in overrides:
+        del overrides[dispatch_id]
+        os.makedirs("data", exist_ok=True)
+        with open(COUNTERCURRENT_OVERRIDES_PATH, "w") as f:
+            json.dump(overrides, f, ensure_ascii=False, indent=2)
+
+
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="The Lighthouse",
@@ -726,8 +763,11 @@ def build_context(signals: list, rag_results: list, limit: int = 25) -> str:
 
 def save_dispatch(content: dict, topic: str):
     os.makedirs("data", exist_ok=True)
+    dispatch_id = str(uuid.uuid4())[:12]
+    content["_dispatch_id"] = dispatch_id   # travels with the dict for this session
     record = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp":   datetime.utcnow().isoformat(),
+        "dispatch_id": dispatch_id,
         "topic": topic,
         "content": content.get("lead", {}).get("title", ""),
         "full": content,
@@ -876,6 +916,7 @@ For the "url" field in each voice: use the exact URL from the SIGNAL context abo
 
 def _fallback() -> dict:
     return {
+        "_dispatch_id": "fallback",
         "sweep": {"currents_surfaced": 0, "rising_fast": 0, "needs_human": 0},
         "lead": {
             "topic_tags": ["No data yet"],
@@ -1066,6 +1107,10 @@ def _native_css(beacon: str, beacon_2: str) -> str:
 .lh-counter-lbl{{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:{beacon_2};font-weight:700;margin-bottom:8px;}}
 .lh-counter-title{{font-family:'Fraunces',serif;font-size:1.2rem;font-weight:600;line-height:1.2;margin-bottom:10px;color:#d0eaf0;}}
 .lh-counter-body{{font-size:13.5px;line-height:1.5;color:rgba(208,234,240,.75);}}
+.lh-cc-badge{{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:.08em;text-transform:uppercase;border-radius:5px;padding:3px 9px;}}
+.lh-cc-draft{{color:rgba(208,234,240,.55);background:rgba(255,255,255,.06);border:1px dashed rgba(208,234,240,.25);}}
+.lh-cc-edited{{color:#0fa3b5;background:rgba(10,125,140,.18);border:1px solid rgba(10,125,140,.35);}}
+.lh-cc-edit-lbl{{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:{beacon};font-weight:700;margin:20px 0 8px;}}
 .lh-card{{border-top:2px solid var(--lh-ink);padding-top:14px;}}
 .lh-card-top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}}
 .lh-card-brands{{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:var(--lh-ink-soft);}}
@@ -1385,6 +1430,8 @@ def render_content_sections(content: dict, user: str):
     alerts = content.get("alerts", [])
     sw     = content.get("sweep", {})
 
+    dispatch_id = content.get("_dispatch_id", "fallback")
+
     ld = lead.get("momentum_dir", "up")
 
     # ── LEAD + RAIL grid ──────────────────────────────────────────────────────
@@ -1424,22 +1471,71 @@ def render_content_sections(content: dict, user: str):
 {"".join(f'<div class="lh-signal"><span class="lh-signal-plat">{e(s.get("platform",""))}</span><span class="lh-signal-txt">{e(s.get("text",""))}</span><span class="lh-signal-num">{e(s.get("num",""))}</span></div>' for s in lead.get("signal_stack",[]))}
 </div>""", unsafe_allow_html=True)
 
-        # Countercurrent box + save
+        # Countercurrent box — AI draft is a starting point, team can edit/own it
         st.markdown('<div id="lh-sec-cc"></div>', unsafe_allow_html=True)
-        col_cc, col_cc_save = st.columns([20, 1])
-        with col_cc:
-            st.markdown(f"""
+
+        cc_overrides = load_countercurrent_overrides()
+        cc_override  = cc_overrides.get(dispatch_id)
+        cc_ai_title  = lead.get("countercurrent_title", "")
+        cc_ai_body   = lead.get("countercurrent_body", "")
+        cc_title     = cc_override["title"] if cc_override else cc_ai_title
+        cc_body      = cc_override["body"]  if cc_override else cc_ai_body
+
+        cc_edit_key = f"cc_editing_{dispatch_id}"
+        if cc_edit_key not in st.session_state:
+            st.session_state[cc_edit_key] = False
+
+        if st.session_state[cc_edit_key]:
+            # ── Edit mode — AI draft pre-fills the fields the first time ──
+            st.markdown('<div class="lh-cc-edit-lbl">◐ The Countercurrent — editing</div>', unsafe_allow_html=True)
+            new_title = st.text_input(
+                "Title", value=cc_title, key=f"cc_title_in_{dispatch_id}", label_visibility="collapsed",
+            )
+            new_body = st.text_area(
+                "Body", value=cc_body, key=f"cc_body_in_{dispatch_id}", height=140, label_visibility="collapsed",
+            )
+            bcol1, bcol2, bcol3, _ = st.columns([1, 1, 1.6, 6])
+            with bcol1:
+                if st.button("💾 Save", key=f"cc_save_{dispatch_id}", use_container_width=True):
+                    save_countercurrent_override(dispatch_id, new_title, new_body, user)
+                    st.session_state[cc_edit_key] = False
+                    st.toast(f"✓ Countercurrent updated by {user}")
+                    st.rerun()
+            with bcol2:
+                if st.button("Cancel", key=f"cc_cancel_{dispatch_id}", use_container_width=True):
+                    st.session_state[cc_edit_key] = False
+                    st.rerun()
+            if cc_override:
+                with bcol3:
+                    if st.button("↺ Revert to AI draft", key=f"cc_revert_{dispatch_id}", use_container_width=True):
+                        clear_countercurrent_override(dispatch_id)
+                        st.session_state[cc_edit_key] = False
+                        st.rerun()
+        else:
+            # ── Display mode ──
+            if cc_override:
+                badge = (
+                    f'<span class="lh-cc-badge lh-cc-edited">✎ Edited by {e(cc_override.get("edited_by",""))} '
+                    f'· {e(cc_override.get("edited_at",""))}</span>'
+                )
+            else:
+                badge = '<span class="lh-cc-badge lh-cc-draft">◐ AI draft — edit to make it yours</span>'
+
+            col_cc, col_cc_save = st.columns([20, 1])
+            with col_cc:
+                st.markdown(f"""
 <div class="lh-counter" style="margin-top:20px">
   <div class="lh-counter-lbl">◐ The Countercurrent</div>
-  <div class="lh-counter-title">{e(lead.get("countercurrent_title",""))}</div>
-  <div class="lh-counter-body">{e(lead.get("countercurrent_body",""))}</div>
+  <div class="lh-counter-title">{e(cc_title)}</div>
+  <div class="lh-counter-body">{e(cc_body)}</div>
+  <div style="margin-top:12px">{badge}</div>
 </div>""", unsafe_allow_html=True)
-        with col_cc_save:
-            st.markdown("<div style='margin-top:20px'></div>", unsafe_allow_html=True)
-            _save_button("🔖", "Countercurrent",
-                lead.get("countercurrent_title",""),
-                lead.get("countercurrent_body",""),
-                "save_cc_main", user)
+            with col_cc_save:
+                st.markdown("<div style='margin-top:20px'></div>", unsafe_allow_html=True)
+                if st.button("✎", key=f"cc_edit_btn_{dispatch_id}", help="Edit the countercurrent"):
+                    st.session_state[cc_edit_key] = True
+                    st.rerun()
+                _save_button("🔖", "Countercurrent", cc_title, cc_body, "save_cc_main", user)
 
         # Section divider
         st.markdown(f"""
@@ -2688,7 +2784,10 @@ def load_last_dispatch(path: str = "data/dispatches.jsonl"):
             except Exception:
                 pass
     if last and "full" in last:
-        return last["full"]
+        full = last["full"]
+        # Older records may not have a dispatch_id — fall back to timestamp
+        full["_dispatch_id"] = last.get("dispatch_id") or last.get("timestamp", "fallback")
+        return full
     return None
 
 
@@ -2839,6 +2938,41 @@ st.markdown("""
     font-family: monospace; font-size: 9px; font-weight: 700;
     text-transform: uppercase; letter-spacing: .06em; color: #fff !important; margin-right: 6px;
 }
+/* Thought Partner (Socratic) panel */
+.tp {
+    background: #eef5fc !important; border: 1px solid #cfe0f2; border-radius: 8px;
+    padding: 22px 26px; margin-top: 1rem;
+}
+.tph {
+    font-family: monospace; font-size: 9px; letter-spacing: .16em;
+    text-transform: uppercase; color: #1f4e80 !important; font-weight: 700; margin-bottom: 6px;
+}
+.tpsub {
+    font-family: Georgia, serif; font-style: italic; font-size: 14px;
+    color: #274d68 !important; margin-bottom: 14px;
+}
+.tpgroup-title {
+    font-family: monospace; font-size: 9px; text-transform: uppercase;
+    letter-spacing: .12em; color: #1f4e80 !important; font-weight: 700;
+    margin: 16px 0 8px;
+}
+.sugg {
+    background: #fff !important; border: 1px solid #cfe0f2; border-left: 3px solid #1f4e80;
+    border-radius: 6px; padding: 12px 16px; margin-bottom: 8px;
+}
+.sugg-text {
+    font-family: Georgia, serif; font-size: 14px; color: #071828 !important; line-height: 1.55;
+}
+.tag {
+    display: inline-block; padding: 2px 9px; border-radius: 10px;
+    font-family: monospace; font-size: 9px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .08em;
+    background: #1f4e80 !important; color: #fff !important; margin-right: 8px;
+}
+.caveat {
+    font-family: monospace; font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+    color: #6ea8c4 !important; margin-top: 14px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -2952,7 +3086,17 @@ with cur_tab_brief:
         brief_client   = st.text_input("Client", value=client_name,  key="brief_client")
         brief_tagline  = st.text_input("Brief context", value=brief_tagline, key="brief_ctx")
 
-        if st.button("⚡ Generate Creative Brief", use_container_width=True, disabled=not selected_items):
+        st.markdown("<div style='margin-top:4px'></div>", unsafe_allow_html=True)
+        bcol_full, bcol_socratic = st.columns(2)
+        with bcol_full:
+            gen_full_brief = st.button("⚡ Generate Creative Brief", use_container_width=True, disabled=not selected_items)
+        with bcol_socratic:
+            gen_thought_partner = st.button(
+                "🧭 Explore Tensions & Angles", use_container_width=True, disabled=not selected_items,
+                help="A more Socratic mode — surfaces open questions and angles to debate, not a finished brief.",
+            )
+
+        if gen_full_brief:
             if not selected_items:
                 st.warning("Select at least one insight to build a brief.")
             else:
@@ -3077,6 +3221,111 @@ Generated by The Lighthouse · Atlantic Intelligence Layer
                 mime="text/plain",
                 use_container_width=True,
             )
+
+        # ── Socratic / Thought Partner mode ──────────────────────────────────
+        # Unlike the brief above, this mode never concludes — it surfaces
+        # tensions, angles and open questions for the team to debate.
+        if gen_thought_partner:
+            if not selected_items:
+                st.warning("Select at least one insight to explore.")
+            else:
+                api_key = os.environ.get("ANTHROPIC_API_KEY")
+                if not api_key:
+                    st.error("ANTHROPIC_API_KEY not found.")
+                else:
+                    try:
+                        import anthropic as _ant
+                        _client = _ant.Anthropic(api_key=api_key)
+
+                        insights_text = "\n\n".join(
+                            f"[{it['type']}] {it['title']}\n{it['content']}"
+                            for it in selected_items
+                        )
+
+                        tp_prompt = f"""You are a thought partner for a creative strategy team — not a strategist
+delivering a final answer. Your job is to open up thinking, not close it down.
+
+Client: {brief_client}
+Context: {brief_tagline}
+
+Selected cultural insights from The Lighthouse dispatch:
+
+{insights_text}
+
+Based on these signals, surface possible tensions and angles worth discussing — framed as
+open questions and observations, never as conclusions or recommendations. Avoid words like
+"should", "the strategy is", or "the answer is". Stay genuinely exploratory.
+
+Return ONLY valid JSON with this exact structure:
+
+{{
+  "framing": "1-2 sentences setting up what's interesting or unresolved here — a question, not a thesis.",
+  "tensions": [
+    {{"label": "short 2-4 word tag", "text": "1-2 sentences describing a tension or contradiction in the signals, posed as something to weigh, not resolve."}},
+    {{"label": "short 2-4 word tag", "text": "..."}},
+    {{"label": "short 2-4 word tag", "text": "..."}}
+  ],
+  "angles": [
+    {{"label": "short 2-4 word tag", "text": "1-2 sentences describing a possible creative angle or direction — framed as 'what if' or 'one way in could be', not a final recommendation."}},
+    {{"label": "short 2-4 word tag", "text": "..."}},
+    {{"label": "short 2-4 word tag", "text": "..."}}
+  ],
+  "questions_for_team": [
+    "An open question for the team to debate in the next meeting.",
+    "Another open question.",
+    "A third open question."
+  ]
+}}"""
+
+                        with st.spinner("The Lighthouse is mapping tensions and angles…"):
+                            msg = _client.messages.create(
+                                model=CLAUDE_MODEL,
+                                max_tokens=1024,
+                                temperature=0.85,
+                                system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
+                                messages=[{"role": "user", "content": tp_prompt}],
+                            )
+                            raw = msg.content[0].text.strip()
+                            if "```" in raw:
+                                raw = raw[raw.find("{"):raw.rfind("}")+1]
+                            st.session_state["thought_partner"] = json.loads(raw)
+
+                    except Exception as ex:
+                        st.error(f"Exploration failed: {ex}")
+
+        # Display thought-partner panel
+        if "thought_partner" in st.session_state:
+            tp = st.session_state["thought_partner"]
+            tensions_html = "".join(
+                f'<div class="sugg"><span class="tag">{e(t.get("label",""))}</span>'
+                f'<span class="sugg-text">{e(t.get("text",""))}</span></div>'
+                for t in tp.get("tensions", [])
+            )
+            angles_html = "".join(
+                f'<div class="sugg"><span class="tag">{e(a.get("label",""))}</span>'
+                f'<span class="sugg-text">{e(a.get("text",""))}</span></div>'
+                for a in tp.get("angles", [])
+            )
+            questions_html = "".join(
+                f'<div class="sugg"><span class="sugg-text">? {e(q)}</span></div>'
+                for q in tp.get("questions_for_team", [])
+            )
+            st.markdown(f"""
+<div class="tp">
+  <div class="tph">🧭 Thought Partner · {e(brief_client)}</div>
+  <div class="tpsub">{e(tp.get("framing",""))}</div>
+
+  <div class="tpgroup-title">Possible Tensions</div>
+  {tensions_html}
+
+  <div class="tpgroup-title">Angles to Explore</div>
+  {angles_html}
+
+  <div class="tpgroup-title">Questions for the Team</div>
+  {questions_html}
+
+  <div class="caveat">Suggestions, not conclusions — for the team to debate.</div>
+</div>""", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
