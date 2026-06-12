@@ -2183,11 +2183,20 @@ def render_content_sections(content: dict, user: str, show_competitive: bool = T
   <span class="lh-cat-line"></span>
 </div>""", unsafe_allow_html=True)
 
-                card_cols = st.columns(2, gap="large")
+                # Only split into a 2-column grid when there's enough cards
+                # to fill it — a lone card in a 2-col grid left a big empty
+                # gap and made the save icon look detached. A single card
+                # gets the full width instead.
+                n_cards = len(group)
+                if n_cards >= 2:
+                    card_cols = st.columns(2, gap="large")
+                else:
+                    card_cols = [st.container()]
+
                 for j, (i, card) in enumerate(group):
                     d = card.get("momentum_dir", "up")
                     spark_bars = "".join(f'<i style="height:{v}%"></i>' for v in (card.get("spark") or [30,45,55,65,75,82,90]))
-                    with card_cols[j % 2]:
+                    with card_cols[j % len(card_cols)]:
                         col_card, col_card_save = st.columns([10, 1])
                         with col_card:
                             st.markdown(f"""
