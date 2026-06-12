@@ -448,30 +448,36 @@ iframe { border: none !important; }
     font-weight: 600 !important;
 }
 
-/* ── Main-area save buttons (💾 / 🗑) — transparent, beacon on hover ── */
+/* ── Main-area save/edit/delete buttons (✓ 🗂️ ✎ 🗑 💾 ↺) — transparent,
+   beacon on hover. Sized up from the original 15px/28px so the icon-only
+   controls (save-to-project, edit countercurrent, remove from board) read
+   clearly at a glance instead of disappearing as tiny glyphs. */
 /* button[kind] beats Streamlit's hashed Emotion class in specificity */
 [data-testid="stAppViewContainer"] button[kind="secondary"] {
     background: transparent !important;
     background-color: transparent !important;
-    border: 1px solid rgba(157,196,216,.35) !important;
-    border-radius: 6px !important;
+    border: 1px solid rgba(157,196,216,.45) !important;
+    border-radius: 8px !important;
     color: #274d68 !important;
     box-shadow: none !important;
-    font-size: 15px !important;
-    padding: 2px 8px !important;
-    min-height: 28px !important;
+    font-size: 19px !important;
+    padding: 6px 14px !important;
+    min-height: 40px !important;
+    min-width: 40px !important;
     transition: all .15s !important;
 }
 [data-testid="stAppViewContainer"] button[kind="secondary"]:hover {
     border-color: #0a7d8c !important;
     color: #0a7d8c !important;
-    background: transparent !important;
-    background-color: transparent !important;
+    background: rgba(10,125,140,.08) !important;
+    background-color: rgba(10,125,140,.08) !important;
 }
 [data-testid="stAppViewContainer"] button[kind="secondary"] p,
 [data-testid="stAppViewContainer"] button[kind="secondary"] div {
     color: inherit !important;
     background: transparent !important;
+    font-size: 19px !important;
+    line-height: 1.3 !important;
 }
 
 /* ── Login form submit button ── */
@@ -533,16 +539,25 @@ div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
     border-radius: 8px;
     transition: color .15s, background .15s;
 }
+/* The label text lives in a nested <p> — global `p { color: #071828 }` (light
+   theme default) otherwise wins over the inherited color above, since a
+   direct rule on the element beats inheritance regardless of !important on
+   the ancestor. Re-assert the tab text color here so it isn't dark-on-dark. */
 div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"] p {
     font-size: 11px !important;
     font-weight: 700 !important;
     letter-spacing: .18em;
+    color: rgba(208,234,240,.55) !important;
 }
 div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
     color: #0fa3b5 !important;
     background: rgba(10,125,140,.16);
+}
+div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+  + div[data-testid="stTabs"] button[data-baseweb="tab"]:hover p {
+    color: #0fa3b5 !important;
 }
 div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
   + div[data-testid="stTabs"] button[aria-selected="true"] {
@@ -558,10 +573,14 @@ div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
 /* ── Popovers ("+ Add to project", folder picker, client access) ──────────
    st.popover renders its panel in a portal outside the themed app container,
    so it falls back to Streamlit's dark default — illegible against this
-   app's light "sea mist" palette. Re-declare the theme variables locally so
-   every widget inside (buttons, multiselect, captions) reads as light-on-
-   white instead of dark-on-dark. */
-div[data-baseweb="popover"] {
+   app's light "sea mist" palette. The actual styled card is the inner
+   [data-testid="stPopoverBody"] (a baseweb Popover.Body with its own
+   inline-styled dark background), not the outer positioning
+   div[data-baseweb="popover"] — so both need to be repainted, and every
+   descendant's text color needs to be re-asserted (a direct rule on each
+   element beats an inherited color, however !important the ancestor is). */
+div[data-baseweb="popover"],
+[data-testid="stPopoverBody"] {
     --background-color: #ffffff;
     --secondary-background-color: #ebf2f7;
     --text-color: #071828;
@@ -571,9 +590,44 @@ div[data-baseweb="popover"] {
     border-radius: 8px !important;
     box-shadow: 0 8px 28px rgba(7,24,40,.18) !important;
 }
-div[data-baseweb="popover"] [data-baseweb="tag"] {
+[data-testid="stPopoverBody"] *:not(button):not([data-baseweb="tag"]) {
+    color: #071828 !important;
+    background-color: transparent !important;
+}
+[data-testid="stPopoverBody"] [data-baseweb="tag"] {
     background-color: #ebf2f7 !important;
     color: #071828 !important;
+}
+/* "Add to project" / folder action buttons inside the popover — same
+   transparent-with-border treatment as the main-area save buttons, since
+   the [data-testid="stAppViewContainer"]-scoped rule above doesn't reach
+   into this portal. */
+[data-testid="stPopoverBody"] button[kind="secondary"] {
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    border: 1px solid #9dc4d8 !important;
+    color: #071828 !important;
+    border-radius: 6px !important;
+}
+[data-testid="stPopoverBody"] button[kind="secondary"]:hover {
+    border-color: #0a7d8c !important;
+    color: #0a7d8c !important;
+}
+[data-testid="stPopoverBody"] button[kind="secondary"] p,
+[data-testid="stPopoverBody"] button[kind="secondary"] div,
+[data-testid="stPopoverBody"] button[kind="secondary"] span {
+    color: inherit !important;
+}
+[data-testid="stPopoverBody"] button[kind="primary"] {
+    background: #0a7d8c !important;
+    background-color: #0a7d8c !important;
+    border: 1px solid #0a7d8c !important;
+    color: #ffffff !important;
+}
+[data-testid="stPopoverBody"] button[kind="primary"] p,
+[data-testid="stPopoverBody"] button[kind="primary"] div,
+[data-testid="stPopoverBody"] button[kind="primary"] span {
+    color: #ffffff !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1887,6 +1941,96 @@ def _save_button(label: str, type_: str, title: str, content_str: str, key: str,
                 st.rerun()
 
 
+def _render_voices_and_provocations(lead: dict, voices: list, provs: list, user: str) -> None:
+    """Voices (editorial composites), Raw Signal Feed, and Provocations.
+
+    Pulled out of render_content_sections() so it can be tucked behind a
+    "▼ More to explore" expander on the Dispatches tab — Lead Current and
+    the Countercurrent stay front-and-center, this is reading material for
+    when the team wants to go deeper.
+    """
+    # ── VOICES ────────────────────────────────────────────────────────────────
+    st.markdown('<div id="lh-sec-voices"></div>', unsafe_allow_html=True)
+    st.markdown("""
+<div style="border-top:2px solid #071828;padding-top:18px;margin:8px 0 20px">
+  <span class="lh-eyebrow">◎ Editorial Synthesis · Claude-Composed Voices</span>
+  <div style="font-family:'Fraunces',serif;font-weight:600;font-size:2rem;margin:10px 0 6px;color:#071828">What people are actually saying</div>
+  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:15px;color:#274d68;max-width:72ch;margin-bottom:10px">Raw signal texture from this sweep — the language and feelings real people attach to the category. Steal the language.</div>
+  <div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.06em;color:#9dc4d8;border-left:2px solid #9dc4d8;padding-left:10px;">These voices are editorial composites written by Claude from real signals — condensed for clarity. See the <b>Raw Signal Feed</b> below for the original posts with direct links.</div>
+</div>""", unsafe_allow_html=True)
+
+    voice_cols = st.columns(3, gap="medium")
+    platform_css_map = {
+        "p-reddit": "p-reddit-n", "p-tiktok": "p-tiktok-n",
+        "p-x": "p-x-n", "p-mumsnet": "p-mumsnet-n", "p-ig": "p-ig-n",
+    }
+    for i, v in enumerate(voices[:9]):
+        pcls = platform_css_map.get(v.get("platform_class",""), "")
+        with voice_cols[i % 3]:
+            col_v, col_vs = st.columns([8, 1])
+            with col_v:
+                _v_url  = v.get("url", "")
+                _v_link = (
+                    '<a href="' + e(_v_url) + '" target="_blank" rel="noopener" '
+                    'style="margin-left:auto;font-family:JetBrains Mono,monospace;'
+                    'font-size:9px;letter-spacing:.06em;text-transform:uppercase;'
+                    'color:#0a7d8c;text-decoration:none;">↗ source</a>'
+                ) if _v_url else ""
+                st.markdown(f"""
+<div class="lh-voice {pcls}">
+  <div class="lh-voice-top">
+    <span class="lh-voice-plat">● {e(v.get("platform_label",""))}</span>
+    <span class="lh-voice-eng">{e(v.get("engagement",""))}</span>
+  </div>
+  <div class="lh-voice-q">&ldquo;{e(v.get("quote",""))}&rdquo;</div>
+  <div class="lh-voice-bot">
+    <span class="lh-voice-handle">{e(v.get("handle",""))}</span>
+    <span class="lh-voice-rel">{e(v.get("rel_tag",""))}</span>
+    {_v_link}
+  </div>
+</div>""", unsafe_allow_html=True)
+            with col_vs:
+                _save_button("🔖",
+                    f"Voice · {v.get('platform_label','')}",
+                    v.get("quote","")[:80],
+                    v.get("quote",""),
+                    f"save_voice_{i}", user)
+
+    # ── RAW SIGNAL FEED ───────────────────────────────────────────────────────
+    _render_raw_signals(load_signals(), lead.get("topic_tags", []))
+
+    # ── PROVOCATIONS — single HTML block, no Streamlit columns (avoids gap bleed) ──
+    st.markdown('<div id="lh-sec-provs"></div>', unsafe_allow_html=True)
+    prov_items_html = ""
+    for p in provs[:3]:
+        prov_items_html += f"""
+  <div style="border-top:1px solid rgba(255,255,255,.15);padding-top:18px;">
+    <span style="font-family:'Fraunces',serif;font-size:2.2rem;font-weight:300;color:{CLIENT_BEACON_2};display:block;margin-bottom:10px;line-height:1;">{e(p.get("n",""))}</span>
+    <div style="font-family:'Fraunces',serif;font-size:1.05rem;line-height:1.44;color:#e8f6fa;margin-bottom:10px;">{e(p.get("text",""))}</div>
+    <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:rgba(10,125,140,.85);">{e(p.get("tag",""))}</span>
+  </div>"""
+
+    st.markdown(f"""
+<div style="background:#062233;color:#d0eaf0;border-radius:10px;padding:28px 32px 24px;margin:0 0 4px;">
+  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:{CLIENT_BEACON_2};font-weight:700;margin-bottom:6px;">◐ To Close · The Countercurrent</div>
+  <div style="font-family:'Fraunces',serif;font-weight:600;font-size:1.8rem;margin:4px 0 6px;color:#d0eaf0;">Three provocations for the room</div>
+  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:15px;color:rgba(208,234,240,.55);margin:0 0 22px;">Deliberately unfinished questions drawn from today's currents — not answers, but opening lines to push the team past the obvious.</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:28px;">
+    {prov_items_html}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    # Save buttons sit just below the dark block, one per column
+    prov_save_cols = st.columns(3, gap="large")
+    for i, p in enumerate(provs[:3]):
+        with prov_save_cols[i]:
+            _save_button("🔖",
+                f"Provocation {p.get('n','')}",
+                p.get("text",""),
+                p.get("tag",""),
+                f"save_prov_{i}", user)
+
+
 def render_content_sections(content: dict, user: str, show_competitive: bool = True):
     """Renders lead, cards, rail, voices, provocations with native Streamlit + save buttons."""
     beacon   = CLIENT_BEACON_COLOR
@@ -2022,27 +2166,31 @@ def render_content_sections(content: dict, user: str, show_competitive: bool = T
         for i, card in enumerate(cards):
             cards_by_cat[_card_category(card)].append((i, card))
 
-        for cat in CATEGORY_ORDER:
-            if cat == "competitive" and not show_competitive:
-                continue
-            group = cards_by_cat[cat]
-            if not group:
-                continue
-            icon, label, css_cls = CATEGORY_META[cat]
-            st.markdown(f"""
+        # Collapsed by default — keeps the dispatch from feeling like an
+        # endless scroll. Lead Current + Countercurrent stay fully visible
+        # above; everything from here down is "more to explore" on demand.
+        with st.expander("▼  More currents — Cultural & Social lenses", expanded=False):
+            for cat in CATEGORY_ORDER:
+                if cat == "competitive" and not show_competitive:
+                    continue
+                group = cards_by_cat[cat]
+                if not group:
+                    continue
+                icon, label, css_cls = CATEGORY_META[cat]
+                st.markdown(f"""
 <div class="lh-cat-head">
   <span class="lh-cat-lbl {css_cls}">{icon} {e(label)}</span>
   <span class="lh-cat-line"></span>
 </div>""", unsafe_allow_html=True)
 
-            card_cols = st.columns(2, gap="large")
-            for j, (i, card) in enumerate(group):
-                d = card.get("momentum_dir", "up")
-                spark_bars = "".join(f'<i style="height:{v}%"></i>' for v in (card.get("spark") or [30,45,55,65,75,82,90]))
-                with card_cols[j % 2]:
-                    col_card, col_card_save = st.columns([10, 1])
-                    with col_card:
-                        st.markdown(f"""
+                card_cols = st.columns(2, gap="large")
+                for j, (i, card) in enumerate(group):
+                    d = card.get("momentum_dir", "up")
+                    spark_bars = "".join(f'<i style="height:{v}%"></i>' for v in (card.get("spark") or [30,45,55,65,75,82,90]))
+                    with card_cols[j % 2]:
+                        col_card, col_card_save = st.columns([10, 1])
+                        with col_card:
+                            st.markdown(f"""
 <div class="lh-card">
   <div class="lh-card-top">
     <span class="{_mcls(d)}">{_mdir(d)} {e(card.get("momentum_pct",""))}</span>
@@ -2054,11 +2202,11 @@ def render_content_sections(content: dict, user: str, show_competitive: bool = T
   <div class="lh-spark">{spark_bars}</div>
   <div class="lh-card-foot"><span>{e(card.get("sources",""))}</span><span class="lh-reach">{e(card.get("reach",""))}</span></div>
 </div>""", unsafe_allow_html=True)
-                    with col_card_save:
-                        st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-                        _save_button("🔖", f"Card — {card.get('tags','')}",
-                            card.get("title",""), card.get("body",""),
-                            f"save_card_{i}", user)
+                        with col_card_save:
+                            st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+                            _save_button("🔖", f"Card — {card.get('tags','')}",
+                                card.get("title",""), card.get("body",""),
+                                f"save_card_{i}", user)
 
     # ── RAIL SIDEBAR ──────────────────────────────────────────────────────────
     with col_rail:
@@ -2096,86 +2244,13 @@ def render_content_sections(content: dict, user: str, show_competitive: bool = T
   <div class="lh-next">◷ Next sweep on demand</div>
 </div>""", unsafe_allow_html=True)
 
-    # ── VOICES ────────────────────────────────────────────────────────────────
-    st.markdown('<div id="lh-sec-voices"></div>', unsafe_allow_html=True)
-    st.markdown("""
-<div style="border-top:2px solid #071828;padding-top:18px;margin:8px 0 20px">
-  <span class="lh-eyebrow">◎ Editorial Synthesis · Claude-Composed Voices</span>
-  <div style="font-family:'Fraunces',serif;font-weight:600;font-size:2rem;margin:10px 0 6px;color:#071828">What people are actually saying</div>
-  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:15px;color:#274d68;max-width:72ch;margin-bottom:10px">Raw signal texture from this sweep — the language and feelings real people attach to the category. Steal the language.</div>
-  <div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.06em;color:#9dc4d8;border-left:2px solid #9dc4d8;padding-left:10px;">These voices are editorial composites written by Claude from real signals — condensed for clarity. See the <b>Raw Signal Feed</b> below for the original posts with direct links.</div>
-</div>""", unsafe_allow_html=True)
-
-    voice_cols = st.columns(3, gap="medium")
-    platform_css_map = {
-        "p-reddit": "p-reddit-n", "p-tiktok": "p-tiktok-n",
-        "p-x": "p-x-n", "p-mumsnet": "p-mumsnet-n", "p-ig": "p-ig-n",
-    }
-    for i, v in enumerate(voices[:9]):
-        pcls = platform_css_map.get(v.get("platform_class",""), "")
-        with voice_cols[i % 3]:
-            col_v, col_vs = st.columns([8, 1])
-            with col_v:
-                _v_url  = v.get("url", "")
-                _v_link = (
-                    '<a href="' + e(_v_url) + '" target="_blank" rel="noopener" '
-                    'style="margin-left:auto;font-family:JetBrains Mono,monospace;'
-                    'font-size:9px;letter-spacing:.06em;text-transform:uppercase;'
-                    'color:#0a7d8c;text-decoration:none;">↗ source</a>'
-                ) if _v_url else ""
-                st.markdown(f"""
-<div class="lh-voice {pcls}">
-  <div class="lh-voice-top">
-    <span class="lh-voice-plat">● {e(v.get("platform_label",""))}</span>
-    <span class="lh-voice-eng">{e(v.get("engagement",""))}</span>
-  </div>
-  <div class="lh-voice-q">&ldquo;{e(v.get("quote",""))}&rdquo;</div>
-  <div class="lh-voice-bot">
-    <span class="lh-voice-handle">{e(v.get("handle",""))}</span>
-    <span class="lh-voice-rel">{e(v.get("rel_tag",""))}</span>
-    {_v_link}
-  </div>
-</div>""", unsafe_allow_html=True)
-            with col_vs:
-                _save_button("🔖",
-                    f"Voice · {v.get('platform_label','')}",
-                    v.get("quote","")[:80],
-                    v.get("quote",""),
-                    f"save_voice_{i}", user)
-
-    # ── RAW SIGNAL FEED ───────────────────────────────────────────────────────
-    _render_raw_signals(load_signals(), lead.get("topic_tags", []))
-
-    # ── PROVOCATIONS — single HTML block, no Streamlit columns (avoids gap bleed) ──
-    st.markdown('<div id="lh-sec-provs"></div>', unsafe_allow_html=True)
-    prov_items_html = ""
-    for p in provs[:3]:
-        prov_items_html += f"""
-  <div style="border-top:1px solid rgba(255,255,255,.15);padding-top:18px;">
-    <span style="font-family:'Fraunces',serif;font-size:2.2rem;font-weight:300;color:{CLIENT_BEACON_2};display:block;margin-bottom:10px;line-height:1;">{e(p.get("n",""))}</span>
-    <div style="font-family:'Fraunces',serif;font-size:1.05rem;line-height:1.44;color:#e8f6fa;margin-bottom:10px;">{e(p.get("text",""))}</div>
-    <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:rgba(10,125,140,.85);">{e(p.get("tag",""))}</span>
-  </div>"""
-
-    st.markdown(f"""
-<div style="background:#062233;color:#d0eaf0;border-radius:10px;padding:28px 32px 24px;margin:0 0 4px;">
-  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:{CLIENT_BEACON_2};font-weight:700;margin-bottom:6px;">◐ To Close · The Countercurrent</div>
-  <div style="font-family:'Fraunces',serif;font-weight:600;font-size:1.8rem;margin:4px 0 6px;color:#d0eaf0;">Three provocations for the room</div>
-  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:15px;color:rgba(208,234,240,.55);margin:0 0 22px;">Deliberately unfinished questions drawn from today's currents — not answers, but opening lines to push the team past the obvious.</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:28px;">
-    {prov_items_html}
-  </div>
-</div>""", unsafe_allow_html=True)
-
-    # Save buttons sit just below the dark block, one per column
-    prov_save_cols = st.columns(3, gap="large")
-    for i, p in enumerate(provs[:3]):
-        with prov_save_cols[i]:
-            _save_button("🔖",
-                f"Provocation {p.get('n','')}",
-                p.get("text",""),
-                p.get("tag",""),
-                f"save_prov_{i}", user)
+    # ── VOICES / RAW SIGNAL FEED / PROVOCATIONS ─────────────────────────────
+    # Tucked behind a "more to explore" expander so the dispatch doesn't read
+    # as one endless page — Lead Current + Countercurrent are the front page,
+    # this is the rest of the paper.
+    st.markdown('<div id="lh-sec-voices"></div><div id="lh-sec-provs"></div>', unsafe_allow_html=True)
+    with st.expander("▼  More to explore — Voices, Raw Signal Feed & Provocations", expanded=False):
+        _render_voices_and_provocations(lead, voices, provs, user)
 
 
 
