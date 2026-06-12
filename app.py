@@ -239,9 +239,13 @@ def _filter_items_by_active_folder(items: list) -> list:
     return [i for i in items if active in (i.get("folder_ids") or [])]
 
 def _render_board_item(item: dict, folders: list, color: str = "#0a7d8c",
-                        show_user_pill: bool = False, allow_delete: bool = False):
+                        show_user_pill: bool = False, allow_delete: bool = False,
+                        ctx: str = ""):
     """Renders a single board item as a card, with folder-assignment popover
-    and optional delete button."""
+    and optional delete button.
+
+    `ctx` disambiguates widget keys when the same item is rendered in more
+    than one place (e.g. My Board vs. Team Board)."""
     folder_map = {f["id"]: f["name"] for f in folders}
     item_folder_ids = [fid for fid in item.get("folder_ids", []) if fid in folder_map]
     folder_pills = "".join(
@@ -274,15 +278,15 @@ def _render_board_item(item: dict, folders: list, color: str = "#0a7d8c",
                     "Folders", options=[f["id"] for f in folders],
                     default=item_folder_ids,
                     format_func=lambda fid: folder_map.get(fid, fid),
-                    key=f"folders_{item['id']}", label_visibility="collapsed",
+                    key=f"folders_{ctx}_{item['id']}", label_visibility="collapsed",
                 )
-                if st.button("Apply", key=f"apply_folders_{item['id']}", use_container_width=True):
+                if st.button("Apply", key=f"apply_folders_{ctx}_{item['id']}", use_container_width=True):
                     set_item_folders(item["id"], selected)
                     st.rerun()
     with col_c:
         st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
         if allow_delete:
-            if st.button("🗑", key=f"del_{item['id']}", help="Remove from board"):
+            if st.button("🗑", key=f"del_{ctx}_{item['id']}", help="Remove from board"):
                 remove_curadoria_item(item["id"])
                 st.rerun()
 
@@ -814,6 +818,9 @@ _nav_initial = _nav_user[0] if _nav_user else "?"
 #   "always"   → shown to everyone
 #   "internal" → hidden from clients
 #   <perm key> → shown to internal users, or to clients with that permission
+# NOTE: these anchors all live inside the "Dispatches" tab (see top-level
+# st.tabs() below). Signal Lab and Vision Map are now their own top-level tabs
+# ("Search" / "Roadmap") and are reached via the tab bar, not this anchor nav.
 _NAV_ITEMS_ALL = [
     ("Lead Current",      "lh-sec-lead",        "always"),
     ("Countercurrent",    "lh-sec-cc",          "always"),
@@ -824,8 +831,6 @@ _NAV_ITEMS_ALL = [
     ("Momentum",          "lh-sec-momentum",    "momentum"),
     ("Signal Volume",     "lh-sec-volume",      "signal_volume"),
     ("Competitive Pulse", "lh-sec-competitive", "competitive_pulse"),
-    ("Signal Lab",        "lh-sec-lab",         "internal"),
-    ("Vision Map",        "lh-sec-vision",      "internal"),
 ]
 
 def _nav_item_visible(rule: str) -> bool:
@@ -1753,13 +1758,56 @@ def _card_category(card: dict) -> str:
     return "cultural"
 
 def _save_button(label: str, type_: str, title: str, content_str: str, key: str, user: str):
-    """Renders a 💾 save button."""
-    if st.button("💾", key=key, help="Save to curation board"):
-        ok = add_curadoria_item(user, type_, title, content_str)
-        if ok:
-            st.toast(f"✓ Saved to your board, {user}!")
+    """Renders the dispatch card's "+ Add to project" control — internal only.
+
+    Per the wireframe's CAPTURE → COLLECT step, this combines "save to board"
+    and "assign to project folder" into a single popover. Clients never see
+    this — they get the clean feed (the dispatch view has no add-to-project
+    affordance for them).
+    """
+    if IS_CLIENT:
+        return
+
+    items = load_curadoria()
+    existing = next((i for i in items if i["user"] == user and i["title"] == title), None)
+    folders = load_project_folders()
+    folder_map = {f["id"]: f["name"] for f in folders}
+    current_fids = [fid for fid in (existing.get("folder_ids") or []) if fid in folder_map] if existing else []
+
+    trigger_icon = "✓" if existing else "🗂️"
+    trigger_help = "In project — manage folders" if existing else "+ Add to project"
+
+    with st.popover(trigger_icon, help=trigger_help):
+        st.markdown("**+ Add to project**" if not existing else "**✓ Saved to your board**")
+        if folders:
+            selected = st.multiselect(
+                "Project folders", options=[f["id"] for f in folders],
+                default=current_fids, format_func=lambda fid: folder_map.get(fid, fid),
+                key=f"addproj_{key}", label_visibility="collapsed",
+                placeholder="Project folder(s) — optional",
+            )
         else:
-            st.toast("Already saved to your board.")
+            st.caption("No project folders yet — create one in the **Projects** tab.")
+            selected = []
+
+        if st.button("Add to project" if not existing else "Update", key=f"addprojbtn_{key}", use_container_width=True):
+            if existing:
+                set_item_folders(existing["id"], selected)
+                st.toast(f"✓ Updated, {user}!")
+            else:
+                add_curadoria_item(user, type_, title, content_str)
+                for it in load_curadoria():
+                    if it["user"] == user and it["title"] == title:
+                        set_item_folders(it["id"], selected)
+                        break
+                st.toast(f"✓ Added to project, {user}!")
+            st.rerun()
+
+        if existing:
+            if st.button("Remove from board", key=f"addprojrm_{key}", use_container_width=True):
+                remove_curadoria_item(existing["id"])
+                st.toast("Removed from your board.")
+                st.rerun()
 
 
 def render_content_sections(content: dict, user: str, show_competitive: bool = True):
@@ -3239,6 +3287,19 @@ def render_footer():
 """, unsafe_allow_html=True)
 
 
+# ── Top-level navigation: Dispatches / Projects / Search / Roadmap ─────────────
+# Mirrors the wireframe's 3-tab loop (Dispatches → Projects → Search), plus a
+# Roadmap tab for the existing Vision Map. Clients only ever see the Dispatches
+# content, with no tab chrome — "Clients see only the dispatch" (wireframe).
+# We enter/exit tabs via the DeltaGenerator context-manager protocol directly
+# (__enter__/__exit__) so the existing render blocks below don't need to be
+# re-indented.
+if not IS_CLIENT:
+    tab_dispatches, tab_projects, tab_search, tab_roadmap = st.tabs([
+        "📡  Dispatches", "📁  Projects", "🔎  Search", "🧭  Roadmap",
+    ])
+    tab_dispatches.__enter__()
+
 # ── Render ─────────────────────────────────────────────────────────────────────
 
 if content:
@@ -3279,12 +3340,16 @@ else:
     else:
         st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
 
+if not IS_CLIENT:
+    tab_dispatches.__exit__(None, None, None)
+
 # ── Clients only see the dispatch above — Project Board, Signal Lab and the
 #    Vision Map are internal-only tools and stop here.
 if IS_CLIENT:
     render_footer()
     st.stop()
 
+tab_projects.__enter__()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CURADORIA — Seleção e board coletivo
@@ -3486,10 +3551,11 @@ with st.popover("🔑 Client access", use_container_width=False):
     else:
         st.caption("No client logins yet — create one above.")
 
-cur_tab2, cur_tab3, cur_tab_brief = st.tabs([
+cur_tab2, cur_tab3, cur_tab_brief, cur_tab_project_tp = st.tabs([
     f"  My Board ({st.session_state.logged_in_user})  ",
     "  Team Board  ",
     "  ✍ Briefing Builder  ",
+    "  🧭 Project Thought Partner  ",
 ])
 
 # ── TAB 2: Meu Board ──────────────────────────────────────────────────────────
@@ -3508,7 +3574,7 @@ with cur_tab2:
             _render_board_item(
                 item, project_folders,
                 color=USER_COLORS.get(current_user, "#0a7d8c"),
-                show_user_pill=False, allow_delete=True,
+                show_user_pill=False, allow_delete=True, ctx="my",
             )
 
 
@@ -3544,7 +3610,7 @@ with cur_tab3:
             for item in reversed(items):
                 _render_board_item(
                     item, project_folders, color=color,
-                    show_user_pill=True, allow_delete=(user_name == current_user),
+                    show_user_pill=True, allow_delete=(user_name == current_user), ctx="team",
                 )
 
 
@@ -3819,6 +3885,157 @@ Return ONLY valid JSON with this exact structure:
 
   <div class="caveat">Suggestions, not conclusions — for the team to debate.</div>
 </div>""", unsafe_allow_html=True)
+
+# ── TAB: Project Thought Partner ─────────────────────────────────────────────
+# Per the wireframe's REACT step: a thought partner scoped to ONE project's
+# collected currents. It reasons only over what the team has saved into that
+# folder, and — like the Briefing Builder's Socratic mode — never concludes,
+# only surfaces tensions, angles and open questions for the team to debate.
+with cur_tab_project_tp:
+    st.markdown("""
+<div style="border-top:2px solid #071828;padding-top:1.2rem;margin-bottom:1rem;">
+  <div style="font-family:monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+       color:#0a7d8c;font-weight:700;margin-bottom:4px;">🧭 Project Thought Partner</div>
+  <div style="font-family:Georgia,serif;font-size:22px;font-weight:600;color:#071828;margin-bottom:6px;">
+    Reason over one project's collected currents</div>
+  <div style="font-family:Georgia,serif;font-style:italic;font-size:14px;color:#274d68;">
+    Pick a project folder — the thought partner reasons only over what's been collected there. It suggests, never answers.</div>
+</div>""", unsafe_allow_html=True)
+
+    if not project_folders:
+        st.info("No project folders yet. Create one above, then use \"+ Add to project\" on dispatch cards or search results to start a focused session here.")
+    else:
+        tp_folder_id = st.selectbox(
+            "Project",
+            options=[f["id"] for f in project_folders],
+            format_func=lambda fid: next((f["name"] for f in project_folders if f["id"] == fid), fid),
+            key="proj_tp_folder",
+        )
+        tp_folder_name = next((f["name"] for f in project_folders if f["id"] == tp_folder_id), tp_folder_id)
+        tp_items = [i for i in _all_board_items if tp_folder_id in (i.get("folder_ids") or [])]
+
+        col_items, col_tp = st.columns(2)
+
+        with col_items:
+            st.markdown(f"**{len(tp_items)} current{'s' if len(tp_items) != 1 else ''} collected in {e(tp_folder_name)}**")
+            if not tp_items:
+                st.info('Nothing collected yet. Use "+ Add to project" on dispatch cards or search results to send currents here.')
+            else:
+                for item in reversed(tp_items):
+                    color = USER_COLORS.get(item["user"], "#0a7d8c")
+                    _render_board_item(
+                        item, project_folders, color=color,
+                        show_user_pill=True, allow_delete=False, ctx="projtp",
+                    )
+
+        with col_tp:
+            if not tp_items:
+                st.caption("The thought partner needs at least one collected current to work with.")
+            else:
+                if st.button("🧭 Explore tensions & angles", key=f"projtp_btn_{tp_folder_id}", use_container_width=True):
+                    api_key = os.environ.get("ANTHROPIC_API_KEY")
+                    if not api_key:
+                        st.error("ANTHROPIC_API_KEY not found.")
+                    else:
+                        try:
+                            import anthropic as _ant
+                            _client = _ant.Anthropic(api_key=api_key)
+
+                            insights_text = "\n\n".join(
+                                f"[{it['type']}] {it['title']}\n{it['content']}"
+                                for it in tp_items
+                            )
+
+                            tp_prompt = f"""You are a thought partner for a creative strategy team — not a strategist
+delivering a final answer. Your job is to open up thinking, not close it down.
+
+Project: {tp_folder_name}
+
+Collected currents for this project (and only these):
+
+{insights_text}
+
+Based on these signals, surface possible tensions and angles worth discussing — framed as
+open questions and observations, never as conclusions or recommendations. Avoid words like
+"should", "the strategy is", or "the answer is". Stay genuinely exploratory. Reason ONLY over
+the currents collected for this project — do not invent outside context.
+
+Return ONLY valid JSON with this exact structure:
+
+{{
+  "framing": "1-2 sentences setting up what's interesting or unresolved here — a question, not a thesis.",
+  "tensions": [
+    {{"label": "short 2-4 word tag", "text": "1-2 sentences describing a tension or contradiction in the signals, posed as something to weigh, not resolve."}},
+    {{"label": "short 2-4 word tag", "text": "..."}},
+    {{"label": "short 2-4 word tag", "text": "..."}}
+  ],
+  "angles": [
+    {{"label": "short 2-4 word tag", "text": "1-2 sentences describing a possible creative angle or direction — framed as 'what if' or 'one way in could be', not a final recommendation."}},
+    {{"label": "short 2-4 word tag", "text": "..."}},
+    {{"label": "short 2-4 word tag", "text": "..."}}
+  ],
+  "questions_for_team": [
+    "An open question for the team to debate in the next meeting.",
+    "Another open question.",
+    "A third open question."
+  ]
+}}"""
+
+                            with st.spinner("The Lighthouse is mapping tensions and angles…"):
+                                msg = _client.messages.create(
+                                    model=CLAUDE_MODEL,
+                                    max_tokens=1024,
+                                    temperature=0.85,
+                                    system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
+                                    messages=[{"role": "user", "content": tp_prompt}],
+                                )
+                                raw = msg.content[0].text.strip()
+                                if "```" in raw:
+                                    raw = raw[raw.find("{"):raw.rfind("}")+1]
+                                if "project_thought_partner" not in st.session_state:
+                                    st.session_state["project_thought_partner"] = {}
+                                st.session_state["project_thought_partner"][tp_folder_id] = json.loads(raw)
+
+                        except Exception as ex:
+                            st.error(f"Exploration failed: {ex}")
+
+                tp_result = st.session_state.get("project_thought_partner", {}).get(tp_folder_id)
+                if tp_result:
+                    tensions_html = "".join(
+                        f'<div class="sugg"><span class="tag">{e(t.get("label",""))}</span>'
+                        f'<span class="sugg-text">{e(t.get("text",""))}</span></div>'
+                        for t in tp_result.get("tensions", [])
+                    )
+                    angles_html = "".join(
+                        f'<div class="sugg"><span class="tag">{e(a.get("label",""))}</span>'
+                        f'<span class="sugg-text">{e(a.get("text",""))}</span></div>'
+                        for a in tp_result.get("angles", [])
+                    )
+                    questions_html = "".join(
+                        f'<div class="sugg"><span class="sugg-text">? {e(q)}</span></div>'
+                        for q in tp_result.get("questions_for_team", [])
+                    )
+                    st.markdown(f"""
+<div class="tp">
+  <div class="tph">🧭 Thought Partner · {e(tp_folder_name)}</div>
+  <div class="tpsub">{e(tp_result.get("framing",""))}</div>
+
+  <div class="tpgroup-title">Possible Tensions</div>
+  {tensions_html}
+
+  <div class="tpgroup-title">Angles to Explore</div>
+  {angles_html}
+
+  <div class="tpgroup-title">Questions for the Team</div>
+  {questions_html}
+
+  <div class="caveat">Suggestions, not conclusions — for the team to debate.</div>
+</div>""", unsafe_allow_html=True)
+                else:
+                    st.caption('Click "Explore tensions & angles" to get started.')
+
+tab_projects.__exit__(None, None, None)
+tab_search.__enter__()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4186,6 +4403,16 @@ border-radius:6px;padding:12px;margin-bottom:10px;">
   style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#6ea8c4;text-decoration:none;">
   ↗ read article</a>
 </div>""", unsafe_allow_html=True)
+                    if not IS_CLIENT:
+                        gb_col, _ = st.columns([1, 6])
+                        with gb_col:
+                            _save_button(
+                                "Add", "Search Result · GDELT",
+                                r.get("title", "")[:120],
+                                f"{r.get('source','')} — {r.get('seendate','')}\n{r.get('url','')}",
+                                key=f"unif_gdelt_{i}",
+                                user=st.session_state.logged_in_user,
+                            )
         else:
             st.caption("GDELT: no results for this query.")
 
@@ -4198,7 +4425,7 @@ border-radius:6px;padding:12px;margin-bottom:10px;">
                 st.markdown(f"""<div class="lh-cat-head"><span class="lh-cat-line"></span>
 <span class="lh-cat-lbl" style="color:#0a7d8c;">🧠 Exa.ai · {len(exa_results)} semantic results</span>
 <span class="lh-cat-line"></span></div>""", unsafe_allow_html=True)
-                for r in exa_results:
+                for i, r in enumerate(exa_results):
                     st.markdown(f"""
 <div style="background:#fff;border:1px solid #9dc4d8;border-left:3px solid #0a7d8c;
 border-radius:6px;padding:12px 14px;margin-bottom:10px;">
@@ -4210,6 +4437,16 @@ border-radius:6px;padding:12px 14px;margin-bottom:10px;">
   <a href="{e(r.get('url',''))}" target="_blank" style="font-family:'JetBrains Mono',monospace;
   font-size:9px;color:#0a7d8c;text-decoration:none;">↗ {e(r.get('url','')[:60])}</a>
 </div>""", unsafe_allow_html=True)
+                    if not IS_CLIENT:
+                        eb_col, _ = st.columns([1, 6])
+                        with eb_col:
+                            _save_button(
+                                "Add", "Search Result · Exa.ai",
+                                r.get("title", "")[:120],
+                                f"{r.get('snippet','')}\n{r.get('url','')}",
+                                key=f"unif_exa_{i}",
+                                user=st.session_state.logged_in_user,
+                            )
             else:
                 st.caption("Exa.ai: no results for this query.")
 
@@ -4222,7 +4459,7 @@ border-radius:6px;padding:12px 14px;margin-bottom:10px;">
                 st.markdown(f"""<div class="lh-cat-head"><span class="lh-cat-line"></span>
 <span class="lh-cat-lbl" style="color:#0fa3b5;">⚡ Tavily · {len(tav_results)} AI-optimised results</span>
 <span class="lh-cat-line"></span></div>""", unsafe_allow_html=True)
-                for r in tav_results:
+                for i, r in enumerate(tav_results):
                     score = r.get("score", 0)
                     score_color = "#1a8a6b" if score > 0.7 else "#0a7d8c" if score > 0.4 else "#9dc4d8"
                     st.markdown(f"""
@@ -4240,6 +4477,16 @@ border-radius:6px;padding:12px 14px;margin-bottom:10px;">
   style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#0fa3b5;text-decoration:none;">
   ↗ {e(r.get('url','')[:60])}</a>
 </div>""", unsafe_allow_html=True)
+                    if not IS_CLIENT:
+                        tb_col, _ = st.columns([1, 6])
+                        with tb_col:
+                            _save_button(
+                                "Add", "Search Result · Tavily",
+                                r.get("title", "")[:120],
+                                f"{r.get('snippet','')}\n{r.get('url','')}",
+                                key=f"unif_tavily_{i}",
+                                user=st.session_state.logged_in_user,
+                            )
             else:
                 st.caption("Tavily: no results for this query.")
 
@@ -4269,6 +4516,14 @@ border-radius:8px;overflow:hidden;margin-bottom:14px;">
     border-bottom:1px solid #d44800;padding-bottom:1px;">↗ watch on YouTube</a>
   </div>
 </div>""", unsafe_allow_html=True)
+                        if not IS_CLIENT:
+                            _save_button(
+                                "Add", "Search Result · YouTube",
+                                c.get("title", "")[:120],
+                                f"{c.get('channel','')}\n{c.get('url','')}",
+                                key=f"unif_yt_{i}",
+                                user=st.session_state.logged_in_user,
+                            )
             elif yt_results:
                 st.caption(f"YouTube: {yt_results[0].get('error', 'no results for this query.')}")
             else:
@@ -4289,6 +4544,9 @@ border-radius:8px;overflow:hidden;margin-bottom:14px;">
 
 **Pipeline integration:** add transcripts via `youtube-transcript-api`, chunk into ~500-word segments, and embed alongside the other sources for the deepest searchable signal base.
 """)
+
+tab_search.__exit__(None, None, None)
+tab_roadmap.__enter__()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4531,6 +4789,8 @@ function show(id,btn){
 </body></html>"""
 
 st.components.v1.html(_VISION_MAP_HTML, height=550, scrolling=False)
+
+tab_roadmap.__exit__(None, None, None)
 
 
 # ── Footer — absolute bottom of page ─────────────────────────────────────────
