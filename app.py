@@ -2217,6 +2217,14 @@ def render_content_sections(content: dict, user: str, show_competitive: bool = T
                                 card.get("title",""), card.get("body",""),
                                 f"save_card_{i}", user)
 
+        # ── VOICES / RAW SIGNAL FEED / PROVOCATIONS ─────────────────────────────
+        # Kept inside col_main, right under "More currents", so the two
+        # collapsible sections sit together instead of being separated by the
+        # taller rail sidebar (Share of Voice / Alerts / Briefing) on the right.
+        st.markdown('<div id="lh-sec-voices"></div><div id="lh-sec-provs"></div>', unsafe_allow_html=True)
+        with st.expander("▼  More to explore — Voices, Raw Signal Feed & Provocations", expanded=False):
+            _render_voices_and_provocations(lead, voices, provs, user)
+
     # ── RAIL SIDEBAR ──────────────────────────────────────────────────────────
     with col_rail:
         # Share of Voice (static — no save button needed)
@@ -2252,15 +2260,6 @@ def render_content_sections(content: dict, user: str, show_competitive: bool = T
   </div>
   <div class="lh-next">◷ Next sweep on demand</div>
 </div>""", unsafe_allow_html=True)
-
-    # ── VOICES / RAW SIGNAL FEED / PROVOCATIONS ─────────────────────────────
-    # Tucked behind a "more to explore" expander so the dispatch doesn't read
-    # as one endless page — Lead Current + Countercurrent are the front page,
-    # this is the rest of the paper.
-    st.markdown('<div id="lh-sec-voices"></div><div id="lh-sec-provs"></div>', unsafe_allow_html=True)
-    with st.expander("▼  More to explore — Voices, Raw Signal Feed & Provocations", expanded=False):
-        _render_voices_and_provocations(lead, voices, provs, user)
-
 
 
 # ── Topic / Signal Map (D3 force-directed) ────────────────────────────────────
