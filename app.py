@@ -498,6 +498,83 @@ iframe { border: none !important; }
 [data-testid="stFormSubmitButton"] > button span {
     color: #ffffff !important;
 }
+
+/* ── Top-level "loop" navigation (Dispatches / Projects / Search / Roadmap) ──
+   Scoped via the invisible #lh-toptabs-marker that sits right before this
+   st.tabs() — only THIS tab bar gets the bold beacon treatment; nested tabs
+   (My Board, Briefing Builder, Current Stack, etc.) keep the default look. */
+div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+  + div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    gap: 6px;
+    background: #071828;
+    border-radius: 12px;
+    padding: 6px;
+    margin: 4px 0 1.4rem;
+    box-shadow: 0 6px 24px rgba(7,24,40,.18);
+}
+div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+  + div[data-testid="stTabs"] [data-baseweb="tab-list"] [data-baseweb="tab-border"] {
+    display: none !important;
+}
+div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+  + div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+    display: none !important;
+}
+div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+  + div[data-testid="stTabs"] button[data-baseweb="tab"] {
+    flex: 1 1 0;
+    height: 52px;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: rgba(208,234,240,.55) !important;
+    border-radius: 8px;
+    transition: color .15s, background .15s;
+}
+div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+  + div[data-testid="stTabs"] button[data-baseweb="tab"] p {
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    letter-spacing: .18em;
+}
+div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+  + div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
+    color: #0fa3b5 !important;
+    background: rgba(10,125,140,.16);
+}
+div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+  + div[data-testid="stTabs"] button[aria-selected="true"] {
+    color: #ffffff !important;
+    background: #0a7d8c !important;
+    box-shadow: 0 2px 10px rgba(10,125,140,.45);
+}
+div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+  + div[data-testid="stTabs"] button[aria-selected="true"] p {
+    color: #ffffff !important;
+}
+
+/* ── Popovers ("+ Add to project", folder picker, client access) ──────────
+   st.popover renders its panel in a portal outside the themed app container,
+   so it falls back to Streamlit's dark default — illegible against this
+   app's light "sea mist" palette. Re-declare the theme variables locally so
+   every widget inside (buttons, multiselect, captions) reads as light-on-
+   white instead of dark-on-dark. */
+div[data-baseweb="popover"] {
+    --background-color: #ffffff;
+    --secondary-background-color: #ebf2f7;
+    --text-color: #071828;
+    background-color: #ffffff !important;
+    color: #071828 !important;
+    border: 1px solid #9dc4d8 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 8px 28px rgba(7,24,40,.18) !important;
+}
+div[data-baseweb="popover"] [data-baseweb="tag"] {
+    background-color: #ebf2f7 !important;
+    color: #071828 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -3295,8 +3372,13 @@ def render_footer():
 # (__enter__/__exit__) so the existing render blocks below don't need to be
 # re-indented.
 if not IS_CLIENT:
+    # Invisible marker used by the CSS below (`:has(#lh-toptabs-marker)`) to
+    # target *this specific* st.tabs() — the top-level "loop" navigation —
+    # without restyling the many nested st.tabs() used elsewhere (My Board /
+    # Team Board / Briefing Builder, Current Stack / Unified Search, etc).
+    st.markdown('<div id="lh-toptabs-marker" style="display:none"></div>', unsafe_allow_html=True)
     tab_dispatches, tab_projects, tab_search, tab_roadmap = st.tabs([
-        "📡  Dispatches", "📁  Projects", "🔎  Search", "🧭  Roadmap",
+        "◉  Dispatches", "◈  Projects", "◎  Search", "▲  Roadmap",
     ])
     tab_dispatches.__enter__()
 
