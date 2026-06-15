@@ -55,6 +55,69 @@ def e(text) -> str:
     return html_mod.escape(str(text))
 
 
+def _extract_json(raw: str) -> dict:
+    """Parse a Claude JSON response, tolerating markdown fences and the
+    occasional truncated/odd-character response.
+
+    Raises json.JSONDecodeError (with the *original* text in the message)
+    if the result still isn't valid JSON — callers can catch that to show
+    the raw text for debugging rather than just a cryptic "Expecting ','"
+    message.
+    """
+    raw = raw.strip()
+    if "```" in raw:
+        raw = raw.strip("`")
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+    start, end = raw.find("{"), raw.rfind("}")
+    if start != -1 and end != -1:
+        raw = raw[start:end + 1]
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Most common real-world failure: the response was cut off mid-field
+    # because max_tokens was reached, leaving a dangling string/array/object.
+    # Try dropping trailing lines one at a time until what's left can be
+    # closed off into valid JSON.
+    lines = raw.splitlines()
+    for n in range(len(lines) - 1, 0, -1):
+        candidate = "\n".join(lines[:n]).rstrip().rstrip(",")
+        if not candidate:
+            continue
+        stack: list = []
+        in_str = False
+        esc = False
+        for ch in candidate:
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch in "{[":
+                stack.append(ch)
+            elif ch in "}]":
+                if stack:
+                    stack.pop()
+        if not stack and not in_str:
+            continue  # already balanced — wouldn't have failed at full length
+        closer = ('"' if in_str else "") + "".join("}" if c == "{" else "]" for c in reversed(stack))
+        try:
+            return json.loads(candidate + closer)
+        except json.JSONDecodeError:
+            continue
+
+    # Couldn't repair — re-raise with the original (unrepaired) text so the
+    # caller can show it for debugging.
+    raise json.JSONDecodeError("Unrecoverable JSON", raw, 0)
+
+
 # ── Client View — accounts & permission gating ─────────────────────────────────
 # Clients get their own login, scoped to a read-only, polished view of the
 # dispatch. Internal sections (Project Board, Signal Lab, Vision Map) are never
@@ -628,6 +691,23 @@ div[data-baseweb="popover"],
 [data-testid="stPopoverBody"] button[kind="primary"] div,
 [data-testid="stPopoverBody"] button[kind="primary"] span {
     color: #ffffff !important;
+}
+
+/* ── Tooltips (the "?" help text on buttons, inputs, etc.) ─────────────────
+   Same dark-on-dark bug class as the popover above: stTooltipContent renders
+   in a portal with Streamlit's dark default background, and the global
+   `p, li, span, label { color:#071828 }` rule then paints its text near-black
+   on top of that dark background. Repaint both the panel and its text. */
+[data-testid="stTooltipContent"] {
+    background-color: #062233 !important;
+    color: #e8f6fa !important;
+    border: 1px solid rgba(157,196,216,.35) !important;
+    border-radius: 6px !important;
+    box-shadow: 0 8px 28px rgba(7,24,40,.25) !important;
+}
+[data-testid="stTooltipContent"] * {
+    color: #e8f6fa !important;
+    background-color: transparent !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1941,15 +2021,19 @@ def _save_button(label: str, type_: str, title: str, content_str: str, key: str,
                 st.rerun()
 
 
-def _render_voices_and_provocations(lead: dict, voices: list, provs: list, user: str) -> None:
-    """Voices (editorial composites), Raw Signal Feed, and Provocations.
+_VOICE_PLATFORM_CSS_MAP = {
+    "p-reddit": "p-reddit-n", "p-tiktok": "p-tiktok-n",
+    "p-x": "p-x-n", "p-mumsnet": "p-mumsnet-n", "p-ig": "p-ig-n",
+}
 
-    Pulled out of render_content_sections() so it can be tucked behind a
-    "▼ More to explore" expander on the Dispatches tab — Lead Current and
-    the Countercurrent stay front-and-center, this is reading material for
-    when the team wants to go deeper.
+
+def _render_voices_header() -> None:
+    """Section header/intro for "What people are actually saying".
+
+    Split out from _render_voices_and_provocations so it (and the first
+    voice card) can render always-visible above the "▼ More to explore"
+    expander — see render_content_sections.
     """
-    # ── VOICES ────────────────────────────────────────────────────────────────
     st.markdown('<div id="lh-sec-voices"></div>', unsafe_allow_html=True)
     st.markdown("""
 <div style="border-top:2px solid #071828;padding-top:18px;margin:8px 0 20px">
@@ -1959,24 +2043,20 @@ def _render_voices_and_provocations(lead: dict, voices: list, provs: list, user:
   <div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.06em;color:#9dc4d8;border-left:2px solid #9dc4d8;padding-left:10px;">These voices are editorial composites written by Claude from real signals — condensed for clarity. See the <b>Raw Signal Feed</b> below for the original posts with direct links.</div>
 </div>""", unsafe_allow_html=True)
 
-    voice_cols = st.columns(3, gap="medium")
-    platform_css_map = {
-        "p-reddit": "p-reddit-n", "p-tiktok": "p-tiktok-n",
-        "p-x": "p-x-n", "p-mumsnet": "p-mumsnet-n", "p-ig": "p-ig-n",
-    }
-    for i, v in enumerate(voices[:9]):
-        pcls = platform_css_map.get(v.get("platform_class",""), "")
-        with voice_cols[i % 3]:
-            col_v, col_vs = st.columns([8, 1])
-            with col_v:
-                _v_url  = v.get("url", "")
-                _v_link = (
-                    '<a href="' + e(_v_url) + '" target="_blank" rel="noopener" '
-                    'style="margin-left:auto;font-family:JetBrains Mono,monospace;'
-                    'font-size:9px;letter-spacing:.06em;text-transform:uppercase;'
-                    'color:#0a7d8c;text-decoration:none;">↗ source</a>'
-                ) if _v_url else ""
-                st.markdown(f"""
+
+def _render_voice_card(v: dict, idx: int, user: str) -> None:
+    """Renders one Voice quote card + its 🔖 save button."""
+    pcls = _VOICE_PLATFORM_CSS_MAP.get(v.get("platform_class", ""), "")
+    col_v, col_vs = st.columns([8, 1])
+    with col_v:
+        _v_url  = v.get("url", "")
+        _v_link = (
+            '<a href="' + e(_v_url) + '" target="_blank" rel="noopener" '
+            'style="margin-left:auto;font-family:JetBrains Mono,monospace;'
+            'font-size:9px;letter-spacing:.06em;text-transform:uppercase;'
+            'color:#0a7d8c;text-decoration:none;">↗ source</a>'
+        ) if _v_url else ""
+        st.markdown(f"""
 <div class="lh-voice {pcls}">
   <div class="lh-voice-top">
     <span class="lh-voice-plat">● {e(v.get("platform_label",""))}</span>
@@ -1989,12 +2069,31 @@ def _render_voices_and_provocations(lead: dict, voices: list, provs: list, user:
     {_v_link}
   </div>
 </div>""", unsafe_allow_html=True)
-            with col_vs:
-                _save_button("🔖",
-                    f"Voice · {v.get('platform_label','')}",
-                    v.get("quote","")[:80],
-                    v.get("quote",""),
-                    f"save_voice_{i}", user)
+    with col_vs:
+        _save_button("🔖",
+            f"Voice · {v.get('platform_label','')}",
+            v.get("quote","")[:80],
+            v.get("quote",""),
+            f"save_voice_{idx}", user)
+
+
+def _render_voices_and_provocations(lead: dict, voices: list, provs: list, user: str, start_idx: int = 0) -> None:
+    """Remaining Voices grid, Raw Signal Feed, and Provocations.
+
+    Pulled out of render_content_sections() so it can be tucked behind a
+    "▼ More to explore" expander on the Dispatches tab — Lead Current and
+    the Countercurrent stay front-and-center, this is reading material for
+    when the team wants to go deeper. `start_idx` skips the voice(s) already
+    shown always-visible above the expander (see _render_voices_header /
+    _render_voice_card).
+    """
+    # ── VOICES (grid) ────────────────────────────────────────────────────────
+    remaining_voices = voices[start_idx:9]
+    if remaining_voices:
+        voice_cols = st.columns(3, gap="medium")
+        for i, v in enumerate(remaining_voices):
+            with voice_cols[i % 3]:
+                _render_voice_card(v, start_idx + i, user)
 
     # ── RAW SIGNAL FEED ───────────────────────────────────────────────────────
     _render_raw_signals(load_signals(), lead.get("topic_tags", []))
@@ -2029,6 +2128,54 @@ def _render_voices_and_provocations(lead: dict, voices: list, provs: list, user:
                 p.get("text",""),
                 p.get("tag",""),
                 f"save_prov_{i}", user)
+
+
+def _render_category_group(cat: str, group: list, user: str) -> None:
+    """Renders one Cultural/Social/Competitive lens: header + its card(s).
+
+    Pulled out of render_content_sections() so the first non-empty lens can
+    render always-visible (above the "▼ More currents" expander) while any
+    remaining lenses stay tucked behind it.
+    """
+    icon, label, css_cls = CATEGORY_META[cat]
+    st.markdown(f"""
+<div class="lh-cat-head">
+  <span class="lh-cat-lbl {css_cls}">{icon} {e(label)}</span>
+  <span class="lh-cat-line"></span>
+</div>""", unsafe_allow_html=True)
+
+    # Only split into a 2-column grid when there's enough cards to fill it —
+    # a lone card in a 2-col grid left a big empty gap and made the save icon
+    # look detached. A single card gets the full width instead.
+    n_cards = len(group)
+    if n_cards >= 2:
+        card_cols = st.columns(2, gap="large")
+    else:
+        card_cols = [st.container()]
+
+    for j, (i, card) in enumerate(group):
+        d = card.get("momentum_dir", "up")
+        spark_bars = "".join(f'<i style="height:{v}%"></i>' for v in (card.get("spark") or [30,45,55,65,75,82,90]))
+        with card_cols[j % len(card_cols)]:
+            col_card, col_card_save = st.columns([10, 1])
+            with col_card:
+                st.markdown(f"""
+<div class="lh-card">
+  <div class="lh-card-top">
+    <span class="{_mcls(d)}">{_mdir(d)} {e(card.get("momentum_pct",""))}</span>
+    <span class="lh-card-brands">{e(card.get("tags",""))}</span>
+    <span class="lh-card-cat {css_cls.replace('lh-cat-', 'lh-card-cat-')}">{icon} {e(label)}</span>
+  </div>
+  <div class="lh-card-title">{e(card.get("title",""))}</div>
+  <div class="lh-card-body">{e(card.get("body",""))}</div>
+  <div class="lh-spark">{spark_bars}</div>
+  <div class="lh-card-foot"><span>{e(card.get("sources",""))}</span><span class="lh-reach">{e(card.get("reach",""))}</span></div>
+</div>""", unsafe_allow_html=True)
+            with col_card_save:
+                st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+                _save_button("🔖", f"Card — {card.get('tags','')}",
+                    card.get("title",""), card.get("body",""),
+                    f"save_card_{i}", user)
 
 
 def render_content_sections(content: dict, user: str, show_competitive: bool = True):
@@ -2166,64 +2313,38 @@ def render_content_sections(content: dict, user: str, show_competitive: bool = T
         for i, card in enumerate(cards):
             cards_by_cat[_card_category(card)].append((i, card))
 
-        # Collapsed by default — keeps the dispatch from feeling like an
-        # endless scroll. Lead Current + Countercurrent stay fully visible
-        # above; everything from here down is "more to explore" on demand.
-        with st.expander("▼  More currents — Cultural & Social lenses", expanded=False):
-            for cat in CATEGORY_ORDER:
-                if cat == "competitive" and not show_competitive:
-                    continue
-                group = cards_by_cat[cat]
-                if not group:
-                    continue
-                icon, label, css_cls = CATEGORY_META[cat]
-                st.markdown(f"""
-<div class="lh-cat-head">
-  <span class="lh-cat-lbl {css_cls}">{icon} {e(label)}</span>
-  <span class="lh-cat-line"></span>
-</div>""", unsafe_allow_html=True)
+        nonempty_groups = []
+        for cat in CATEGORY_ORDER:
+            if cat == "competitive" and not show_competitive:
+                continue
+            group = cards_by_cat[cat]
+            if group:
+                nonempty_groups.append((cat, group))
 
-                # Only split into a 2-column grid when there's enough cards
-                # to fill it — a lone card in a 2-col grid left a big empty
-                # gap and made the save icon look detached. A single card
-                # gets the full width instead.
-                n_cards = len(group)
-                if n_cards >= 2:
-                    card_cols = st.columns(2, gap="large")
-                else:
-                    card_cols = [st.container()]
+        # The first lens stays always-visible — otherwise, with both "more"
+        # sections collapsed, the left column ends well short of the taller
+        # rail sidebar and leaves a big empty gap. Any remaining lenses stay
+        # tucked behind the ▼ expander, collapsed by default.
+        if nonempty_groups:
+            _render_category_group(nonempty_groups[0][0], nonempty_groups[0][1], user)
 
-                for j, (i, card) in enumerate(group):
-                    d = card.get("momentum_dir", "up")
-                    spark_bars = "".join(f'<i style="height:{v}%"></i>' for v in (card.get("spark") or [30,45,55,65,75,82,90]))
-                    with card_cols[j % len(card_cols)]:
-                        col_card, col_card_save = st.columns([10, 1])
-                        with col_card:
-                            st.markdown(f"""
-<div class="lh-card">
-  <div class="lh-card-top">
-    <span class="{_mcls(d)}">{_mdir(d)} {e(card.get("momentum_pct",""))}</span>
-    <span class="lh-card-brands">{e(card.get("tags",""))}</span>
-    <span class="lh-card-cat {css_cls.replace('lh-cat-', 'lh-card-cat-')}">{icon} {e(label)}</span>
-  </div>
-  <div class="lh-card-title">{e(card.get("title",""))}</div>
-  <div class="lh-card-body">{e(card.get("body",""))}</div>
-  <div class="lh-spark">{spark_bars}</div>
-  <div class="lh-card-foot"><span>{e(card.get("sources",""))}</span><span class="lh-reach">{e(card.get("reach",""))}</span></div>
-</div>""", unsafe_allow_html=True)
-                        with col_card_save:
-                            st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-                            _save_button("🔖", f"Card — {card.get('tags','')}",
-                                card.get("title",""), card.get("body",""),
-                                f"save_card_{i}", user)
+        if len(nonempty_groups) > 1:
+            with st.expander("▼  More currents — Cultural & Social lenses", expanded=False):
+                for cat, group in nonempty_groups[1:]:
+                    _render_category_group(cat, group, user)
 
         # ── VOICES / RAW SIGNAL FEED / PROVOCATIONS ─────────────────────────────
         # Kept inside col_main, right under "More currents", so the two
         # collapsible sections sit together instead of being separated by the
         # taller rail sidebar (Share of Voice / Alerts / Briefing) on the right.
-        st.markdown('<div id="lh-sec-voices"></div><div id="lh-sec-provs"></div>', unsafe_allow_html=True)
+        # Same always-visible-first-item pattern as above: the header + first
+        # Voice card stay visible, the rest sit behind the ▼ expander.
+        _render_voices_header()
+        if voices:
+            _render_voice_card(voices[0], 0, user)
+
         with st.expander("▼  More to explore — Voices, Raw Signal Feed & Provocations", expanded=False):
-            _render_voices_and_provocations(lead, voices, provs, user)
+            _render_voices_and_provocations(lead, voices, provs, user, start_idx=1)
 
     # ── RAIL SIDEBAR ──────────────────────────────────────────────────────────
     with col_rail:
@@ -3860,17 +3981,19 @@ Write a tight, actionable creative brief. Return ONLY valid JSON with this exact
                         with st.spinner("The Lighthouse is writing your brief…"):
                             msg = _client.messages.create(
                                 model=CLAUDE_MODEL,
-                                max_tokens=1024,
+                                max_tokens=2048,
                                 temperature=0.7,
                                 system="You are an elite advertising strategist. Return only raw JSON, no markdown fences.",
                                 messages=[{"role": "user", "content": brief_prompt}],
                             )
                             raw = msg.content[0].text.strip()
-                            if "```" in raw:
-                                raw = raw[raw.find("{"):raw.rfind("}")+1]
-                            brief_data = json.loads(raw)
+                            brief_data = _extract_json(raw)
                             st.session_state["generated_brief"] = brief_data
 
+                    except json.JSONDecodeError as ex:
+                        st.error(f"Brief generation failed: the response wasn't valid JSON ({ex}).")
+                        with st.expander("Show raw response"):
+                            st.code(raw)
                     except Exception as ex:
                         st.error(f"Brief generation failed: {ex}")
 
@@ -4004,16 +4127,18 @@ Return ONLY valid JSON with this exact structure:
                         with st.spinner("The Lighthouse is mapping tensions and angles…"):
                             msg = _client.messages.create(
                                 model=CLAUDE_MODEL,
-                                max_tokens=1024,
+                                max_tokens=2048,
                                 temperature=0.85,
                                 system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
                                 messages=[{"role": "user", "content": tp_prompt}],
                             )
                             raw = msg.content[0].text.strip()
-                            if "```" in raw:
-                                raw = raw[raw.find("{"):raw.rfind("}")+1]
-                            st.session_state["thought_partner"] = json.loads(raw)
+                            st.session_state["thought_partner"] = _extract_json(raw)
 
+                    except json.JSONDecodeError as ex:
+                        st.error(f"Exploration failed: the response wasn't valid JSON ({ex}).")
+                        with st.expander("Show raw response"):
+                            st.code(raw)
                     except Exception as ex:
                         st.error(f"Exploration failed: {ex}")
 
@@ -4149,18 +4274,20 @@ Return ONLY valid JSON with this exact structure:
                             with st.spinner("The Lighthouse is mapping tensions and angles…"):
                                 msg = _client.messages.create(
                                     model=CLAUDE_MODEL,
-                                    max_tokens=1024,
+                                    max_tokens=2048,
                                     temperature=0.85,
                                     system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
                                     messages=[{"role": "user", "content": tp_prompt}],
                                 )
                                 raw = msg.content[0].text.strip()
-                                if "```" in raw:
-                                    raw = raw[raw.find("{"):raw.rfind("}")+1]
                                 if "project_thought_partner" not in st.session_state:
                                     st.session_state["project_thought_partner"] = {}
-                                st.session_state["project_thought_partner"][tp_folder_id] = json.loads(raw)
+                                st.session_state["project_thought_partner"][tp_folder_id] = _extract_json(raw)
 
+                        except json.JSONDecodeError as ex:
+                            st.error(f"Exploration failed: the response wasn't valid JSON ({ex}).")
+                            with st.expander("Show raw response"):
+                                st.code(raw)
                         except Exception as ex:
                             st.error(f"Exploration failed: {ex}")
 
