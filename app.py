@@ -869,6 +869,12 @@ with st.sidebar:
                               help="OFF = shows last saved dispatch (no cost).\nON = generates new content via Claude.")
         regenerate = st.button("⚡  Sweep & Generate", use_container_width=True,
                                disabled=not live_mode)
+        # ── quick signal health indicator ──
+        _sig_preview = load_signals(limit=5)
+        if _sig_preview:
+            st.caption(f"📡 {len(load_signals())} signals loaded")
+        else:
+            st.warning("⚠️ No signals found — run ingestion first or check data/signals.jsonl")
 
         st.markdown("---")
         st.markdown(
@@ -3382,25 +3388,34 @@ if not live_mode:
 elif regenerate:
     # LIVE MODE — call Claude
     if not signals:
+        st.warning(
+            "⚠️ No signals in the database. "
+            "Run ingestion (e.g. `python ingestion_ny_liberty.py`) to populate signals, "
+            "then try Sweep & Generate again.",
+            icon="📡",
+        )
         st.session_state.lh_content = _fallback()
     else:
-        with st.spinner("🗼 The Lighthouse is sweeping the currents…"):
-            rag = []
-            if use_pinecone and focus_topic:
-                rag = semantic_search(
-                    focus_topic,
-                    top_k=signal_limit,
-                    client_filter=client_filter or None,
+        try:
+            with st.spinner("🗼 The Lighthouse is sweeping the currents…"):
+                rag = []
+                if use_pinecone and focus_topic:
+                    rag = semantic_search(
+                        focus_topic,
+                        top_k=signal_limit,
+                        client_filter=client_filter or None,
+                    )
+                content = generate(signals, rag, client_name, brief_tagline, focus_topic)
+                st.session_state.lh_content = content
+                save_dispatch(content, focus_topic)
+                # Record sweep run for velocity tracking
+                _db.record_sweep_run(
+                    topic=focus_topic or "general",
+                    signal_count=len(signals),
+                    sources=["live"],
                 )
-            content = generate(signals, rag, client_name, brief_tagline, focus_topic)
-            st.session_state.lh_content = content
-            save_dispatch(content, focus_topic)
-            # Record sweep run for velocity tracking
-            _db.record_sweep_run(
-                topic=focus_topic or "general",
-                signal_count=len(signals),
-                sources=["live"],
-            )
+        except Exception as _sweep_exc:
+            st.error(f"Sweep failed: {_sweep_exc}")
 
 content = st.session_state.lh_content
 
