@@ -869,12 +869,7 @@ with st.sidebar:
                               help="OFF = shows last saved dispatch (no cost).\nON = generates new content via Claude.")
         regenerate = st.button("⚡  Sweep & Generate", use_container_width=True,
                                disabled=not live_mode)
-        # ── quick signal health indicator ──
-        _sig_preview = load_signals(limit=5)
-        if _sig_preview:
-            st.caption(f"📡 {len(load_signals())} signals loaded")
-        else:
-            st.warning("⚠️ No signals found — run ingestion first or check data/signals.jsonl")
+        _sig_count_placeholder = st.empty()   # filled after load_signals() is defined below
 
         st.markdown("---")
         st.markdown(
@@ -3358,6 +3353,13 @@ if "lh_content" not in st.session_state:
 # ── Load data ──────────────────────────────────────────────────────────────────
 
 signals = load_signals()
+
+# ── Sidebar signal health indicator (fills placeholder set above) ──────────────
+if not IS_CLIENT:
+    if signals:
+        _sig_count_placeholder.caption(f"📡 {len(signals)} signals loaded")
+    else:
+        _sig_count_placeholder.warning("⚠️ No signals — run ingestion first")
 
 
 def load_last_dispatch(path: str = "data/dispatches.jsonl"):
