@@ -10,3 +10,4 @@ anthropic>=0.34.0
 exa-py>=1.0.0
 tavily-python>=0.3.0
 youtube-transcript-api>=0.6.0
+supabase>=2.3.0

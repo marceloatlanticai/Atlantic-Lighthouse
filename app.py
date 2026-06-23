@@ -17,6 +17,9 @@ import os
 import json
 import uuid
 import html as html_mod
+import re as _re_global
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from typing import Optional
 
@@ -32,6 +35,9 @@ try:
             os.environ[key] = str(value)
 except Exception:
     pass
+
+# ── Supabase persistence layer ─────────────────────────────────────────────────
+import db as _db
 
 # ── Users & passwords ──────────────────────────────────────────────────────────
 # Passwords can be overridden via .env: PASS_MARCELO=outra_senha etc.
@@ -133,164 +139,102 @@ CLIENT_PERM_DEFS = [
 ]
 CLIENT_PERM_DEFAULTS = {key: False for key, _ in CLIENT_PERM_DEFS}
 
+# ── Client account helpers — delegated to db.py ───────────────────────────────
+load_client_accounts  = _db.load_client_accounts
+_save_client_accounts = _db._save_client_accounts
+create_client_account = _db.create_client_account
+delete_client_account = _db.delete_client_account
+update_client_perms   = _db.update_client_perms
+authenticate_client   = _db.authenticate_client
 
-def load_client_accounts() -> list:
-    os.makedirs("data", exist_ok=True)
-    if not os.path.exists(CLIENT_ACCESS_PATH):
-        return []
-    try:
-        with open(CLIENT_ACCESS_PATH) as f:
-            return json.load(f)
-    except Exception:
-        return []
+# ── Curadoria helpers — delegated to db.py ────────────────────────────────────
+CURADORIA_PATH       = "data/curadoria.json"
+load_curadoria       = _db.load_curadoria
+_save_curadoria      = _db._save_curadoria
+add_curadoria_item   = _db.add_curadoria_item
+remove_curadoria_item = _db.remove_curadoria_item
 
+# ── Project Folders — delegated to db.py ──────────────────────────────────────
+PROJECT_FOLDERS_PATH  = "data/project_folders.json"
+load_project_folders  = _db.load_project_folders
+_save_project_folders = _db._save_project_folders
+create_project_folder = _db.create_project_folder
+delete_project_folder = _db.delete_project_folder
 
-def _save_client_accounts(accounts: list):
-    os.makedirs("data", exist_ok=True)
-    with open(CLIENT_ACCESS_PATH, "w") as f:
-        json.dump(accounts, f, ensure_ascii=False, indent=2)
+def add_url_current(url: str, user: str, folder_id: str, note: str = "") -> dict:
+    """Fetch a URL, extract its key insight via Claude, and save it as a
+    collected current in the given project folder.
 
+    Returns the saved item dict, or raises on error.
+    """
+    import anthropic as _ant
 
-def create_client_account(username: str, password: str, label: str) -> bool:
-    """Create a client login. Returns False if username is empty/duplicate."""
-    username = (username or "").strip()
-    password = (password or "").strip()
-    if not username or not password:
-        return False
-    accounts = load_client_accounts()
-    if any(a["username"].lower() == username.lower() for a in accounts):
-        return False
-    accounts.append({
-        "username":     username,
-        "password":     password,
-        "client_label": (label or username).strip(),
-        "perms":        dict(CLIENT_PERM_DEFAULTS),
-    })
-    _save_client_accounts(accounts)
-    return True
+    # 1. Fetch page HTML -------------------------------------------------------
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 (Lighthouse/1.0 compatible)"}
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw_html = r.read().decode("utf-8", errors="ignore")[:20000]
 
+    # 2. Basic HTML → plain text strip ----------------------------------------
+    text = _re_global.sub(r"<script[^>]*>.*?</script>", " ", raw_html, flags=_re_global.DOTALL)
+    text = _re_global.sub(r"<style[^>]*>.*?</style>", " ", text, flags=_re_global.DOTALL)
+    text = _re_global.sub(r"<[^>]+>", " ", text)
+    text = _re_global.sub(r"\s+", " ", text).strip()[:6000]
 
-def delete_client_account(username: str):
-    accounts = [a for a in load_client_accounts() if a["username"] != username]
-    _save_client_accounts(accounts)
+    # 3. Claude extraction -----------------------------------------------------
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+    _ant_client = _ant.Anthropic(api_key=api_key)
+    note_ctx = f"\nUser note: {note}" if note else ""
+    extraction_prompt = f"""You are a cultural intelligence analyst. Extract the key insight from this
+webpage as a current for a strategic intelligence platform. Be concise.{note_ctx}
 
+URL: {url}
+Page text:
+{text}
 
-def update_client_perms(username: str, perms: dict):
-    accounts = load_client_accounts()
-    for a in accounts:
-        if a["username"] == username:
-            a["perms"] = perms
-    _save_client_accounts(accounts)
+Return ONLY valid JSON (no markdown fences):
+{{
+  "title": "6-12 word headline capturing the core insight",
+  "summary": "2-3 sentences — what this signals culturally or competitively",
+  "category": "cultural | competitive | social",
+  "source_label": "publication or domain name"
+}}"""
+    msg = _ant_client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=512,
+        temperature=0.3,
+        system="Extract webpage content as a structured current. Return only raw JSON.",
+        messages=[{"role": "user", "content": extraction_prompt}],
+    )
+    data = _extract_json(msg.content[0].text)
 
+    title   = data.get("title", url[:80])
+    summary = data.get("summary", "")
+    if note:
+        summary = f"{summary}\n\n📎 Note: {note}"
+    cat     = data.get("category", "cultural")
+    src_lbl = data.get("source_label", urllib.parse.urlparse(url).netloc)
 
-def authenticate_client(username: str, password: str):
-    for a in load_client_accounts():
-        if a["username"] == username and a.get("password") == password:
-            return a
-    return None
-
-# ── Curadoria helpers ──────────────────────────────────────────────────────────
-CURADORIA_PATH = "data/curadoria.json"
-
-def load_curadoria() -> list:
-    os.makedirs("data", exist_ok=True)
-    if not os.path.exists(CURADORIA_PATH):
-        return []
-    try:
-        with open(CURADORIA_PATH) as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-def _save_curadoria(items: list):
-    os.makedirs("data", exist_ok=True)
-    with open(CURADORIA_PATH, "w") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-
-def add_curadoria_item(user: str, type_: str, title: str, content: str) -> bool:
-    """Add item. Returns False if already saved by this user."""
-    items = load_curadoria()
-    # Prevent duplicates for same user + same title
-    for it in items:
-        if it["user"] == user and it["title"] == title:
-            return False
-    items.append({
+    # 4. Save to curadoria + assign to project folder -------------------------
+    new_item = {
         "id":         str(uuid.uuid4())[:8],
         "user":       user,
-        "type":       type_,
+        "type":       f"URL · {src_lbl}",
         "title":      title,
-        "content":    content,
+        "content":    summary,
+        "url":        url,
+        "category":   cat,
         "saved_at":   datetime.utcnow().strftime("%d %b %Y · %H:%M"),
-        "folder_ids": [],
-    })
-    _save_curadoria(items)
-    return True
-
-def remove_curadoria_item(item_id: str):
-    items = [i for i in load_curadoria() if i["id"] != item_id]
-    _save_curadoria(items)
-
-
-# ── Project Folders ─────────────────────────────────────────────────────────────
-# Evolution of the Board: saved insights can be organized into project/client
-# folders (e.g. "Heinz Q3 Campaign"). An item can belong to several folders, or
-# none ("Unsorted").
-PROJECT_FOLDERS_PATH = "data/project_folders.json"
-
-def load_project_folders() -> list:
-    os.makedirs("data", exist_ok=True)
-    if not os.path.exists(PROJECT_FOLDERS_PATH):
-        return []
-    try:
-        with open(PROJECT_FOLDERS_PATH) as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-def _save_project_folders(folders: list):
-    os.makedirs("data", exist_ok=True)
-    with open(PROJECT_FOLDERS_PATH, "w") as f:
-        json.dump(folders, f, ensure_ascii=False, indent=2)
-
-def create_project_folder(name: str, user: str):
-    """Create a new project folder. Returns the folder dict, or None if the
-    name is empty or already taken (case-insensitive)."""
-    name = (name or "").strip()
-    if not name:
-        return None
-    folders = load_project_folders()
-    if any(f["name"].lower() == name.lower() for f in folders):
-        return None
-    folder = {
-        "id":         str(uuid.uuid4())[:8],
-        "name":       name,
-        "created_by": user,
-        "created_at": datetime.utcnow().strftime("%d %b %Y · %H:%M"),
+        "folder_ids": [folder_id],
     }
-    folders.append(folder)
-    _save_project_folders(folders)
-    return folder
+    _db.add_url_current_to_curadoria(new_item)
+    return new_item
 
-def delete_project_folder(folder_id: str):
-    folders = [f for f in load_project_folders() if f["id"] != folder_id]
-    _save_project_folders(folders)
-    # Detach the deleted folder from any items that referenced it
-    items = load_curadoria()
-    changed = False
-    for it in items:
-        fids = it.get("folder_ids", [])
-        if folder_id in fids:
-            it["folder_ids"] = [x for x in fids if x != folder_id]
-            changed = True
-    if changed:
-        _save_curadoria(items)
 
-def set_item_folders(item_id: str, folder_ids: list):
-    items = load_curadoria()
-    for it in items:
-        if it["id"] == item_id:
-            it["folder_ids"] = folder_ids
-    _save_curadoria(items)
+set_item_folders = _db.set_item_folders
 
 def _filter_items_by_active_folder(items: list) -> list:
     """Filter board items by the folder selected in the Project Folders bar."""
@@ -357,37 +301,10 @@ def _render_board_item(item: dict, folders: list, color: str = "#0a7d8c",
 # ── Countercurrent overrides ────────────────────────────────────────────────────
 # The AI-generated countercurrent is a *starting point*. The team can rewrite it
 # manually per dispatch — the edited version then takes precedence over the draft.
-COUNTERCURRENT_OVERRIDES_PATH = "data/countercurrent_overrides.json"
-
-def load_countercurrent_overrides() -> dict:
-    os.makedirs("data", exist_ok=True)
-    if not os.path.exists(COUNTERCURRENT_OVERRIDES_PATH):
-        return {}
-    try:
-        with open(COUNTERCURRENT_OVERRIDES_PATH) as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_countercurrent_override(dispatch_id: str, title: str, body: str, user: str):
-    overrides = load_countercurrent_overrides()
-    overrides[dispatch_id] = {
-        "title":     title,
-        "body":      body,
-        "edited_by": user,
-        "edited_at": datetime.utcnow().strftime("%d %b %Y · %H:%M"),
-    }
-    os.makedirs("data", exist_ok=True)
-    with open(COUNTERCURRENT_OVERRIDES_PATH, "w") as f:
-        json.dump(overrides, f, ensure_ascii=False, indent=2)
-
-def clear_countercurrent_override(dispatch_id: str):
-    overrides = load_countercurrent_overrides()
-    if dispatch_id in overrides:
-        del overrides[dispatch_id]
-        os.makedirs("data", exist_ok=True)
-        with open(COUNTERCURRENT_OVERRIDES_PATH, "w") as f:
-            json.dump(overrides, f, ensure_ascii=False, indent=2)
+COUNTERCURRENT_OVERRIDES_PATH       = "data/countercurrent_overrides.json"
+load_countercurrent_overrides       = _db.load_countercurrent_overrides
+save_countercurrent_override        = _db.save_countercurrent_override
+clear_countercurrent_override       = _db.clear_countercurrent_override
 
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -715,19 +632,8 @@ div[data-baseweb="popover"],
 # ── Dispatch archive helpers (defined early — called inside sidebar) ───────────
 
 def load_all_dispatches(path: str = "data/dispatches.jsonl") -> list:
-    """Load all saved dispatches, newest first."""
-    if not os.path.exists(path):
-        return []
-    records = []
-    with open(path) as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-                if "full" in rec and "timestamp" in rec:
-                    records.append(rec)
-            except Exception:
-                pass
-    return sorted(records, key=lambda x: x["timestamp"], reverse=True)
+    """Load all saved dispatches, newest first. Delegates to db.py."""
+    return _db.load_all_dispatches()
 
 
 def dispatch_label(rec: dict) -> str:
@@ -1220,17 +1126,8 @@ st.components.v1.html(f"""
 
 @st.cache_data(ttl=60)
 def load_signals(path: str = "data/signals.jsonl", limit: int = 200) -> list:
-    if not os.path.exists(path):
-        return []
-    signals = []
-    with open(path) as f:
-        for line in f:
-            try:
-                signals.append(json.loads(line))
-            except Exception:
-                pass
-    signals.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-    return signals[:limit]
+    """Load signals — from Supabase when configured, else from file."""
+    return _db.load_signals(limit=limit)
 
 
 def semantic_search(query: str, top_k: int = 15, client_filter: Optional[str] = None) -> list:
@@ -1269,18 +1166,8 @@ def build_context(signals: list, rag_results: list, limit: int = 25) -> str:
 
 
 def save_dispatch(content: dict, topic: str):
-    os.makedirs("data", exist_ok=True)
-    dispatch_id = str(uuid.uuid4())[:12]
-    content["_dispatch_id"] = dispatch_id   # travels with the dict for this session
-    record = {
-        "timestamp":   datetime.utcnow().isoformat(),
-        "dispatch_id": dispatch_id,
-        "topic": topic,
-        "content": content.get("lead", {}).get("title", ""),
-        "full": content,
-    }
-    with open("data/dispatches.jsonl", "a") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    """Save a dispatch. Delegates to db.py (Supabase or file fallback)."""
+    _db.save_dispatch(content, topic)
 
 
 # ── Claude model config ────────────────────────────────────────────────────────
@@ -3468,22 +3355,13 @@ signals = load_signals()
 
 
 def load_last_dispatch(path: str = "data/dispatches.jsonl"):
-    """Load the most recent saved dispatch from disk."""
-    if not os.path.exists(path):
+    """Load the most recent saved dispatch. Delegates to db.py."""
+    rec = _db.load_last_dispatch()
+    if rec is None:
         return None
-    last = None
-    with open(path) as f:
-        for line in f:
-            try:
-                last = json.loads(line)
-            except Exception:
-                pass
-    if last and "full" in last:
-        full = last["full"]
-        # Older records may not have a dispatch_id — fall back to timestamp
-        full["_dispatch_id"] = last.get("dispatch_id") or last.get("timestamp", "fallback")
-        return full
-    return None
+    full = rec.get("full") or {}
+    full["_dispatch_id"] = rec.get("dispatch_id") or rec.get("timestamp", "fallback")
+    return full
 
 
 
@@ -3517,6 +3395,12 @@ elif regenerate:
             content = generate(signals, rag, client_name, brief_tagline, focus_topic)
             st.session_state.lh_content = content
             save_dispatch(content, focus_topic)
+            # Record sweep run for velocity tracking
+            _db.record_sweep_run(
+                topic=focus_topic or "general",
+                signal_count=len(signals),
+                sources=["live"],
+            )
 
 content = st.session_state.lh_content
 
@@ -3837,18 +3721,352 @@ with st.popover("🔑 Client access", use_container_width=False):
     else:
         st.caption("No client logins yet — create one above.")
 
-cur_tab2, cur_tab3, cur_tab_brief, cur_tab_project_tp = st.tabs([
-    f"  My Board ({st.session_state.logged_in_user})  ",
-    "  Team Board  ",
-    "  ✍ Briefing Builder  ",
-    "  🧭 Project Thought Partner  ",
-])
+# ── Database / Persistence panel (admin only) ─────────────────────────────────
+with st.popover("🗄 Database", use_container_width=False):
+    if _db.use_supabase():
+        st.success("✅ Supabase connected — data persists across deploys.")
+    else:
+        st.warning("⚠️ Supabase not configured — using local files (data lost on redeploy).")
+        st.caption("Add SUPABASE_URL + SUPABASE_KEY to `.streamlit/secrets.toml` to enable persistence.")
 
-# ── TAB 2: Meu Board ──────────────────────────────────────────────────────────
-with cur_tab2:
-    current_user = st.session_state.logged_in_user
-    my_items_all = [i for i in load_curadoria() if i["user"] == current_user]
-    my_items     = _filter_items_by_active_folder(my_items_all)
+    st.markdown("---")
+    st.caption("**Migrate existing file data → Supabase**")
+    st.caption("Run this once to push your current JSON/JSONL files into Supabase. Safe to run again (uses upsert).")
+    if st.button("⬆ Migrate files to Supabase", use_container_width=True, key="migrate_to_sb"):
+        if not _db.use_supabase():
+            st.error("Supabase not configured.")
+        else:
+            with st.spinner("Migrating…"):
+                try:
+                    counts = _db.migrate_files_to_supabase()
+                    st.success("Migration complete: " + " · ".join(f"{v} {k}" for k, v in counts.items()))
+                except Exception as _exc:
+                    st.error(f"Migration failed: {_exc}")
+
+    if _db.use_supabase():
+        st.markdown("---")
+        st.caption("**Sweep history**")
+        _sweep_runs = _db.load_sweep_runs(limit=10)
+        if _sweep_runs:
+            for _run in _sweep_runs[:5]:
+                _run_at = str(_run.get("run_at", ""))[:16].replace("T", " ")
+                st.markdown(
+                    f"`{_run_at}` · **{_run.get('topic','?')}** · {_run.get('signal_count',0)} signals"
+                )
+        else:
+            st.caption("No sweep runs recorded yet.")
+
+# ── Wireframe 2-col project view ──────────────────────────────────────────────
+# Follows the wireframe spec exactly: project selector → left col (collected
+# currents + Add a current with URL fetch) · right col (Thought Partner).
+# My Board, Team Board and Briefing Builder move to expanders below.
+
+st.markdown("""<style>
+.mini-current {
+    background: #fff !important;
+    border: 1px solid #e4e2db;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+}
+.mini-current-title {
+    font-size: 13.5px;
+    font-weight: 500;
+    color: #071828 !important;
+    margin-bottom: 5px;
+    line-height: 1.35;
+}
+.chip-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: #6ea8c4 !important;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+}
+.dashed-add {
+    border: 1px dashed #9dc4d8;
+    border-radius: 8px;
+    color: #6ea8c4 !important;
+    text-align: center;
+    font-size: 13px;
+    padding: 12px;
+    margin-top: 4px;
+    cursor: pointer;
+}
+.pill-internal {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    background: #f7eddf;
+    color: #7c4912 !important;
+    border-radius: 8px;
+    padding: 3px 10px;
+    margin-left: 10px;
+    vertical-align: middle;
+}
+</style>""", unsafe_allow_html=True)
+
+# ── Helper: human-readable source chip ────────────────────────────────────────
+def _source_chip(type_str: str) -> str:
+    t = (type_str or "").lower()
+    if "url" in t:        return "manual · url"
+    if "search" in t:     return "from search"
+    if "gdelt" in t:      return "from search · gdelt"
+    if "exa" in t:        return "from search · exa"
+    if "tavily" in t:     return "from search · tavily"
+    if "card" in t:       return "from dispatch"
+    if "voice" in t:      return "from dispatch"
+    if "prov" in t:       return "from dispatch"
+    return "saved"
+
+# ── MAIN 2-COL PROJECT VIEW ───────────────────────────────────────────────────
+_proj_user = st.session_state.logged_in_user
+
+if not project_folders:
+    st.markdown("""
+<div style="border:1px dashed #9dc4d8;border-radius:10px;padding:32px;text-align:center;margin:24px 0;">
+  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#6ea8c4;margin-bottom:8px;">No projects yet</div>
+  <div style="font-family:Georgia,serif;font-size:16px;color:#274d68;">Create a project folder above, then use <strong>"+ Add to project"</strong> on dispatch cards or search results to start collecting currents here.</div>
+</div>""", unsafe_allow_html=True)
+else:
+    # ── Project selector ──────────────────────────────────────────────────────
+    _pf_col, _pf_new = st.columns([7, 3])
+    with _pf_col:
+        _sel_proj_id = st.selectbox(
+            "Project",
+            options=[f["id"] for f in project_folders],
+            format_func=lambda fid: next((f["name"] for f in project_folders if f["id"] == fid), fid),
+            key="proj_main_select",
+            label_visibility="collapsed",
+        )
+    with _pf_new:
+        with st.popover("＋ New project", use_container_width=True):
+            with st.form("new_folder_wf", clear_on_submit=True):
+                _nfname = st.text_input("Project name", placeholder="e.g. Heinz Q3 Campaign", label_visibility="collapsed")
+                if st.form_submit_button("Create", use_container_width=True):
+                    if create_project_folder(_nfname, _proj_user):
+                        st.rerun()
+                    else:
+                        st.warning("Enter a unique, non-empty name.")
+
+    _sel_proj_name = next((f["name"] for f in project_folders if f["id"] == _sel_proj_id), _sel_proj_id)
+    _proj_items    = [i for i in _all_board_items if _sel_proj_id in (i.get("folder_ids") or [])]
+
+    # Project header
+    st.markdown(f"""
+<div style="margin:18px 0 20px;">
+  <div style="font-family:Georgia,serif;font-size:26px;font-weight:600;color:#071828;display:inline;">
+    {e(_sel_proj_name)}</div>
+  <span class="pill-internal">Internal only</span>
+  <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#9dc4d8;margin-top:4px;letter-spacing:.06em;text-transform:uppercase;">
+    {len(_proj_items)} current{'s' if len(_proj_items) != 1 else ''} collected</div>
+</div>""", unsafe_allow_html=True)
+
+    # ── 2-col wireframe layout ────────────────────────────────────────────────
+    col_currents, col_tp = st.columns([6, 4], gap="large")
+
+    # ── LEFT: Collected currents ──────────────────────────────────────────────
+    with col_currents:
+        st.markdown('<p class="chip-meta" style="margin-bottom:10px;">Collected currents</p>', unsafe_allow_html=True)
+
+        if not _proj_items:
+            st.markdown("""
+<div style="border:1px solid #e4e2db;border-radius:8px;padding:18px;color:#9b9e97;font-size:13px;text-align:center;margin-bottom:10px;">
+  No currents collected yet — use "＋ Add to project" on dispatch cards or search results.
+</div>""", unsafe_allow_html=True)
+        else:
+            for _pit in reversed(_proj_items):
+                _pit_date = (_pit.get("saved_at") or "")[:6]  # "09 Jun"
+                _pit_src  = _source_chip(_pit.get("type", ""))
+                _pit_cat  = _pit.get("category") or ""
+                _pit_meta = " · ".join(filter(None, [_pit_src, _pit_date, _pit_cat]))
+                _mc_col, _mc_del = st.columns([11, 1])
+                with _mc_col:
+                    _pit_url = _pit.get("url", "")
+                    _pit_link = (
+                        f' <a href="{e(_pit_url)}" target="_blank" '
+                        f'style="font-family:JetBrains Mono,monospace;font-size:9px;color:#0a7d8c;'
+                        f'text-decoration:none;">↗</a>'
+                    ) if _pit_url else ""
+                    st.markdown(f"""
+<div class="mini-current">
+  <div class="mini-current-title">{e(_pit.get('title','')[:90])}{_pit_link}</div>
+  <span class="chip-meta">{e(_pit_meta)}</span>
+</div>""", unsafe_allow_html=True)
+                with _mc_del:
+                    st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
+                    if st.button("×", key=f"proj_rem_{_pit['id']}_{_sel_proj_id}",
+                                 help="Remove from this project"):
+                        _new_fids = [f for f in _pit.get("folder_ids", []) if f != _sel_proj_id]
+                        set_item_folders(_pit["id"], _new_fids)
+                        st.rerun()
+
+        # ── Dashed "+ Add a current" ──────────────────────────────────────────
+        with st.expander("＋ Add a current", expanded=False):
+            _add_url  = st.text_input("URL", key="add_curr_url", placeholder="https://…",
+                                      label_visibility="collapsed")
+            _add_note = st.text_input("Note (optional)", key="add_curr_note",
+                                      placeholder="Why is this relevant?", label_visibility="collapsed")
+            if st.button("Fetch & save as current", key="btn_add_curr", use_container_width=True,
+                         disabled=not _add_url):
+                with st.spinner("Fetching the URL and extracting the insight via Claude…"):
+                    try:
+                        _new_curr = add_url_current(
+                            _add_url, _proj_user, _sel_proj_id, _add_note
+                        )
+                        st.success(f"✓ Saved: {_new_curr.get('title','')[:60]}")
+                        st.rerun()
+                    except Exception as _url_err:
+                        st.error(f"Could not fetch the URL: {_url_err}")
+
+    # ── RIGHT: Thought Partner ────────────────────────────────────────────────
+    with col_tp:
+        if not _proj_items:
+            st.markdown("""
+<div class="tp" style="opacity:.55;text-align:center;padding:28px;">
+  <div class="tph">🧭 Thought partner</div>
+  <div class="tpsub">Add at least one current to activate the thought partner.</div>
+</div>""", unsafe_allow_html=True)
+        else:
+            if st.button("🧭 Explore tensions & angles",
+                         key=f"projtp_wf_{_sel_proj_id}", use_container_width=True):
+                _tp_api = os.environ.get("ANTHROPIC_API_KEY")
+                if not _tp_api:
+                    st.error("ANTHROPIC_API_KEY not set.")
+                else:
+                    try:
+                        import anthropic as _ant_tp
+                        _ant_tp_client = _ant_tp.Anthropic(api_key=_tp_api)
+                        _tp_insights = "\n\n".join(
+                            f"[{it['type']}] {it['title']}\n{it.get('content','')}"
+                            for it in _proj_items
+                        )
+                        _tp_prompt = f"""You are a thought partner for a creative strategy team — not a strategist
+delivering a final answer. Your job is to open up thinking, not close it down.
+
+Project: {_sel_proj_name}
+
+Collected currents for this project (and only these):
+
+{_tp_insights}
+
+Based on these signals, surface possible tensions and angles worth discussing — framed as
+open questions and observations, never as conclusions or recommendations. Avoid words like
+"should", "the strategy is", or "the answer is". Stay genuinely exploratory. Reason ONLY over
+the currents collected for this project — do not invent outside context.
+
+Return ONLY valid JSON with this exact structure:
+
+{{
+  "framing": "1-2 sentences setting up what's interesting or unresolved here — a question, not a thesis.",
+  "tensions": [
+    {{"label": "short 2-4 word tag", "text": "1-2 sentences describing a tension or contradiction in the signals, posed as something to weigh, not resolve."}},
+    {{"label": "short 2-4 word tag", "text": "..."}},
+    {{"label": "short 2-4 word tag", "text": "..."}}
+  ],
+  "angles": [
+    {{"label": "short 2-4 word tag", "text": "1-2 sentences describing a possible creative angle or direction — framed as 'what if' or 'one way in could be', not a final recommendation."}},
+    {{"label": "short 2-4 word tag", "text": "..."}},
+    {{"label": "short 2-4 word tag", "text": "..."}}
+  ],
+  "questions_for_team": [
+    "An open question for the team to debate in the next meeting.",
+    "Another open question.",
+    "A third open question."
+  ]
+}}"""
+                        with st.spinner("The Lighthouse is mapping tensions and angles…"):
+                            _tp_msg = _ant_tp_client.messages.create(
+                                model=CLAUDE_MODEL,
+                                max_tokens=2048,
+                                temperature=0.85,
+                                system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
+                                messages=[{"role": "user", "content": _tp_prompt}],
+                            )
+                            _tp_raw = _tp_msg.content[0].text.strip()
+                            if "project_thought_partner" not in st.session_state:
+                                st.session_state["project_thought_partner"] = {}
+                            st.session_state["project_thought_partner"][_sel_proj_id] = _extract_json(_tp_raw)
+                    except json.JSONDecodeError as _tp_ex:
+                        st.error(f"Exploration failed: the response wasn't valid JSON ({_tp_ex}).")
+                        with st.expander("Show raw response"):
+                            st.code(_tp_raw)
+                    except Exception as _tp_ex:
+                        st.error(f"Exploration failed: {_tp_ex}")
+
+            _tp_result = st.session_state.get("project_thought_partner", {}).get(_sel_proj_id)
+            if _tp_result:
+                _tensions_html = "".join(
+                    f'<div class="sugg"><span class="tag">{e(t.get("label",""))}</span>'
+                    f'<span class="sugg-text"> {e(t.get("text",""))}</span></div>'
+                    for t in _tp_result.get("tensions", [])
+                )
+                _angles_html = "".join(
+                    f'<div class="sugg"><span class="tag">{e(a.get("label",""))}</span>'
+                    f'<span class="sugg-text"> {e(a.get("text",""))}</span></div>'
+                    for a in _tp_result.get("angles", [])
+                )
+                _questions_html = "".join(
+                    f'<div class="sugg"><span class="sugg-text">? {e(q)}</span></div>'
+                    for q in _tp_result.get("questions_for_team", [])
+                )
+                st.markdown(f"""
+<div class="tp">
+  <div class="tph">🧭 Thought partner · {e(_sel_proj_name)}</div>
+  <div class="tpsub">{e(_tp_result.get("framing",""))}</div>
+  <div class="tpgroup-title">Possible tensions</div>
+  {_tensions_html}
+  <div class="tpgroup-title">Angles to explore</div>
+  {_angles_html}
+  <div class="tpgroup-title">Questions for the team</div>
+  {_questions_html}
+  <div class="caveat">Suggestions, not conclusions — for the team to debate.</div>
+</div>""", unsafe_allow_html=True)
+                # ── Ask about this project ────────────────────────────────────
+                _ask_q = st.text_input(
+                    "Ask about this project…",
+                    key=f"proj_ask_{_sel_proj_id}",
+                    placeholder="e.g. What's the strongest angle here?",
+                    label_visibility="collapsed",
+                )
+                if _ask_q and st.button("Ask", key=f"proj_ask_btn_{_sel_proj_id}"):
+                    _ask_api = os.environ.get("ANTHROPIC_API_KEY")
+                    if _ask_api:
+                        import anthropic as _ant_ask
+                        _ask_client = _ant_ask.Anthropic(api_key=_ask_api)
+                        _ask_ctx = "\n".join(
+                            f"[{it['type']}] {it['title']}: {it.get('content','')[:200]}"
+                            for it in _proj_items
+                        )
+                        with st.spinner("Thinking…"):
+                            _ask_msg = _ask_client.messages.create(
+                                model=CLAUDE_MODEL,
+                                max_tokens=512,
+                                temperature=0.7,
+                                system="You are a Socratic thought partner. Answer the question by posing more open questions and surfacing tensions — never close down the thinking or give definitive recommendations.",
+                                messages=[{"role": "user", "content": f"Project: {_sel_proj_name}\n\nCollected currents:\n{_ask_ctx}\n\nQuestion from team: {_ask_q}"}],
+                            )
+                            st.markdown(f"""
+<div class="sugg" style="margin-top:12px;">
+  <span class="tag">response</span>
+  <span class="sugg-text"> {e(_ask_msg.content[0].text)}</span>
+</div>""", unsafe_allow_html=True)
+            else:
+                st.caption('Click "Explore tensions & angles" to get started.')
+
+# ── Team Board (expander) ─────────────────────────────────────────────────────
+st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+with st.expander("📋 Team Board · All saved insights", expanded=False):
+    _tb_tabs = st.tabs([
+        f"  My Board ({st.session_state.logged_in_user})  ",
+        "  Team Board  ",
+    ])
+    with _tb_tabs[0]:
+        current_user = st.session_state.logged_in_user
+        my_items_all = [i for i in load_curadoria() if i["user"] == current_user]
+        my_items     = _filter_items_by_active_folder(my_items_all)
 
     if not my_items_all:
         st.info("Your board is empty. Use the 🔖 buttons throughout the dispatch to save insights.")
@@ -3864,8 +4082,8 @@ with cur_tab2:
             )
 
 
-# ── TAB 3: Board Coletivo ─────────────────────────────────────────────────────
-with cur_tab3:
+# ── Team Board tab (inside expander) ─────────────────────────────────────────
+with _tb_tabs[1]:
     all_items_all = load_curadoria()
     all_items     = _filter_items_by_active_folder(all_items_all)
 
@@ -3900,8 +4118,8 @@ with cur_tab3:
                 )
 
 
-# ── TAB: Briefing Builder ─────────────────────────────────────────────────────
-with cur_tab_brief:
+# ── Briefing Builder (expander) ───────────────────────────────────────────────
+with st.expander("✍ Briefing Builder · Turn saved insights into a creative brief", expanded=False):
     current_user = st.session_state.logged_in_user
     my_items     = [i for i in load_curadoria() if i["user"] == current_user]
 
@@ -4176,12 +4394,13 @@ Return ONLY valid JSON with this exact structure:
   <div class="caveat">Suggestions, not conclusions — for the team to debate.</div>
 </div>""", unsafe_allow_html=True)
 
-# ── TAB: Project Thought Partner ─────────────────────────────────────────────
-# Per the wireframe's REACT step: a thought partner scoped to ONE project's
-# collected currents. It reasons only over what the team has saved into that
-# folder, and — like the Briefing Builder's Socratic mode — never concludes,
-# only surfaces tensions, angles and open questions for the team to debate.
-with cur_tab_project_tp:
+# ── OLD Project Thought Partner tab — now handled inline above. ───────────────
+# This block is intentionally replaced by the 2-col wireframe layout; keeping
+# the dead `with` alive would raise NameError. Wrap in `if False:` to silence
+# static-analysis warnings while we clean up.
+if False:
+    _unused_tp_block = True  # placeholder — real logic is in the 2-col section
+if False:  # old block kept for reference, never executed
     st.markdown("""
 <div style="border-top:2px solid #071828;padding-top:1.2rem;margin-bottom:1rem;">
   <div style="font-family:monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;
@@ -4331,11 +4550,10 @@ tab_search.__enter__()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIGNAL LAB — compare current vs next-gen data sources
+# SIGNAL LAB — search backend functions (GDELT / Exa / Tavily)
+# UI is now the wireframe Search tab above; these functions remain as the
+# backend called by the new Run button.
 # ══════════════════════════════════════════════════════════════════════════════
-
-import urllib.request
-import urllib.parse
 
 
 @st.cache_data(ttl=900)   # cache 15 min — GDELT rate-limits aggressively
@@ -4431,50 +4649,247 @@ def _tavily_search(query: str, api_key: str, n: int = 10) -> list:
         return [{"error": str(ex)}]
 
 
-# ── Signal Lab UI ─────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# MODULE 3 — AD HOC SEARCH (wireframe layout)
+# Search bar + platform chip filters + unified results with "+ Add to project"
+# ══════════════════════════════════════════════════════════════════════════════
 
-st.markdown('<div id="lh-sec-lab"></div>', unsafe_allow_html=True)
+st.markdown("""<style>
+.srch-res {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    border: 1px solid #e4e2db; border-radius: 8px;
+    padding: 12px 14px; margin-bottom: 8px;
+    background: #fff !important;
+}
+.srch-res-l { flex: 1; min-width: 0; }
+.srch-res-r {
+    flex: none; margin-left: 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; color: #2f6db0 !important;
+    white-space: nowrap; padding-top: 2px;
+}
+.srch-res-title {
+    font-size: 13.5px; font-weight: 500; color: #071828 !important;
+    margin-bottom: 4px; line-height: 1.35;
+}
+.srch-res-snippet {
+    font-size: 12px; color: #274d68 !important; line-height: 1.5;
+    margin-bottom: 6px;
+}
+</style>""", unsafe_allow_html=True)
+
 st.markdown("""
-<div style="border-top:3px double #071828;padding-top:2rem;margin-top:1rem;">
+<div style="border-top:2px solid #071828;padding-top:1.8rem;margin-top:0.5rem;">
   <span style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.18em;
-       text-transform:uppercase;color:#0a7d8c;font-weight:700;">⚗ Signal Lab</span>
-  <div style="font-family:'Georgia',serif;font-size:28px;font-weight:600;
-       color:#071828;margin:8px 0 6px;">Next-gen data sources · Live comparison</div>
-  <div style="font-family:'Georgia',serif;font-style:italic;font-size:14px;color:#274d68;
-       max-width:68ch;margin-bottom:6px;">Test and compare the current signal pipeline against
-       next-generation sources. Run a live query across each engine and see the difference in
-       breadth, depth and semantic quality.</div>
+       text-transform:uppercase;color:#0a7d8c;font-weight:700;">🔎 Search</span>
+  <div style="font-family:Georgia,serif;font-size:26px;font-weight:600;
+       color:#071828;margin:6px 0 4px;">Find currents</div>
+  <div style="font-family:Georgia,serif;font-style:italic;font-size:14px;color:#274d68;
+       max-width:64ch;margin-bottom:0;">Ad hoc signal search — one query across all connected sources. Collect anything useful straight into a project folder.</div>
 </div>
 """, unsafe_allow_html=True)
 
-_lab_col1, _lab_col2 = st.columns([4, 1])
-with _lab_col1:
+# ── Search bar + Run ─────────────────────────────────────────────────────────
+_sq_col, _sq_run = st.columns([8, 1])
+with _sq_col:
     lab_query = st.text_input(
-        "Test query",
-        value=focus_topic.split(",")[0].strip() if focus_topic else "desk lunch UK workers",
-        help="Run this query against each source to compare results",
+        "Find currents about…",
+        value=focus_topic.split(",")[0].strip() if focus_topic else "",
+        placeholder="Find currents about…",
         key="lab_query",
+        label_visibility="collapsed",
     )
-with _lab_col2:
-    _lab_brand = client_name.split("·")[0].strip()
-    brand_focus = st.checkbox(
-        "🎯 Brand focus",
-        value=True,
-        key="lab_brand_focus",
-        help=f"Prepends '{_lab_brand}' to every search query",
-    )
+with _sq_run:
+    _run_search = st.button("Run", use_container_width=True, type="primary", key="btn_run_search")
 
-# Effective query used in all searches — brand-prefixed when toggled on
-effective_query = f"{_lab_brand} {lab_query}" if brand_focus else lab_query
+# ── Platform chips + API settings ─────────────────────────────────────────────
+_exa_key  = os.environ.get("EXA_API_KEY", "")
+_tav_key  = os.environ.get("TAVILY_API_KEY", "")
+_lab_brand = client_name.split("·")[0].strip()
 
-lab_tab_cur, lab_tab_unified = st.tabs([
-    "  📡 Current Stack  ",
-    "  🔎 Unified Search  ",
-])
+_srch_col_a, _srch_col_b, _srch_col_c, _srch_col_d = st.columns(4)
+with _srch_col_a:
+    _use_local  = st.checkbox("📡 Ingested signals", value=True, key="srch_local")
+with _srch_col_b:
+    _use_gdelt  = st.checkbox("🌍 GDELT", value=True, key="srch_gdelt")
+with _srch_col_c:
+    _use_exa    = st.checkbox(f"🧠 Exa.ai{'  ✓' if _exa_key else ''}", value=bool(_exa_key), key="srch_exa", disabled=not _exa_key)
+with _srch_col_d:
+    _use_tavily = st.checkbox(f"⚡ Tavily{'  ✓' if _tav_key else ''}", value=bool(_tav_key), key="srch_tav", disabled=not _tav_key)
+
+# Defaults (overridden inside the settings expander below)
+_exa_key_input = _exa_key
+_tav_key_input = _tav_key
+_srch_n        = 8
+_brand_focus   = True
+
+with st.expander("⚙ API keys & settings", expanded=not (_exa_key and _tav_key)):
+    _kc1, _kc2, _kc3 = st.columns(3)
+    with _kc1:
+        if _exa_key:
+            st.success("✓ EXA_API_KEY loaded")
+        else:
+            _exa_key_input = st.text_input("EXA_API_KEY", type="password",
+                help="Get a free key at exa.ai", key="srch_exa_key")
+    with _kc2:
+        if _tav_key:
+            st.success("✓ TAVILY_API_KEY loaded")
+        else:
+            _tav_key_input = st.text_input("TAVILY_API_KEY", type="password",
+                help="Get a free key at tavily.com", key="srch_tav_key")
+    with _kc3:
+        _srch_n      = st.slider("Results per source", 4, 15, 8, key="srch_n")
+        _brand_focus = st.checkbox(f"🎯 Brand focus ({_lab_brand})", value=True,
+                                   key="srch_brand", help=f"Prepend '{_lab_brand}' to query")
+
+effective_query = f"{_lab_brand} {lab_query}" if _brand_focus and lab_query else lab_query
+
+# ── Run search ────────────────────────────────────────────────────────────────
+if _run_search and lab_query:
+    _srch_results = {}
+    with st.spinner(f'Searching for \"{effective_query[:50]}\"…'):
+        if _use_local:
+            _sigs = load_signals()
+            _q_lower = effective_query.lower()
+            _local_hits = [
+                s for s in _sigs
+                if any(w in f"{s.get('title','')} {s.get('content','')}".lower()
+                       for w in _q_lower.split()[:4])
+            ][:_srch_n]
+            _srch_results["local"] = _local_hits
+        if _use_gdelt:
+            _srch_results["gdelt"] = _gdelt_search(effective_query, _srch_n)
+        if _use_exa and _exa_key_input:
+            _srch_results["exa"] = _exa_search(effective_query, _exa_key_input, _srch_n)
+        if _use_tavily and _tav_key_input:
+            _srch_results["tavily"] = _tavily_search(effective_query, _tav_key_input, _srch_n)
+    st.session_state["srch_results"]  = _srch_results
+    st.session_state["srch_query"]    = effective_query
+
+# ── Results (wireframe left/right layout) ─────────────────────────────────────
+_srch_display = st.session_state.get("srch_results")
+if _srch_display:
+    st.markdown(f"""
+<div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;
+text-transform:uppercase;color:#9dc4d8;margin:18px 0 10px;">
+Results · {e(st.session_state.get('srch_query',''))}</div>""", unsafe_allow_html=True)
+
+    _proj_folders_srch = load_project_folders()
+    _res_idx = 0
+
+    def _render_srch_result(title, snippet, chip_meta, url, source_key, res_idx):
+        """Render one wireframe-style result row with + Add to project."""
+        _link_html = (
+            f'<a href="{e(url)}" target="_blank" '
+            f'style="font-family:JetBrains Mono,monospace;font-size:9px;'
+            f'color:#0a7d8c;text-decoration:none;">↗ open</a>'
+        ) if url else ""
+        st.markdown(f"""
+<div class="srch-res">
+  <div class="srch-res-l">
+    <div class="srch-res-title">{e(title)}</div>
+    {'<div class="srch-res-snippet">' + e(snippet[:180]) + '…</div>' if snippet else ''}
+    <span class="chip-meta">{e(chip_meta)}</span>  {_link_html}
+  </div>
+</div>""", unsafe_allow_html=True)
+        if not IS_CLIENT and _proj_folders_srch:
+            _save_button(
+                "Add", f"Search Result · {source_key}",
+                title[:120],
+                f"{chip_meta}\n{url}\n\n{snippet[:300]}",
+                key=f"srch_add_{res_idx}",
+                user=st.session_state.logged_in_user,
+            )
+
+    # Local signals
+    _local_res = _srch_display.get("local", [])
+    if _local_res:
+        st.markdown("""<div style="font-family:'JetBrains Mono',monospace;font-size:9px;
+letter-spacing:.14em;text-transform:uppercase;color:#0a7d8c;font-weight:700;
+margin:14px 0 6px;">📡 Ingested signals</div>""", unsafe_allow_html=True)
+        for _r in _local_res:
+            _src  = _r.get("source", "").title()
+            _date = (_r.get("date") or _r.get("scraped_at") or "")[:10]
+            _render_srch_result(
+                _r.get("title", "")[:90],
+                _r.get("content", "")[:180],
+                f"{_src} · {_date}".strip(" ·"),
+                _r.get("url", ""),
+                "Ingested",
+                _res_idx,
+            )
+            _res_idx += 1
+
+    # GDELT
+    _gdelt_res = _srch_display.get("gdelt", [])
+    if _gdelt_res and not ("error" in (_gdelt_res[0] if _gdelt_res else {})):
+        st.markdown("""<div style="font-family:'JetBrains Mono',monospace;font-size:9px;
+letter-spacing:.14em;text-transform:uppercase;color:#6ea8c4;font-weight:700;
+margin:14px 0 6px;">🌍 GDELT · global media</div>""", unsafe_allow_html=True)
+        for _r in _gdelt_res:
+            _render_srch_result(
+                _r.get("title", "")[:90],
+                "",
+                f"{_r.get('source','')} · {_r.get('seendate','')[:8]}".strip(" ·"),
+                _r.get("url", ""),
+                "GDELT",
+                _res_idx,
+            )
+            _res_idx += 1
+    elif _gdelt_res and "error" in _gdelt_res[0]:
+        st.caption(f"GDELT: {_gdelt_res[0]['error']}")
+
+    # Exa
+    _exa_res = _srch_display.get("exa", [])
+    if _exa_res and not ("error" in (_exa_res[0] if _exa_res else {})):
+        st.markdown("""<div style="font-family:'JetBrains Mono',monospace;font-size:9px;
+letter-spacing:.14em;text-transform:uppercase;color:#0a7d8c;font-weight:700;
+margin:14px 0 6px;">🧠 Exa.ai · semantic search</div>""", unsafe_allow_html=True)
+        for _r in _exa_res:
+            _render_srch_result(
+                _r.get("title", "")[:90],
+                _r.get("snippet", "")[:180],
+                f"Exa · {_r.get('published','')[:10]}".strip(" ·"),
+                _r.get("url", ""),
+                "Exa.ai",
+                _res_idx,
+            )
+            _res_idx += 1
+    elif _exa_res and "error" in _exa_res[0]:
+        st.caption(f"Exa.ai: {_exa_res[0]['error']}")
+
+    # Tavily
+    _tav_res = _srch_display.get("tavily", [])
+    if _tav_res and not ("error" in (_tav_res[0] if _tav_res else {})):
+        st.markdown("""<div style="font-family:'JetBrains Mono',monospace;font-size:9px;
+letter-spacing:.14em;text-transform:uppercase;color:#274d68;font-weight:700;
+margin:14px 0 6px;">⚡ Tavily · AI-optimised web</div>""", unsafe_allow_html=True)
+        for _r in _tav_res:
+            _render_srch_result(
+                _r.get("title", "")[:90],
+                _r.get("snippet", "")[:180],
+                f"Tavily · score {_r.get('score','')}",
+                _r.get("url", ""),
+                "Tavily",
+                _res_idx,
+            )
+            _res_idx += 1
+    elif _tav_res and "error" in _tav_res[0]:
+        st.caption(f"Tavily: {_tav_res[0]['error']}")
+
+    if _res_idx == 0:
+        st.info("No results found — try a different query or enable more sources.")
+
+# ── Keep old lab tabs hidden (for reference) — never displayed ─────────────────
+if False:
+    lab_tab_cur = lab_tab_unified = None  # dead code placeholder
 
 
-# ── TAB: Current Stack ────────────────────────────────────────────────────────
-with lab_tab_cur:
+# ── OLD Lab tabs — replaced by wireframe Search UI above. Kept in `if False`
+# so they don't run but the code is preserved for reference.
+if False:
+    _dead_cur = True
+if False:  # old lab_tab_cur block — never executed
     _sigs = load_signals()
     st.markdown("""
 <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.14em;
@@ -4551,8 +4966,7 @@ border-radius:6px;padding:12px;margin-bottom:10px;">
         st.caption("No keyword matches found — try a different query.")
 
 
-# ── TAB: Unified Search ───────────────────────────────────────────────────────
-with lab_tab_unified:
+if False:  # old lab_tab_unified block — never executed
     import re as _re
 
     st.markdown("""
@@ -5081,6 +5495,96 @@ function show(id,btn){
 </body></html>"""
 
 st.components.v1.html(_VISION_MAP_HTML, height=550, scrolling=False)
+
+# ── Sweep scheduling & velocity panel ─────────────────────────────────────────
+st.markdown("""
+<div style="border-top:2px solid #e4e2db;padding-top:2rem;margin-top:2.5rem;">
+  <span style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.18em;
+       text-transform:uppercase;color:#0a7d8c;font-weight:700;">◉ Path B + C</span>
+  <div style="font-family:'Georgia',serif;font-size:22px;font-weight:600;
+       color:#071828;margin:8px 0 4px;">Sweep Scheduling & Trend Velocity</div>
+  <div style="font-family:'Georgia',serif;font-style:italic;font-size:13px;color:#274d68;
+       margin-bottom:20px;">Configure automated sweep frequency and track how signal volume
+       evolves over time per topic.</div>
+</div>
+""", unsafe_allow_html=True)
+
+_sched_col, _vel_col = st.columns([1, 1], gap="large")
+
+with _sched_col:
+    st.markdown("##### ⏱ Sweep frequency")
+    _sweep_freq = st.select_slider(
+        "Run automatic sweeps",
+        options=["Manual only", "Daily", "Every 2 days", "Weekly"],
+        value=st.session_state.get("sweep_frequency", "Manual only"),
+        key="sweep_frequency",
+        label_visibility="collapsed",
+    )
+    st.caption(f"**Current setting:** {_sweep_freq}")
+
+    if _sweep_freq != "Manual only":
+        st.info(
+            f"⚙ Automated sweeps are set to **{_sweep_freq}**. "
+            "To run automatically, deploy this app and wire `run_sweep()` to a cron job or "
+            "Streamlit Cloud's scheduled reruns. The **⚡ Sweep & Generate** button always works on demand.",
+            icon="ℹ️",
+        )
+    else:
+        st.caption("Use **⚡ Sweep & Generate** in the sidebar to run a sweep manually.")
+
+    st.markdown("---")
+    st.markdown("##### 📌 Log this sweep run to DB")
+    st.caption("After running a sweep, press this to record it for velocity tracking.")
+    _st_topic = st.text_input("Topic swept", placeholder="e.g. Cultural identity", key="vel_topic_input")
+    _st_count = st.number_input("Signals found", min_value=0, value=0, step=1, key="vel_count_input")
+    if st.button("📥 Record sweep run", use_container_width=True, key="record_sweep_btn"):
+        if not _st_topic.strip():
+            st.warning("Enter the topic name.")
+        elif not _db.use_supabase():
+            st.warning("Supabase not configured — can't persist sweep history.")
+        else:
+            _run_id = _db.record_sweep_run(
+                topic=_st_topic.strip(),
+                signal_count=int(_st_count),
+                sources=["manual"],
+            )
+            if _run_id:
+                st.toast(f"✓ Sweep run recorded (id: {_run_id[:8]}…)")
+            else:
+                st.warning("Recording failed — check Supabase connection.")
+
+with _vel_col:
+    st.markdown("##### 📈 Trend velocity")
+    st.caption("How fast signal volume is changing per topic across sweeps.")
+
+    if _db.use_supabase():
+        _recent_runs = _db.load_sweep_runs(limit=30)
+        if _recent_runs:
+            # Group by topic → show count trend
+            from collections import defaultdict
+            _topic_counts: dict = defaultdict(list)
+            for _r in reversed(_recent_runs):
+                _topic_counts[_r.get("topic", "?")].append(_r.get("signal_count", 0))
+
+            for _t, _cnts in list(_topic_counts.items())[:6]:
+                _delta = _cnts[-1] - _cnts[0] if len(_cnts) > 1 else 0
+                _arrow = "↑" if _delta > 0 else ("↓" if _delta < 0 else "→")
+                _color = "#1a6b4a" if _delta > 0 else ("#9d2a2a" if _delta < 0 else "#6e6e6e")
+                st.markdown(
+                    f'<div style="margin-bottom:8px;padding:10px 14px;background:#f8f6f0;'
+                    f'border-radius:8px;border-left:3px solid {_color}">'
+                    f'<span style="font-weight:500;font-size:13px;color:#071828">{e(_t)}</span>'
+                    f'<span style="float:right;font-family:monospace;font-size:13px;color:{_color}">'
+                    f'{_arrow} {abs(_delta):+d} signals</span>'
+                    f'<div style="font-size:11px;color:#6e6e6e;margin-top:3px">'
+                    f'{len(_cnts)} sweep{"s" if len(_cnts)!=1 else ""} · '
+                    f'latest: {_cnts[-1]} signals</div></div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("No sweep runs recorded yet. Run some sweeps and log them to see velocity trends here.")
+    else:
+        st.info("Connect Supabase to track trend velocity across sweeps.")
 
 tab_roadmap.__exit__(None, None, None)
 
