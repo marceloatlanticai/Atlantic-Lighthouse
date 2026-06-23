@@ -186,14 +186,21 @@ def load_all_dispatches() -> list:
             )
             records = []
             for row in res.data:
+                full_data = row.get("full_json") or {}
+                # full_json may come back as a string if it was json.dumps'd before insert
+                if isinstance(full_data, str):
+                    try:
+                        full_data = json.loads(full_data)
+                    except Exception:
+                        full_data = {}
                 rec = {
                     "timestamp":   row.get("timestamp", ""),
                     "dispatch_id": row.get("dispatch_id", ""),
                     "topic":       row.get("topic", ""),
                     "content":     row.get("content", ""),
-                    "full":        row.get("full_json") or {},
+                    "full":        full_data,
                 }
-                if rec["full"] and rec["timestamp"]:
+                if rec["timestamp"]:
                     records.append(rec)
             return records
         except Exception as exc:
