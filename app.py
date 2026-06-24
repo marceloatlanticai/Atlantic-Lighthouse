@@ -916,6 +916,65 @@ with st.sidebar:
             st.caption("No archived dispatches yet.")
 
         st.markdown("---")
+
+        # ── In-app ingestion panel ──────────────────────────────────────────
+        with st.expander("📡 Run Ingestion", expanded=False):
+            st.caption("Populate the signal database directly from Streamlit Cloud.")
+            _ing_topic = st.text_area(
+                "Topic / brief",
+                value=focus_topic or "cultural trends, consumer behaviour",
+                height=68,
+                key="ing_topic",
+            )
+            _ing_client = st.text_input(
+                "Client tag",
+                value=client_name.replace(" ", "_")[:20] if client_name else "",
+                key="ing_client_tag",
+            )
+            _ing_limit = st.slider("Max signals", 20, 200, 100, key="ing_limit")
+            _ing_sources = st.multiselect(
+                "Sources",
+                ["Reddit", "RSS", "GDELT", "Google Trends", "Hacker News", "Exa", "YouTube"],
+                default=["Reddit", "RSS", "GDELT", "Google Trends", "Hacker News"],
+                key="ing_sources",
+            )
+            _ing_geo = st.selectbox(
+                "Google Trends geography",
+                ["🌍 Worldwide", "🇬🇧 UK", "🇺🇸 USA", "🇧🇷 Brazil"],
+                key="ing_geo",
+            ) if "Google Trends" in (_ing_sources if "ing_sources" in st.session_state else []) else "🌍 Worldwide"
+            _geo_map = {"🌍 Worldwide": "", "🇬🇧 UK": "GB", "🇺🇸 USA": "US", "🇧🇷 Brazil": "BR"}
+            _geo_code = _geo_map.get(_ing_geo, "")
+
+            if st.button("⚡ Start ingestion", use_container_width=True, key="run_ingestion_btn"):
+                _ing_log = st.empty()
+                _ing_lines: list[str] = []
+                def _ing_cb(msg: str):
+                    _ing_lines.append(msg)
+                    _ing_log.code("\n".join(_ing_lines[-14:]))
+                try:
+                    from ingestion import run_ingestion as _run_ing
+                    with st.spinner("🗼 Sweeping the web…"):
+                        _result = _run_ing(
+                            topic=_ing_topic,
+                            client_tag=_ing_client or None,
+                            limit=_ing_limit,
+                            use_reddit="Reddit" in _ing_sources,
+                            use_rss="RSS" in _ing_sources,
+                            use_gdelt="GDELT" in _ing_sources,
+                            use_google_trends="Google Trends" in _ing_sources,
+                            use_hacker_news="Hacker News" in _ing_sources,
+                            use_exa="Exa" in _ing_sources,
+                            use_youtube="YouTube" in _ing_sources,
+                            trends_geo=_geo_code,
+                            callback=_ing_cb,
+                        )
+                    st.success(f"✅ {_result['total']} signals saved — " + " · ".join(f"{k}: {v}" for k, v in _result["by_source"].items()))
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as _ing_exc:
+                    st.error(f"Ingestion failed: {_ing_exc}")
+
         st.markdown(
             '<div style="font-size:10px;color:#444;font-family:monospace">'
             'Claude · Gemini Embeddings · Pinecone · Apify</div>',
