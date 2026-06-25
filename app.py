@@ -319,6 +319,53 @@ st.markdown("""
 <style>
 #MainMenu, header, footer { visibility: hidden; }
 
+/* ── Global CSS variable override — force light theme vars so Streamlit
+   elements that inherit --background-color don't render dark-on-dark ── */
+:root {
+    --background-color:           #f0f4f7 !important;
+    --secondary-background-color: #e4edf4 !important;
+    --text-color:                 #071828 !important;
+    --font:                       "Source Sans Pro", sans-serif;
+}
+
+/* ── code / pre blocks — Streamlit defaults these to a near-black bg ── */
+[data-testid="stAppViewContainer"] pre,
+[data-testid="stAppViewContainer"] code:not([class*="language"]) {
+    background: #e8f0f6 !important;
+    background-color: #e8f0f6 !important;
+    color: #274d68 !important;
+    border-radius: 4px !important;
+}
+[data-testid="stAppViewContainer"] .stCodeBlock,
+[data-testid="stAppViewContainer"] [data-testid="stCode"] {
+    background: #e8f0f6 !important;
+    color: #274d68 !important;
+}
+[data-testid="stAppViewContainer"] [data-testid="stCode"] pre {
+    background: #e8f0f6 !important;
+    color: #274d68 !important;
+}
+
+/* ── board cards — force every descendant to stay on light bg ── */
+.cur-item, .cur-item * {
+    background: transparent !important;
+    background-color: transparent !important;
+}
+.cur-item {
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+}
+.cur-item-meta {
+    background: transparent !important;
+    color: #6ea8c4 !important;
+}
+
+/* ── stMarkdownContainer — prevent dark bg from bleeding through ── */
+[data-testid="stMarkdownContainer"],
+[data-testid="stVerticalBlock"] {
+    background-color: transparent !important;
+}
+
 /* ── Atlantic background — garante o sea mist em todos os contextos ── */
 [data-testid="stAppViewContainer"],
 [data-testid="stAppViewContainer"] > section,
@@ -328,7 +375,7 @@ st.markdown("""
         radial-gradient(ellipse 80% 40% at 50% -10%, rgba(10,125,140,.07), transparent),
         radial-gradient(ellipse 60% 30% at 90% 110%, rgba(6,34,51,.04), transparent);
 }
-.block-container { padding: 52px 0.5rem 0 !important; max-width: 100% !important; background: transparent !important; }
+.block-container { padding: 64px 0.5rem 0 !important; max-width: 100% !important; background: transparent !important; }
 
 /* ── Sticky top navigation bar ── */
 .lh-topnav {
