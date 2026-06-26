@@ -285,6 +285,233 @@ def scrape_gdelt(
     return signals
 
 
+# ── TikTok (Apify actor — needs APIFY_API_TOKEN) ─────────────────────────────
+
+def _fetch_tiktok_comments(video_url: str, api_token: str, max_comments: int = 10) -> str:
+    """
+    Fetch top comments for a TikTok video URL via Apify.
+    Returns a formatted string to append to the signal content.
+    Actor: apify/tiktok-comment-scraper
+    """
+    try:
+        from apify_client import ApifyClient
+        client = ApifyClient(api_token)
+        run = client.actor("apify/tiktok-comment-scraper").call(
+            run_input={"postURLs": [video_url], "commentsPerPost": max_comments},
+            timeout_secs=60,
+        )
+        comments = []
+        for c in client.dataset(run["defaultDatasetId"]).iterate_items():
+            text = c.get("text") or c.get("commentText") or ""
+            likes = c.get("diggCount") or c.get("likeCount") or 0
+            if text:
+                comments.append(f"  ↳ {text[:200]} ({likes:,} likes)")
+        if comments:
+            return "\n\nTop comments:\n" + "\n".join(comments[:max_comments])
+    except Exception:
+        pass
+    return ""
+
+
+def scrape_tiktok(
+    topic: str,
+    api_token: str,
+    n: int = 20,
+    fetch_comments: bool = True,
+    client_tag: Optional[str] = None,
+    callback: Optional[Callable] = None,
+) -> list[Signal]:
+    """
+    Search TikTok for videos related to the topic via Apify.
+    Actor: clockworks/free-tiktok-scraper (no auth required on actor side).
+    If fetch_comments=True, enriches each signal with ~10 top comments
+    (Buzzabout-style: comments as context for AI classification).
+    Requires: APIFY_API_TOKEN secret.
+    """
+    if not api_token:
+        return []
+    if callback:
+        callback(f"[TikTok] Searching '{topic[:40]}' via Apify…")
+    signals: list[Signal] = []
+    try:
+        from apify_client import ApifyClient
+        client = ApifyClient(api_token)
+        run_input = {
+            "searchQueries": [topic],
+            "maxItems": n,
+            "shouldDownloadVideos": False,
+            "shouldDownloadCovers": False,
+        }
+        run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input, timeout_secs=90)
+        videos = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        for idx, item in enumerate(videos):
+            vid_url = item.get("webVideoUrl") or item.get("authorMeta", {}).get("url", "")
+            ts = item.get("createTimeISO") or datetime.now(tz=timezone.utc).isoformat()
+            desc = item.get("text") or ""
+            author = item.get("authorMeta", {}).get("name", "")
+            plays = item.get("playCount") or 0
+            likes = item.get("diggCount") or 0
+            content = f"{desc}\n\nAuthor: @{author} | Views: {plays:,} | Likes: {likes:,}"
+
+            # Enrich with comments (Buzzabout-style context enrichment)
+            if fetch_comments and vid_url:
+                if callback:
+                    callback(f"[TikTok] Fetching comments for video {idx + 1}/{len(videos)}…")
+                content += _fetch_tiktok_comments(vid_url, api_token, max_comments=10)
+
+            signals.append(Signal(
+                id=_make_id(vid_url, str(ts)),
+                title=_clean_title(desc[:100], content),
+                content=content.strip()[:4000],
+                source="tiktok",
+                url=vid_url,
+                timestamp=str(ts),
+                client_tag=client_tag,
+                raw_meta={
+                    "author": author,
+                    "plays": plays,
+                    "likes": likes,
+                    "hashtags": item.get("hashtags", []),
+                    "comments_enriched": fetch_comments,
+                },
+            ))
+    except Exception as exc:
+        if callback:
+            callback(f"[TikTok] Error: {exc}")
+    if callback:
+        callback(f"[TikTok] ✓ {len(signals)} signals")
+    return signals
+
+
+# ── Instagram (Apify actor — needs APIFY_API_TOKEN) ───────────────────────────
+
+def scrape_instagram(
+    topic: str,
+    api_token: str,
+    n: int = 20,
+    client_tag: Optional[str] = None,
+    callback: Optional[Callable] = None,
+) -> list[Signal]:
+    """
+    Search Instagram hashtags/posts related to the topic via Apify.
+    Actor: apify/instagram-hashtag-scraper
+    Requires: APIFY_API_TOKEN secret.
+    """
+    if not api_token:
+        return []
+    if callback:
+        callback(f"[Instagram] Searching '{topic[:40]}' via Apify…")
+    signals: list[Signal] = []
+    try:
+        from apify_client import ApifyClient
+        client = ApifyClient(api_token)
+        # Convert topic to hashtags: "desk lunch UK" → ["desklunch", "desklunchuk"]
+        words = [w.lower() for w in topic.replace(",", " ").split() if len(w) > 2]
+        hashtags = [words[0]] + (["".join(words[:2])] if len(words) > 1 else [])
+        run_input = {
+            "hashtags": hashtags[:3],
+            "resultsLimit": n,
+            "scrapeStories": False,
+        }
+        run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input, timeout_secs=90)
+        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            post_url = item.get("url") or item.get("shortCode", "")
+            if post_url and not post_url.startswith("http"):
+                post_url = f"https://www.instagram.com/p/{post_url}/"
+            ts = item.get("timestamp") or datetime.now(tz=timezone.utc).isoformat()
+            caption = item.get("caption") or ""
+            owner = item.get("ownerUsername") or ""
+            likes = item.get("likesCount") or 0
+            comments = item.get("commentsCount") or 0
+            content = f"{caption}\n\n@{owner} | Likes: {likes:,} | Comments: {comments:,}".strip()
+            signals.append(Signal(
+                id=_make_id(post_url, str(ts)),
+                title=_clean_title(caption[:100], content),
+                content=content[:4000],
+                source="instagram",
+                url=post_url,
+                timestamp=str(ts),
+                client_tag=client_tag,
+                raw_meta={
+                    "owner": owner,
+                    "likes": likes,
+                    "comments": comments,
+                    "hashtags": item.get("hashtags", []),
+                },
+            ))
+    except Exception as exc:
+        if callback:
+            callback(f"[Instagram] Error: {exc}")
+    if callback:
+        callback(f"[Instagram] ✓ {len(signals)} signals")
+    return signals
+
+
+# ── X / Twitter (Apify actor — needs APIFY_API_TOKEN) ────────────────────────
+
+def scrape_twitter(
+    topic: str,
+    api_token: str,
+    n: int = 20,
+    client_tag: Optional[str] = None,
+    callback: Optional[Callable] = None,
+) -> list[Signal]:
+    """
+    Search X/Twitter for posts related to the topic via Apify.
+    Actor: apify/twitter-scraper
+    Requires: APIFY_API_TOKEN secret.
+    """
+    if not api_token:
+        return []
+    if callback:
+        callback(f"[X/Twitter] Searching '{topic[:40]}' via Apify…")
+    signals: list[Signal] = []
+    try:
+        from apify_client import ApifyClient
+        client = ApifyClient(api_token)
+        run_input = {
+            "searchTerms": [topic],
+            "maxItems": n,
+            "queryType": "Latest",
+            "lang": "en",
+        }
+        run = client.actor("apify/twitter-scraper").call(run_input=run_input, timeout_secs=90)
+        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            tweet_url = item.get("url") or item.get("tweetUrl") or ""
+            ts = item.get("createdAt") or datetime.now(tz=timezone.utc).isoformat()
+            text = item.get("fullText") or item.get("text") or ""
+            author = item.get("author", {}) or {}
+            handle = author.get("userName") or author.get("screen_name") or ""
+            likes = item.get("likeCount") or item.get("favorite_count") or 0
+            retweets = item.get("retweetCount") or item.get("retweet_count") or 0
+            replies = item.get("replyCount") or 0
+            content = (
+                f"{text}\n\n"
+                f"@{handle} · Likes: {likes:,} · Retweets: {retweets:,} · Replies: {replies:,}"
+            ).strip()
+            signals.append(Signal(
+                id=_make_id(tweet_url, str(ts)),
+                title=_clean_title(text[:100], content),
+                content=content[:4000],
+                source="twitter",
+                url=tweet_url,
+                timestamp=str(ts),
+                client_tag=client_tag,
+                raw_meta={
+                    "handle": handle,
+                    "likes": likes,
+                    "retweets": retweets,
+                    "replies": replies,
+                },
+            ))
+    except Exception as exc:
+        if callback:
+            callback(f"[X/Twitter] Error: {exc}")
+    if callback:
+        callback(f"[X/Twitter] ✓ {len(signals)} signals")
+    return signals
+
+
 # ── Exa.ai (needs EXA_API_KEY) ────────────────────────────────────────────────
 
 def scrape_exa(
@@ -653,6 +880,10 @@ def run_ingestion(
     use_google_trends: bool = True,
     use_hacker_news: bool = True,
     use_youtube: bool = False,
+    use_tiktok: bool = False,
+    use_instagram: bool = False,
+    use_twitter: bool = False,
+    tiktok_comments: bool = True,   # enrich TikTok signals with top comments
     trends_geo: str = "",           # "" = worldwide, "GB", "US", "BR", etc.
     youtube_region: str = "US",
     extra_subreddits: Optional[list[str]] = None,
@@ -674,6 +905,7 @@ def run_ingestion(
 
     exa_key     = os.environ.get("EXA_API_KEY", "")
     youtube_key = os.environ.get("YOUTUBE_API_KEY", "")
+    apify_key   = os.environ.get("APIFY_API_TOKEN", "")
 
     if use_reddit:
         subs = (extra_subreddits or []) + _DEFAULT_SUBREDDITS
@@ -717,6 +949,25 @@ def run_ingestion(
                            client_tag=client_tag, callback=callback)
         all_signals.extend(r)
         counts["youtube"] = len(r)
+
+    if use_tiktok and apify_key:
+        r = scrape_tiktok(topic, api_token=apify_key, n=20,
+                          fetch_comments=tiktok_comments,
+                          client_tag=client_tag, callback=callback)
+        all_signals.extend(r)
+        counts["tiktok"] = len(r)
+
+    if use_instagram and apify_key:
+        r = scrape_instagram(topic, api_token=apify_key, n=20,
+                             client_tag=client_tag, callback=callback)
+        all_signals.extend(r)
+        counts["instagram"] = len(r)
+
+    if use_twitter and apify_key:
+        r = scrape_twitter(topic, api_token=apify_key, n=20,
+                           client_tag=client_tag, callback=callback)
+        all_signals.extend(r)
+        counts["twitter"] = len(r)
 
     # Deduplicate and limit
     all_signals = _deduplicate(all_signals)[:limit]

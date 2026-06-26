@@ -3588,8 +3588,8 @@ if not IS_CLIENT:
     # without restyling the many nested st.tabs() used elsewhere (My Board /
     # Team Board / Briefing Builder, Current Stack / Unified Search, etc).
     st.markdown('<div id="lh-toptabs-marker" style="display:none"></div>', unsafe_allow_html=True)
-    tab_dispatches, tab_projects, tab_search, tab_roadmap = st.tabs([
-        "◉  Dispatches", "◈  Projects", "◎  Search", "▲  Roadmap",
+    tab_dispatches, tab_projects, tab_evidence, tab_search, tab_roadmap = st.tabs([
+        "◉  Dispatches", "◈  Projects", "◎  Evidence", "◎  Search", "▲  Roadmap",
     ])
     tab_dispatches.__enter__()
 
@@ -4669,6 +4669,347 @@ Return ONLY valid JSON with this exact structure:
                     st.caption('Click "Explore tensions & angles" to get started.')
 
 tab_projects.__exit__(None, None, None)
+tab_evidence.__enter__()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EVIDENCE TAB — hunch-driven signal retrieval, Buzzabout-style
+# User types a hypothesis; Claude classifies signals as confirms/contradicts/
+# complicates. Clean minimal UI. Sources: DB signals + live TikTok/IG/YouTube.
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.markdown("""
+<style>
+/* ── Evidence tab — clean minimalist shell ── */
+.ev-header { padding: 2.5rem 0 1.5rem; text-align: center; }
+.ev-eyebrow { font-family: monospace; font-size: 10px; letter-spacing: .18em;
+  text-transform: uppercase; color: #6ea8c4; margin-bottom: 8px; }
+.ev-title { font-family: Georgia, serif; font-size: 1.6rem; font-weight: 400;
+  color: #071828; margin-bottom: 4px; }
+.ev-sub { font-size: 13px; color: #6ea8c4; }
+
+/* Evidence cards */
+.ev-card { border: 0.5px solid #cde0ea; border-radius: 10px;
+  background: #fff; padding: 16px 18px; margin-bottom: 10px; }
+.ev-card-top { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.ev-src { font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 4px; font-weight: 600; }
+.ev-src-reddit   { background:#fdefd5; color:#7a4a0a; }
+.ev-src-rss      { background:#e4f4f5; color:#0a5560; }
+.ev-src-gdelt    { background:#ede9fe; color:#4c3494; }
+.ev-src-trends   { background:#fce7f3; color:#831843; }
+.ev-src-hn       { background:#fff3e0; color:#7c4a00; }
+.ev-src-youtube  { background:#fce8e8; color:#8b0000; }
+.ev-src-tiktok   { background:#e8f5e9; color:#1b5e20; }
+.ev-src-instagram{ background:#f3e5f5; color:#4a148c; }
+.ev-src-twitter  { background:#e7f3ff; color:#003566; }
+.ev-verdict { font-size: 10px; padding: 3px 9px; border-radius: 4px; letter-spacing: .06em; font-weight: 600; }
+.ev-confirms    { background:#ecfdf5; color:#065f46; }
+.ev-contradicts { background:#fef2f2; color:#7f1d1d; }
+.ev-complicates { background:#fffbeb; color:#78350f; }
+.ev-date { font-size: 11px; color: #9dc4d8; margin-left: auto; }
+.ev-card-title { font-size: 14px; font-weight: 600; color: #071828; margin-bottom: 6px; line-height: 1.4; }
+.ev-reason { font-size: 12px; color: #0a7d8c; margin-bottom: 8px;
+  font-style: italic; }
+.ev-excerpt { font-size: 13px; color: #274d68; line-height: 1.6; margin-bottom: 12px;
+  border-left: 2px solid #cde0ea; padding-left: 10px; }
+.ev-foot { display: flex; justify-content: space-between; align-items: center; }
+.ev-source-url { font-size: 11px; color: #9dc4d8; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="ev-header">
+  <div class="ev-eyebrow">Evidence First</div>
+  <div class="ev-title">What's your hunch?</div>
+  <div class="ev-sub">Type a hypothesis — the system finds what confirms, contradicts, or complicates it.</div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Input ──────────────────────────────────────────────────────────────────────
+_ev_hunch = st.text_area(
+    "Your hypothesis",
+    placeholder="e.g. Desk lunch became a symbol of corporate resignation, not productivity",
+    height=80,
+    label_visibility="collapsed",
+    key="ev_hunch",
+)
+
+_ev_col1, _ev_col2 = st.columns([3, 1])
+with _ev_col1:
+    _ev_sources = st.multiselect(
+        "Sources",
+        ["Saved signals", "Reddit (live)", "RSS (live)", "GDELT (live)",
+         "Google Trends (live)", "Hacker News (live)",
+         "YouTube (live)", "TikTok (live)", "Instagram (live)", "X/Twitter (live)"],
+        default=["Saved signals"],
+        label_visibility="collapsed",
+        key="ev_sources",
+    )
+with _ev_col2:
+    _ev_run = st.button("Find evidence →", use_container_width=True, key="ev_run",
+                        type="primary")
+
+# ── Run Evidence Search ────────────────────────────────────────────────────────
+if _ev_run and _ev_hunch.strip():
+    _ev_api_key     = os.environ.get("ANTHROPIC_API_KEY", "")
+    _ev_apify_key   = os.environ.get("APIFY_API_TOKEN", "")
+    _ev_youtube_key = os.environ.get("YOUTUBE_API_KEY", "")
+    _ev_exa_key     = os.environ.get("EXA_API_KEY", "")
+
+    _ev_raw: list[dict] = []
+    _ev_status = st.empty()
+
+    # 1. Saved signals from DB
+    if "Saved signals" in _ev_sources:
+        _ev_status.caption("Searching signal database…")
+        _all_sigs = load_signals(limit=500)
+        _q_words = set(_ev_hunch.lower().split())
+        for _s in _all_sigs:
+            _text = f"{_s.get('title','')} {_s.get('content','')}".lower()
+            if sum(1 for w in _q_words if len(w) > 3 and w in _text) >= 2:
+                _ev_raw.append(_s)
+        _ev_raw = _ev_raw[:40]
+
+    # 2. Live scrapes
+    try:
+        from ingestion import (scrape_reddit, scrape_rss, scrape_gdelt,
+                               scrape_google_trends, scrape_hacker_news,
+                               scrape_youtube, scrape_tiktok, scrape_instagram,
+                               scrape_twitter)
+
+        def _ev_cb(msg): _ev_status.caption(msg)
+
+        if "Reddit (live)" in _ev_sources:
+            _ev_status.caption("Scraping Reddit…")
+            for s in scrape_reddit(_ev_hunch, max_items=15, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+
+        if "RSS (live)" in _ev_sources:
+            _ev_status.caption("Reading RSS feeds…")
+            for s in scrape_rss(max_items_per_feed=3, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+
+        if "GDELT (live)" in _ev_sources:
+            _ev_status.caption("Querying GDELT…")
+            for s in scrape_gdelt(_ev_hunch, n=15, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+
+        if "Google Trends (live)" in _ev_sources:
+            _ev_status.caption("Checking Google Trends…")
+            for s in scrape_google_trends(_ev_hunch, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+
+        if "Hacker News (live)" in _ev_sources:
+            _ev_status.caption("Searching Hacker News…")
+            for s in scrape_hacker_news(_ev_hunch, n=10, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+
+        if "YouTube (live)" in _ev_sources and _ev_youtube_key:
+            _ev_status.caption("Searching YouTube…")
+            for s in scrape_youtube(_ev_hunch, api_key=_ev_youtube_key, n=10, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+
+        if "TikTok (live)" in _ev_sources and _ev_apify_key:
+            _ev_status.caption("Scraping TikTok via Apify…")
+            for s in scrape_tiktok(_ev_hunch, api_token=_ev_apify_key, n=15, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+
+        if "Instagram (live)" in _ev_sources and _ev_apify_key:
+            _ev_status.caption("Scraping Instagram via Apify…")
+            for s in scrape_instagram(_ev_hunch, api_token=_ev_apify_key, n=15, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+
+        if "X/Twitter (live)" in _ev_sources and _ev_apify_key:
+            _ev_status.caption("Scraping X/Twitter via Apify…")
+            for s in scrape_twitter(_ev_hunch, api_token=_ev_apify_key, n=15, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+
+    except Exception as _ev_scrape_exc:
+        st.warning(f"Some live sources failed: {_ev_scrape_exc}")
+
+    # 3. Claude classifies signals
+    _ev_status.caption(f"Classifying {len(_ev_raw)} signals with Claude…")
+    _ev_results: list[dict] = []
+
+    if _ev_raw and _ev_api_key:
+        try:
+            import anthropic as _ant_ev
+            _ev_client = _ant_ev.Anthropic(api_key=_ev_api_key)
+            _ev_batch = _ev_raw[:30]  # cap to keep prompt manageable
+            _ev_signals_txt = "\n\n".join(
+                f"[{i}] SOURCE: {s.get('source','?')} | URL: {s.get('url','')}\n"
+                f"TITLE: {s.get('title','')[:120]}\n"
+                f"CONTENT: {s.get('content','')[:300]}"
+                for i, s in enumerate(_ev_batch)
+            )
+            _ev_prompt = f"""You are an evidence analyst. The user has a hunch:
+
+HUNCH: "{_ev_hunch}"
+
+Below are {len(_ev_batch)} signals from various sources. For each signal, classify it as one of:
+- CONFIRMS: directly supports the hunch
+- CONTRADICTS: challenges or disproves the hunch
+- COMPLICATES: adds nuance, a counter-example, or a related tension that complicates the picture
+
+For each signal, respond with a JSON array entry. Keep "reason" to one short sentence (max 15 words).
+
+SIGNALS:
+{_ev_signals_txt}
+
+Respond ONLY with a valid JSON array like:
+[
+  {{"index": 0, "verdict": "CONFIRMS", "reason": "Workers report eating at desks from resignation, not efficiency."}},
+  ...
+]
+Include all {len(_ev_batch)} entries."""
+
+            _ev_resp = _ev_client.messages.create(
+                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                max_tokens=2048,
+                messages=[{"role": "user", "content": _ev_prompt}],
+            )
+            _ev_txt = _ev_resp.content[0].text.strip()
+            # Extract JSON array
+            _ev_json_start = _ev_txt.find("[")
+            _ev_json_end   = _ev_txt.rfind("]") + 1
+            if _ev_json_start >= 0 and _ev_json_end > _ev_json_start:
+                _ev_classifications = json.loads(_ev_txt[_ev_json_start:_ev_json_end])
+                for _cl in _ev_classifications:
+                    _idx = _cl.get("index", -1)
+                    if 0 <= _idx < len(_ev_batch):
+                        _sig = dict(_ev_batch[_idx])
+                        _sig["_verdict"] = _cl.get("verdict", "COMPLICATES").upper()
+                        _sig["_reason"]  = _cl.get("reason", "")
+                        _ev_results.append(_sig)
+        except Exception as _ev_cls_exc:
+            st.warning(f"Classification failed: {_ev_cls_exc}")
+            # Fallback: show results without classification
+            for _s in _ev_raw[:30]:
+                _s2 = dict(_s)
+                _s2["_verdict"] = "COMPLICATES"
+                _s2["_reason"] = ""
+                _ev_results.append(_s2)
+    elif _ev_raw:
+        for _s in _ev_raw[:30]:
+            _s2 = dict(_s)
+            _s2["_verdict"] = "COMPLICATES"
+            _s2["_reason"] = ""
+            _ev_results.append(_s2)
+
+    st.session_state["ev_results"] = _ev_results
+    st.session_state["ev_hunch_used"] = _ev_hunch
+    _ev_status.empty()
+
+elif not _ev_run:
+    pass  # first load — no results yet
+
+# ── Results ────────────────────────────────────────────────────────────────────
+_ev_results_stored = st.session_state.get("ev_results", [])
+_ev_hunch_stored   = st.session_state.get("ev_hunch_used", "")
+
+if _ev_results_stored:
+    _ev_confirms    = sum(1 for r in _ev_results_stored if r.get("_verdict") == "CONFIRMS")
+    _ev_contradicts = sum(1 for r in _ev_results_stored if r.get("_verdict") == "CONTRADICTS")
+    _ev_complicates = sum(1 for r in _ev_results_stored if r.get("_verdict") == "COMPLICATES")
+
+    # Filter chips
+    _ev_filter_col, _ev_sort_col = st.columns([4, 1])
+    with _ev_filter_col:
+        _ev_filter = st.radio(
+            "Filter",
+            ["All", f"Confirms ({_ev_confirms})",
+             f"Contradicts ({_ev_contradicts})",
+             f"Complicates ({_ev_complicates})"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="ev_filter",
+        )
+
+    # Apply filter
+    _ev_show = _ev_results_stored
+    if _ev_filter.startswith("Confirms"):
+        _ev_show = [r for r in _ev_results_stored if r.get("_verdict") == "CONFIRMS"]
+    elif _ev_filter.startswith("Contradicts"):
+        _ev_show = [r for r in _ev_results_stored if r.get("_verdict") == "CONTRADICTS"]
+    elif _ev_filter.startswith("Complicates"):
+        _ev_show = [r for r in _ev_results_stored if r.get("_verdict") == "COMPLICATES"]
+
+    st.caption(f"{len(_ev_show)} signals · hunch: *{_ev_hunch_stored[:80]}*")
+    st.markdown("---")
+
+    _ev_src_class = {
+        "reddit": "ev-src-reddit", "rss": "ev-src-rss", "gdelt": "ev-src-gdelt",
+        "google_trends": "ev-src-trends", "hacker_news": "ev-src-hn",
+        "youtube": "ev-src-youtube", "tiktok": "ev-src-tiktok",
+        "instagram": "ev-src-instagram", "twitter": "ev-src-twitter",
+    }
+    _ev_verdict_class = {
+        "CONFIRMS": "ev-confirms", "CONTRADICTS": "ev-contradicts", "COMPLICATES": "ev-complicates",
+    }
+    _ev_verdict_emoji = {"CONFIRMS": "✓", "CONTRADICTS": "✗", "COMPLICATES": "~"}
+
+    for _ev_i, _ev_r in enumerate(_ev_show):
+        _src      = _ev_r.get("source", "?")
+        _verdict  = _ev_r.get("_verdict", "COMPLICATES")
+        _reason   = _ev_r.get("_reason", "")
+        _title    = _ev_r.get("title", "")[:120]
+        _content  = _ev_r.get("content", "")[:280]
+        _url      = _ev_r.get("url", "")
+        _ts       = (_ev_r.get("timestamp") or "")[:10]
+        _src_cls  = _ev_src_class.get(_src, "ev-src-rss")
+        _vrd_cls  = _ev_verdict_class.get(_verdict, "ev-complicates")
+        _vrd_lbl  = f"{_ev_verdict_emoji.get(_verdict,'')} {_verdict.capitalize()}"
+        _domain   = urllib.parse.urlparse(_url).netloc if _url else _src
+
+        st.markdown(f"""
+<div class="ev-card">
+  <div class="ev-card-top">
+    <span class="ev-src {_src_cls}">{e(_src.replace('_',' '))}</span>
+    <span class="ev-verdict {_vrd_cls}">{_vrd_lbl}</span>
+    <span class="ev-date">{_ts}</span>
+  </div>
+  <div class="ev-card-title">{e(_title)}</div>
+  {"<div class='ev-reason'>" + e(_reason) + "</div>" if _reason else ""}
+  <div class="ev-excerpt">{e(_content)}{"…" if len(_ev_r.get('content','')) > 280 else ""}</div>
+  <div class="ev-foot">
+    <span class="ev-source-url">{e(_domain)}</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+        _ev_btn_col1, _ev_btn_col2 = st.columns([6, 1])
+        with _ev_btn_col2:
+            if st.button("+ Save", key=f"ev_save_{_ev_i}", use_container_width=True):
+                _ev_user = st.session_state.get("logged_in_user", "internal")
+                add_curadoria_item(
+                    _ev_user, _src, _title,
+                    _ev_r.get("content", "")[:1000],
+                )
+                st.success("Saved to board!")
+
+elif _ev_run and not _ev_hunch.strip():
+    st.warning("Please enter a hunch first.")
+else:
+    st.markdown("""
+<div style="text-align:center; padding: 4rem 2rem; color: #9dc4d8;">
+  <div style="font-size: 2rem; margin-bottom: 1rem;">◎</div>
+  <div style="font-size: 14px; font-family: Georgia, serif;">
+    Type a hypothesis above and click <em>Find evidence</em>
+  </div>
+  <div style="font-size: 12px; margin-top: 8px; font-family: monospace; letter-spacing: .06em; text-transform: uppercase;">
+    The system will search your signals and classify what confirms, contradicts, or complicates your thinking
+  </div>
+</div>""", unsafe_allow_html=True)
+
+tab_evidence.__exit__(None, None, None)
 tab_search.__enter__()
 
 
