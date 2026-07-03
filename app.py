@@ -5290,6 +5290,56 @@ SIGNALS:
     _tr_status.empty()
 
 # ── Render board ──────────────────────────────────────────────────────────────
+# ── Auto-load from DB on first open (no fetch needed) ─────────────────────────
+if "tr_board" not in st.session_state:
+    _tr_ant_key_auto = os.environ.get("ANTHROPIC_API_KEY", "")
+    _tr_auto_sigs = load_signals(limit=300)
+    if _tr_auto_sigs and _tr_ant_key_auto:
+        with st.spinner("Loading latest trends from your signals…"):
+            try:
+                import anthropic as _ant_auto
+                _tr_auto_txt = "\n".join(
+                    f"[{i}] {s.get('source','?').upper()} | {s.get('title','')[:100]}"
+                    f" | URL:{s.get('url','')[:80]}"
+                    for i, s in enumerate(_tr_auto_sigs[:80])
+                )
+                _tr_auto_resp = _ant_auto.Anthropic(api_key=_tr_ant_key_auto).messages.create(
+                    model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content":
+                        f"You are a cultural trends analyst. Analyse these {min(len(_tr_auto_sigs),80)} "
+                        f"signals from various sources and identify 10–16 distinct trending themes.\n\n"
+                        f"For each theme return: name (2-5 words, title case), velocity (RISING/STABLE/DECLINING), "
+                        f"score_num (integer -100 to +100), score_label (e.g. '+42%'), "
+                        f"sources (list), note (max 12 words), urls (up to 2 real URLs from signals).\n\n"
+                        f"Respond ONLY with a valid JSON array.\n\nSIGNALS:\n{_tr_auto_txt}"}],
+                )
+                _tr_auto_raw = _tr_auto_resp.content[0].text.strip()
+                _tr_auto_js  = _tr_auto_raw[_tr_auto_raw.find("["):_tr_auto_raw.rfind("]")+1]
+                _tr_auto_board: dict = {"high": [], "stable": [], "decline": []}
+                for _th in json.loads(_tr_auto_js):
+                    _vel = _th.get("velocity","STABLE").upper()
+                    _card = {
+                        "name":        _th.get("name",""),
+                        "score_num":   int(_th.get("score_num",0)),
+                        "score_label": _th.get("score_label",""),
+                        "sources":     _th.get("sources",[]),
+                        "note":        _th.get("note",""),
+                        "urls":        [u for u in _th.get("urls",[]) if u.startswith("http")][:2],
+                        "velocity":    _vel,
+                    }
+                    if _vel == "RISING":
+                        _tr_auto_board["high"].append(_card)
+                    elif _vel == "DECLINING":
+                        _tr_auto_board["decline"].append(_card)
+                    else:
+                        _tr_auto_board["stable"].append(_card)
+                st.session_state["tr_board"]      = _tr_auto_board
+                st.session_state["tr_topic_used"] = "latest signals"
+                st.session_state["tr_terms_used"] = []
+            except Exception:
+                pass  # silently skip if auto-load fails
+
 _tr_board_data  = st.session_state.get("tr_board", None)
 _tr_topic_label = st.session_state.get("tr_topic_used", "")
 _tr_terms_label = st.session_state.get("tr_terms_used", [])
@@ -5337,7 +5387,10 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
   {link_html}
 </div>""", unsafe_allow_html=True)
 
-    # Compact move buttons (2 cols, excluding current)
+    # Move to board buttons
+    st.markdown('<div style="font-size:10px;color:#9dc4d8;margin:6px 0 3px;'
+                'letter-spacing:.06em;text-transform:uppercase;">Move to board →</div>',
+                unsafe_allow_html=True)
     _dests = [d for d in [("high","🔺 Rising"),("stable","➡️ Stable"),("decline","📉 Cooling")]
               if d[0] != col_key]
     _bc1, _bc2 = st.columns(2)
