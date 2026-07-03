@@ -5014,15 +5014,15 @@ tab_trends.__enter__()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TRENDS BOARD — visual kanban of trending topics by velocity
-# Fetches from all configured sources, Claude extracts themes + classifies
-# into 3 colour-coded columns. Cards moveable between columns, saveable to project.
+# v2: English only, brand-term expansion, saved-signals pre-load,
+#     higher limits, clickable links, velocity chart below board.
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 /* ── Trends Board column wrappers ── */
-.tr-col-wrap { border-radius: 12px; padding: 14px 12px; min-height: 200px; }
+.tr-col-wrap { border-radius: 12px; padding: 14px 12px; min-height: 120px; }
 .tr-col-high    { background: #f0fdf4; border-top: 3px solid #16a34a; }
 .tr-col-stable  { background: #eff6ff; border-top: 3px solid #2563eb; }
 .tr-col-decline { background: #fff7ed; border-top: 3px solid #ea580c; }
@@ -5067,22 +5067,23 @@ st.markdown("""
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
-<div style="padding: 2rem 0 1.2rem; text-align: center;">
+<div style="padding:1.2rem 0 1rem;text-align:center;">
   <div style="font-family:monospace;font-size:10px;letter-spacing:.18em;
-    text-transform:uppercase;color:#6ea8c4;margin-bottom:8px;">Trends Board</div>
-  <div style="font-family:Georgia,serif;font-size:1.5rem;font-weight:400;
-    color:#071828;margin-bottom:4px;">What's rising, stable, or cooling?</div>
-  <div style="font-size:13px;color:#6ea8c4;">
+    text-transform:uppercase;color:#6ea8c4;margin-bottom:6px;">Trends Board</div>
+  <div style="font-family:Georgia,serif;font-size:1.4rem;font-weight:400;
+    color:#071828;margin-bottom:3px;">What's rising, stable, or cooling?</div>
+  <div style="font-size:12px;color:#6ea8c4;">
     Fetch from your sources — Claude maps the themes into a visual board.
   </div>
 </div>
 """, unsafe_allow_html=True)
 
 # ── Inputs ────────────────────────────────────────────────────────────────────
+# ── Inputs ────────────────────────────────────────────────────────────────────
 _tr_c1, _tr_c2 = st.columns([3, 1])
 with _tr_c1:
     _tr_topic = st.text_input(
-        "Topic", placeholder="e.g. desk lunch, quiet quitting, AI productivity",
+        "Topic", placeholder="e.g. Heinz, desk lunch, quiet quitting",
         key="tr_topic", label_visibility="collapsed",
     )
 with _tr_c2:
@@ -5091,11 +5092,10 @@ with _tr_c2:
 
 _tr_sources = st.multiselect(
     "Sources to scan",
-    ["Google Trends", "Reddit", "Hacker News", "GDELT", "RSS",
+    ["Saved signals", "Google Trends", "Reddit", "Hacker News", "GDELT", "RSS",
      "YouTube", "TikTok", "Instagram", "X/Twitter", "Exa"],
-    default=["Google Trends", "Reddit", "Hacker News", "GDELT"],
-    key="tr_sources",
-    label_visibility="collapsed",
+    default=["Saved signals", "Google Trends", "Reddit", "Hacker News", "GDELT"],
+    key="tr_sources", label_visibility="collapsed",
 )
 
 # ── Fetch & classify ──────────────────────────────────────────────────────────
@@ -5105,8 +5105,28 @@ if _tr_fetch and _tr_topic.strip():
     _tr_exa_key     = os.environ.get("EXA_API_KEY", "")
     _tr_ant_key     = os.environ.get("ANTHROPIC_API_KEY", "")
 
-    _tr_raw: list[dict] = []
+    _tr_raw: list[dict] = []   # {"title","content","source","url"}
     _tr_status = st.empty()
+
+    # Step 0 — Brand expansion: use Claude to derive related search terms
+    _tr_expanded_terms = [_tr_topic]
+    if _tr_ant_key:
+        try:
+            import anthropic as _ant_tr0
+            _tr_exp_resp = _ant_tr0.Anthropic(api_key=_tr_ant_key).messages.create(
+                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                max_tokens=200,
+                messages=[{"role": "user", "content":
+                    f'Give 4 closely related search terms for "{_tr_topic}" '
+                    f'(brand, products, competitors, culture). '
+                    f'JSON array of strings only, no explanation.'}],
+            )
+            _tr_exp_txt = _tr_exp_resp.content[0].text.strip()
+            _tr_exp_js  = _tr_exp_txt[_tr_exp_txt.find("["):_tr_exp_txt.rfind("]")+1]
+            _tr_expanded_terms += json.loads(_tr_exp_js)
+        except Exception:
+            pass
+    _tr_status.caption(f"Searching for: {', '.join(_tr_expanded_terms[:5])}")
 
     try:
         from ingestion import (
@@ -5116,64 +5136,87 @@ if _tr_fetch and _tr_topic.strip():
         )
         def _tr_cb(msg): _tr_status.caption(msg)
 
-        if "Google Trends" in _tr_sources:
-            for s in scrape_google_trends(_tr_topic, callback=_tr_cb):
-                _tr_raw.append({"title": s.title, "content": s.content,
-                                "source": s.source, "raw_meta": s.raw_meta or {}})
+        # Saved signals — keyword search across DB
+        if "Saved signals" in _tr_sources:
+            _tr_status.caption("Searching saved signals…")
+            _all_db = load_signals(limit=500)
+            _q_words = set(_tr_topic.lower().split())
+            for _s in _all_db:
+                _txt = f"{_s.get('title','')} {_s.get('content','')}".lower()
+                if any(w in _txt for w in _q_words if len(w) > 2):
+                    _tr_raw.append({"title": _s.get("title",""), "content": _s.get("content","")[:300],
+                                    "source": _s.get("source","rss"), "url": _s.get("url","")})
+            _tr_raw = _tr_raw[:60]
 
-        if "Reddit" in _tr_sources:
-            for s in scrape_reddit(_tr_topic, max_items=20, callback=_tr_cb):
-                _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "raw_meta": {}})
+        # Live sources — iterate over expanded terms for broader coverage
+        for _term in _tr_expanded_terms[:3]:
+            if "Google Trends" in _tr_sources:
+                for s in scrape_google_trends(_term, callback=_tr_cb):
+                    _tr_raw.append({"title": s.title, "content": s.content,
+                                    "source": s.source, "url": s.url or ""})
 
-        if "Hacker News" in _tr_sources:
-            for s in scrape_hacker_news(_tr_topic, n=15, callback=_tr_cb):
-                _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "raw_meta": {}})
+            if "Reddit" in _tr_sources:
+                for s in scrape_reddit(_term, max_items=25, callback=_tr_cb):
+                    _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                    "source": s.source, "url": s.url or ""})
 
-        if "GDELT" in _tr_sources:
-            for s in scrape_gdelt(_tr_topic, n=15, callback=_tr_cb):
-                _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "raw_meta": {}})
+            if "Hacker News" in _tr_sources:
+                for s in scrape_hacker_news(_term, n=20, callback=_tr_cb):
+                    _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                    "source": s.source, "url": s.url or ""})
+
+            if "GDELT" in _tr_sources:
+                for s in scrape_gdelt(_term, n=20, callback=_tr_cb):
+                    _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                    "source": s.source, "url": s.url or ""})
 
         if "RSS" in _tr_sources:
-            for s in scrape_rss(max_items_per_feed=3, callback=_tr_cb):
+            for s in scrape_rss(max_items_per_feed=5, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "raw_meta": {}})
+                                "source": s.source, "url": s.url or ""})
 
         if "YouTube" in _tr_sources and _tr_youtube_key:
-            for s in scrape_youtube(_tr_topic, api_key=_tr_youtube_key,
-                                    n=10, callback=_tr_cb):
-                _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "raw_meta": {}})
+            for _term in _tr_expanded_terms[:2]:
+                for s in scrape_youtube(_term, api_key=_tr_youtube_key, n=15, callback=_tr_cb):
+                    _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                    "source": s.source, "url": s.url or ""})
 
         if "TikTok" in _tr_sources and _tr_apify_key:
             for s in scrape_tiktok(_tr_topic, api_token=_tr_apify_key,
-                                   n=15, fetch_comments=False, callback=_tr_cb):
+                                   n=20, fetch_comments=False, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "raw_meta": s.raw_meta or {}})
+                                "source": s.source, "url": s.url or ""})
 
         if "Instagram" in _tr_sources and _tr_apify_key:
             for s in scrape_instagram(_tr_topic, api_token=_tr_apify_key,
-                                      n=15, callback=_tr_cb):
+                                      n=20, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "raw_meta": {}})
+                                "source": s.source, "url": s.url or ""})
 
         if "X/Twitter" in _tr_sources and _tr_apify_key:
             for s in scrape_twitter(_tr_topic, api_token=_tr_apify_key,
-                                    n=15, callback=_tr_cb):
+                                    n=20, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "raw_meta": {}})
+                                "source": s.source, "url": s.url or ""})
 
         if "Exa" in _tr_sources and _tr_exa_key:
-            for s in scrape_exa(_tr_topic, api_key=_tr_exa_key, n=10, callback=_tr_cb):
+            for s in scrape_exa(_tr_topic, api_key=_tr_exa_key, n=15, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "raw_meta": {}})
+                                "source": s.source, "url": s.url or ""})
 
     except Exception as _tr_src_err:
         st.warning(f"Some sources failed: {_tr_src_err}")
 
-    # Claude extracts themes and classifies
+    # Deduplicate by title
+    _tr_seen, _tr_deduped = set(), []
+    for _r in _tr_raw:
+        _k = _r.get("title","")[:60].lower()
+        if _k not in _tr_seen:
+            _tr_seen.add(_k)
+            _tr_deduped.append(_r)
+    _tr_raw = _tr_deduped[:80]
+
+    # Claude extracts themes, classifies, and picks representative URLs
     _tr_status.caption(f"Claude analysing {len(_tr_raw)} signals for trending themes…")
     _tr_board = {"high": [], "stable": [], "decline": []}
 
@@ -5181,47 +5224,49 @@ if _tr_fetch and _tr_topic.strip():
         try:
             import anthropic as _ant_tr
             _tr_client = _ant_tr.Anthropic(api_key=_tr_ant_key)
-            _tr_sig_txt = "\n\n".join(
-                f"[{i}] SOURCE:{s['source']} | {s['title'][:120]}"
-                for i, s in enumerate(_tr_raw[:50])
+            _tr_sig_txt = "\n".join(
+                f"[{i}] {s['source'].upper()} | {s['title'][:100]} | URL:{s.get('url','')[:80]}"
+                for i, s in enumerate(_tr_raw[:70])
             )
-            _tr_prompt = f"""You are a cultural trends analyst. The research topic is: "{_tr_topic}"
+            _tr_prompt = f"""You are a cultural trends analyst. Research topic: "{_tr_topic}"
 
-Analyse these {min(len(_tr_raw), 50)} signals and identify the top 8–14 distinct trending themes or topics.
+Analyse these {min(len(_tr_raw),70)} signals. Identify 10–18 distinct trending themes.
 
-For each theme:
-- "name": short label (2–5 words, title case)
-- "velocity": one of "RISING", "STABLE", or "DECLINING"
-- "score": a short indicator like "+52%", "→ steady", "-18%"
-- "sources": list of source names (from the signals)
-- "note": one sentence (max 12 words) on why this velocity
+For each theme return:
+- "name": 2–5 words, title case
+- "velocity": "RISING", "STABLE", or "DECLINING"
+- "score_num": integer -100 to +100 (positive = rising, 0 = stable, negative = declining)
+- "score_label": e.g. "+52%", "→ steady", "-18%"
+- "sources": list of source names involved
+- "note": one sentence, max 12 words, explaining the velocity
+- "urls": up to 2 representative URLs from the signals above (exact URLs, or empty list)
 
-Respond ONLY with a valid JSON array:
-[
-  {{"name": "Desk Lunch Rituals", "velocity": "RISING", "score": "+61%",
-    "sources": ["tiktok", "reddit"], "note": "Surge in #desklunch content across platforms."}},
-  ...
-]
+Respond ONLY with a valid JSON array. Example:
+[{{"name": "Ketchup Packet Redesign", "velocity": "RISING", "score_num": 58,
+   "score_label": "+58%", "sources": ["hacker_news", "reddit"],
+   "note": "Multiple stories on new bottle ergonomics and accessibility.",
+   "urls": ["https://example.com/article"]}}]
 
 SIGNALS:
 {_tr_sig_txt}"""
 
             _tr_resp = _tr_client.messages.create(
                 model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
-                max_tokens=1800,
+                max_tokens=2500,
                 messages=[{"role": "user", "content": _tr_prompt}],
             )
             _tr_txt = _tr_resp.content[0].text.strip()
             _tr_js  = _tr_txt[_tr_txt.find("["):_tr_txt.rfind("]") + 1]
-            _tr_themes = json.loads(_tr_js)
-            for _th in _tr_themes:
+            for _th in json.loads(_tr_js):
                 _vel = _th.get("velocity", "STABLE").upper()
                 _card = {
-                    "name":    _th.get("name", ""),
-                    "score":   _th.get("score", ""),
-                    "sources": _th.get("sources", []),
-                    "note":    _th.get("note", ""),
-                    "velocity": _vel,
+                    "name":        _th.get("name", ""),
+                    "score_num":   int(_th.get("score_num", 0)),
+                    "score_label": _th.get("score_label", ""),
+                    "sources":     _th.get("sources", []),
+                    "note":        _th.get("note", ""),
+                    "urls":        [u for u in _th.get("urls", []) if u.startswith("http")][:2],
+                    "velocity":    _vel,
                 }
                 if _vel == "RISING":
                     _tr_board["high"].append(_card)
@@ -5231,23 +5276,23 @@ SIGNALS:
                     _tr_board["stable"].append(_card)
         except Exception as _tr_cls_err:
             st.warning(f"Claude classification failed: {_tr_cls_err}")
-            # Fallback: put everything in stable
             for _s in _tr_raw[:12]:
                 _tr_board["stable"].append({
-                    "name": _s["title"][:40],
-                    "score": "?",
-                    "sources": [_s["source"]],
-                    "note": "",
+                    "name": _s["title"][:40], "score_num": 0,
+                    "score_label": "?", "sources": [_s["source"]],
+                    "note": "", "urls": [_s.get("url","")] if _s.get("url") else [],
                     "velocity": "STABLE",
                 })
 
-    st.session_state["tr_board"]  = _tr_board
-    st.session_state["tr_topic_used"] = _tr_topic
+    st.session_state["tr_board"]       = _tr_board
+    st.session_state["tr_topic_used"]  = _tr_topic
+    st.session_state["tr_terms_used"]  = _tr_expanded_terms
     _tr_status.empty()
 
 # ── Render board ──────────────────────────────────────────────────────────────
 _tr_board_data  = st.session_state.get("tr_board", None)
 _tr_topic_label = st.session_state.get("tr_topic_used", "")
+_tr_terms_label = st.session_state.get("tr_terms_used", [])
 
 _tr_src_cls = {
     "reddit": "tr-src-reddit", "google_trends": "tr-src-google_trends",
@@ -5260,52 +5305,60 @@ _tr_vel_cls  = {"RISING": "tr-vel-high", "STABLE": "tr-vel-stable", "DECLINING":
 _tr_vel_icon = {"RISING": "🔺", "STABLE": "➡️", "DECLINING": "📉"}
 
 def _tr_render_card(card: dict, col_key: str, idx: int):
-    """Render one trend card with move buttons."""
     srcs = card.get("sources", [])
     src_badges = " ".join(
-        f'<span class="tr-src {_tr_src_cls.get(s, "tr-src-rss")}">{e(s.replace("_"," "))}</span>'
+        f'<span class="tr-src {_tr_src_cls.get(s,"tr-src-rss")}">{e(s.replace("_"," "))}</span>'
         for s in srcs[:3]
     )
-    vel   = card.get("velocity", "STABLE")
-    score = card.get("score", "")
-    vel_cls  = _tr_vel_cls.get(vel, "tr-vel-stable")
-    vel_icon = _tr_vel_icon.get(vel, "➡️")
+    vel       = card.get("velocity", "STABLE")
+    vel_cls   = _tr_vel_cls.get(vel, "tr-vel-stable")
+    vel_icon  = _tr_vel_icon.get(vel, "➡️")
+    score_lbl = card.get("score_label", "")
+    urls      = card.get("urls", [])
+
+    # Build link row
+    link_html = ""
+    if urls:
+        links = " · ".join(
+            f'<a href="{u}" target="_blank" style="color:#6ea8c4;font-size:10px;'
+            f'text-decoration:none;">{urllib.parse.urlparse(u).netloc or u[:30]}</a>'
+            for u in urls
+        )
+        link_html = f'<div style="margin-top:6px;">{links}</div>'
 
     st.markdown(f"""
 <div class="tr-card">
   <div class="tr-card-top">
     {src_badges}
-    <span class="tr-vel {vel_cls}">{vel_icon} {e(score)}</span>
+    <span class="tr-vel {vel_cls}">{vel_icon} {e(score_lbl)}</span>
   </div>
   <div class="tr-card-name">{e(card.get("name",""))}</div>
   {"<div class='tr-card-note'>" + e(card.get("note","")) + "</div>" if card.get("note") else ""}
+  {link_html}
 </div>""", unsafe_allow_html=True)
 
-    # Move buttons (only show columns that aren't the current one)
-    _btn_cols = st.columns(3)
-    _destinations = [
-        ("high",    "🔺 Em Alta",    0),
-        ("stable",  "➡️ Estável",    1),
-        ("decline", "📉 Arrefecendo", 2),
-    ]
-    for _dst_key, _dst_lbl, _btn_i in _destinations:
-        if _dst_key != col_key:
-            with _btn_cols[_btn_i]:
-                if st.button(_dst_lbl, key=f"tr_mv_{col_key}_{idx}_{_dst_key}",
-                             use_container_width=True):
-                    _brd = st.session_state.get("tr_board", {})
-                    _card_obj = _brd.get(col_key, [])[idx]
-                    _brd[col_key].pop(idx)
-                    _brd.setdefault(_dst_key, []).append(_card_obj)
-                    st.session_state["tr_board"] = _brd
-                    st.rerun()
+    # Compact move buttons (2 cols, excluding current)
+    _dests = [d for d in [("high","🔺 Rising"),("stable","➡️ Stable"),("decline","📉 Cooling")]
+              if d[0] != col_key]
+    _bc1, _bc2 = st.columns(2)
+    for _bi, (_dk, _dl) in enumerate(_dests):
+        with (_bc1 if _bi == 0 else _bc2):
+            if st.button(_dl, key=f"tr_mv_{col_key}_{idx}_{_dk}",
+                         use_container_width=True):
+                _brd = st.session_state.get("tr_board", {})
+                _card_obj = _brd.get(col_key, [])[idx]
+                _brd[col_key].pop(idx)
+                _brd.setdefault(_dk, []).append(_card_obj)
+                st.session_state["tr_board"] = _brd
+                st.rerun()
 
 if _tr_board_data is not None:
     _tr_total = sum(len(v) for v in _tr_board_data.values())
     if _tr_total == 0:
-        st.info("No trends found — try broader topic or add more sources.")
+        st.info("No trends found — try a broader topic or add more sources.")
     else:
-        st.caption(f"{_tr_total} themes · topic: *{_tr_topic_label}*")
+        _terms_str = ", ".join(_tr_terms_label[:4]) if _tr_terms_label else _tr_topic_label
+        st.caption(f"{_tr_total} themes · searched: *{_terms_str}*")
         st.markdown("---")
 
         # ── 3 Kanban columns ──────────────────────────────────────────────────
@@ -5315,8 +5368,8 @@ if _tr_board_data is not None:
             _h_count = len(_tr_board_data.get("high", []))
             st.markdown(f"""
 <div class="tr-col-wrap tr-col-high">
-  <div class="tr-col-header">🔺 Em Alta &nbsp;
-    <span style="font-weight:400;opacity:.6;">({_h_count})</span>
+  <div class="tr-col-header">🔺 Rising
+    <span style="font-weight:400;opacity:.55;margin-left:4px;">({_h_count})</span>
   </div>
 </div>""", unsafe_allow_html=True)
             for _i, _card in enumerate(_tr_board_data.get("high", [])):
@@ -5326,8 +5379,8 @@ if _tr_board_data is not None:
             _s_count = len(_tr_board_data.get("stable", []))
             st.markdown(f"""
 <div class="tr-col-wrap tr-col-stable">
-  <div class="tr-col-header">➡️ Estável &nbsp;
-    <span style="font-weight:400;opacity:.6;">({_s_count})</span>
+  <div class="tr-col-header">➡️ Stable
+    <span style="font-weight:400;opacity:.55;margin-left:4px;">({_s_count})</span>
   </div>
 </div>""", unsafe_allow_html=True)
             for _i, _card in enumerate(_tr_board_data.get("stable", [])):
@@ -5337,56 +5390,98 @@ if _tr_board_data is not None:
             _d_count = len(_tr_board_data.get("decline", []))
             st.markdown(f"""
 <div class="tr-col-wrap tr-col-decline">
-  <div class="tr-col-header">📉 Arrefecendo &nbsp;
-    <span style="font-weight:400;opacity:.6;">({_d_count})</span>
+  <div class="tr-col-header">📉 Cooling
+    <span style="font-weight:400;opacity:.55;margin-left:4px;">({_d_count})</span>
   </div>
 </div>""", unsafe_allow_html=True)
             for _i, _card in enumerate(_tr_board_data.get("decline", [])):
                 _tr_render_card(_card, "decline", _i)
 
+        # ── Velocity chart ────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("""
+<div style="font-family:monospace;font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;color:#6ea8c4;margin-bottom:10px;">
+  Velocity Overview
+</div>""", unsafe_allow_html=True)
+
+        # Collect all cards sorted by score_num descending
+        _all_cards = (
+            [(c, "high")    for c in _tr_board_data.get("high", [])] +
+            [(c, "stable")  for c in _tr_board_data.get("stable", [])] +
+            [(c, "decline") for c in _tr_board_data.get("decline", [])]
+        )
+        _all_cards.sort(key=lambda x: x[0].get("score_num", 0), reverse=True)
+
+        _bar_colors = {"high": "#16a34a", "stable": "#2563eb", "decline": "#ea580c"}
+        _chart_rows = ""
+        _max_abs = max((abs(c.get("score_num", 0)) for c, _ in _all_cards), default=1) or 1
+
+        for _c, _col_k in _all_cards:
+            _num   = _c.get("score_num", 0)
+            _lbl   = _c.get("score_label", "")
+            _pct   = abs(_num) / _max_abs * 100
+            _color = _bar_colors.get(_col_k, "#2563eb")
+            _name  = _c.get("name", "")[:30]
+            _chart_rows += f"""
+<div style="display:flex;align-items:center;margin-bottom:5px;gap:8px;">
+  <span style="width:160px;font-size:11px;color:#274d68;text-align:right;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{e(_name)}</span>
+  <div style="flex:1;background:#f1f5f9;border-radius:3px;overflow:hidden;height:14px;">
+    <div style="width:{_pct:.0f}%;background:{_color};height:14px;border-radius:3px;
+      transition:width .3s;"></div>
+  </div>
+  <span style="width:44px;font-size:11px;font-weight:600;color:{_color};">{e(_lbl)}</span>
+</div>"""
+
+        st.markdown(f"""
+<div style="background:#fff;border-radius:10px;padding:16px 20px;
+  border:0.5px solid #cde0ea;">{_chart_rows}</div>
+""", unsafe_allow_html=True)
+
         # ── Save to Project ───────────────────────────────────────────────────
         st.markdown("---")
-        _tr_sv_col1, _tr_sv_col2 = st.columns([3, 1])
-        with _tr_sv_col1:
+        _tr_sv_c1, _tr_sv_c2 = st.columns([3, 1])
+        with _tr_sv_c1:
             _tr_folders = load_project_folders()
-            _tr_folder_opts = {f.get("name", "?"): f.get("id", "") for f in _tr_folders}
+            _tr_folder_opts = {f.get("name","?"): f.get("id","") for f in _tr_folders}
             _tr_sel_folder = st.selectbox(
-                "Save to project",
-                options=list(_tr_folder_opts.keys()),
-                key="tr_save_folder",
-                label_visibility="collapsed",
+                "Save to project", options=list(_tr_folder_opts.keys()),
+                key="tr_save_folder", label_visibility="collapsed",
             ) if _tr_folder_opts else None
-        with _tr_sv_col2:
+        with _tr_sv_c2:
             if st.button("Save Board →", key="tr_save", use_container_width=True,
                          type="primary"):
                 if _tr_sel_folder and _tr_folder_opts:
-                    _tr_fid = _tr_folder_opts[_tr_sel_folder]
                     _tr_board_md = f"**Trends Board — {_tr_topic_label}**\n\n"
-                    for _col_name, _col_icon in [("high","🔺"), ("stable","➡️"), ("decline","📉")]:
-                        _tr_board_md += f"\n### {_col_icon} {_col_name.title()}\n"
+                    for _col_name, _col_icon in [("high","🔺 Rising"),
+                                                  ("stable","➡️ Stable"),
+                                                  ("decline","📉 Cooling")]:
+                        _tr_board_md += f"\n### {_col_icon}\n"
                         for _c in _tr_board_data.get(_col_name, []):
-                            _tr_board_md += f"- **{_c['name']}** {_c.get('score','')} — {_c.get('note','')}\n"
-                    _tr_sv_user = st.session_state.get("logged_in_user", "internal")
-                    _tr_sv_item = add_curadoria_item(
-                        _tr_sv_user, "trends_board",
+                            _url_str = (" — " + _c["urls"][0]) if _c.get("urls") else ""
+                            _tr_board_md += (f"- **{_c['name']}** {_c.get('score_label','')}"
+                                             f" — {_c.get('note','')}{_url_str}\n")
+                    add_curadoria_item(
+                        st.session_state.get("logged_in_user","internal"),
+                        "trends_board",
                         f"Trends Board: {_tr_topic_label}",
                         _tr_board_md,
                     )
-                    # Tag item to the selected project folder
                     st.success(f"Board saved to **{_tr_sel_folder}**!")
                 else:
                     st.warning("No project folders yet — create one in Projects first.")
 
 else:
     st.markdown("""
-<div style="text-align:center;padding:4rem 2rem;color:#9dc4d8;">
-  <div style="font-size:2rem;margin-bottom:1rem;">◈</div>
+<div style="text-align:center;padding:3rem 2rem;color:#9dc4d8;">
+  <div style="font-size:1.8rem;margin-bottom:0.8rem;">◈</div>
   <div style="font-size:14px;font-family:Georgia,serif;">
-    Enter a topic above and click <em>Fetch Trends</em>
+    Enter a brand or topic above and click <em>Fetch Trends</em>
   </div>
-  <div style="font-size:12px;margin-top:8px;font-family:monospace;
+  <div style="font-size:11px;margin-top:6px;font-family:monospace;
     letter-spacing:.06em;text-transform:uppercase;">
-    The board will map what's rising, stable, or cooling across your sources
+    Claude will map what's rising, stable, or cooling across all your sources
   </div>
 </div>""", unsafe_allow_html=True)
 
