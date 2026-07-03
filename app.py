@@ -5357,7 +5357,7 @@ def _tr_thumb_from_url(url: str) -> str:
     if not url:
         return ""
     # YouTube
-    _yt = re.search(r"(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})", url)
+    _yt = _re_global.search(r"(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})", url)
     if _yt:
         return f"https://i.ytimg.com/vi/{_yt.group(1)}/mqdefault.jpg"
     return ""
