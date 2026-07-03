@@ -5094,7 +5094,7 @@ _tr_sources = st.multiselect(
     "Sources to scan",
     ["Saved signals", "Google Trends", "Reddit", "Hacker News", "GDELT", "RSS",
      "YouTube", "TikTok", "Instagram", "X/Twitter", "Exa"],
-    default=["Saved signals", "Google Trends", "Reddit", "Hacker News", "GDELT"],
+    default=["Saved signals", "Reddit", "Instagram", "X/Twitter", "YouTube", "TikTok"],
     key="tr_sources", label_visibility="collapsed",
 )
 
@@ -5179,25 +5179,29 @@ if _tr_fetch and _tr_topic.strip():
             for _term in _tr_expanded_terms[:2]:
                 for s in scrape_youtube(_term, api_key=_tr_youtube_key, n=15, callback=_tr_cb):
                     _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                    "source": s.source, "url": s.url or ""})
+                                    "source": s.source, "url": s.url or "",
+                                    "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
 
         if "TikTok" in _tr_sources and _tr_apify_key:
             for s in scrape_tiktok(_tr_topic, api_token=_tr_apify_key,
                                    n=20, fetch_comments=False, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "url": s.url or ""})
+                                "source": s.source, "url": s.url or "",
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
 
         if "Instagram" in _tr_sources and _tr_apify_key:
             for s in scrape_instagram(_tr_topic, api_token=_tr_apify_key,
                                       n=20, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "url": s.url or ""})
+                                "source": s.source, "url": s.url or "",
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
 
         if "X/Twitter" in _tr_sources and _tr_apify_key:
             for s in scrape_twitter(_tr_topic, api_token=_tr_apify_key,
                                     n=20, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "url": s.url or ""})
+                                "source": s.source, "url": s.url or "",
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
 
         if "Exa" in _tr_sources and _tr_exa_key:
             for s in scrape_exa(_tr_topic, api_key=_tr_exa_key, n=15, callback=_tr_cb):
@@ -5225,7 +5229,9 @@ if _tr_fetch and _tr_topic.strip():
             import anthropic as _ant_tr
             _tr_client = _ant_tr.Anthropic(api_key=_tr_ant_key)
             _tr_sig_txt = "\n".join(
-                f"[{i}] {s['source'].upper()} | {s['title'][:100]} | URL:{s.get('url','')[:80]}"
+                f"[{i}] {s['source'].upper()} | {s['title'][:100]}"
+                f" | URL:{s.get('url','')[:80]}"
+                f"{' | THUMB:' + s.get('thumbnail','')[:80] if s.get('thumbnail') else ''}"
                 for i, s in enumerate(_tr_raw[:70])
             )
             _tr_prompt = f"""You are a cultural trends analyst. Research topic: "{_tr_topic}"
@@ -5240,6 +5246,7 @@ For each theme return:
 - "sources": list of source names involved
 - "note": one sentence, max 12 words, explaining the velocity
 - "urls": up to 2 representative URLs from the signals above (exact URLs, or empty list)
+- "thumbnail": one THUMB: URL from the signals if available, otherwise empty string
 
 Respond ONLY with a valid JSON array. Example:
 [{{"name": "Ketchup Packet Redesign", "velocity": "RISING", "score_num": 58,
@@ -5266,6 +5273,7 @@ SIGNALS:
                     "sources":     _th.get("sources", []),
                     "note":        _th.get("note", ""),
                     "urls":        [u for u in _th.get("urls", []) if u.startswith("http")][:2],
+                    "thumbnail":   _th.get("thumbnail", "") if str(_th.get("thumbnail","")).startswith("http") else "",
                     "velocity":    _vel,
                 }
                 if _vel == "RISING":
@@ -5344,6 +5352,16 @@ _tr_board_data  = st.session_state.get("tr_board", None)
 _tr_topic_label = st.session_state.get("tr_topic_used", "")
 _tr_terms_label = st.session_state.get("tr_terms_used", [])
 
+def _tr_thumb_from_url(url: str) -> str:
+    """Derive a thumbnail URL from a content URL where possible."""
+    if not url:
+        return ""
+    # YouTube
+    _yt = re.search(r"(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})", url)
+    if _yt:
+        return f"https://i.ytimg.com/vi/{_yt.group(1)}/mqdefault.jpg"
+    return ""
+
 _tr_src_cls = {
     "reddit": "tr-src-reddit", "google_trends": "tr-src-google_trends",
     "hacker_news": "tr-src-hacker_news", "youtube": "tr-src-youtube",
@@ -5366,7 +5384,22 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
     score_lbl = card.get("score_label", "")
     urls      = card.get("urls", [])
 
-    # Build link row
+    # Derive best thumbnail: from card's stored thumb, or from URL
+    thumb = card.get("thumbnail", "")
+    if not thumb:
+        for _u in urls:
+            thumb = _tr_thumb_from_url(_u)
+            if thumb:
+                break
+
+    thumb_html = (
+        f'<img src="{thumb}" style="width:100%;height:120px;object-fit:cover;'
+        f'border-radius:6px;margin-bottom:8px;display:block;" '
+        f'onerror="this.style.display=\'none\'" />'
+        if thumb else ""
+    )
+
+    # Link row
     link_html = ""
     if urls:
         links = " · ".join(
@@ -5378,6 +5411,7 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
 
     st.markdown(f"""
 <div class="tr-card">
+  {thumb_html}
   <div class="tr-card-top">
     {src_badges}
     <span class="tr-vel {vel_cls}">{vel_icon} {e(score_lbl)}</span>
@@ -5387,23 +5421,43 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
   {link_html}
 </div>""", unsafe_allow_html=True)
 
-    # Move to board buttons
-    st.markdown('<div style="font-size:10px;color:#9dc4d8;margin:6px 0 3px;'
-                'letter-spacing:.06em;text-transform:uppercase;">Move to board →</div>',
-                unsafe_allow_html=True)
-    _dests = [d for d in [("high","🔺 Rising"),("stable","➡️ Stable"),("decline","📉 Cooling")]
-              if d[0] != col_key]
-    _bc1, _bc2 = st.columns(2)
-    for _bi, (_dk, _dl) in enumerate(_dests):
-        with (_bc1 if _bi == 0 else _bc2):
-            if st.button(_dl, key=f"tr_mv_{col_key}_{idx}_{_dk}",
-                         use_container_width=True):
-                _brd = st.session_state.get("tr_board", {})
-                _card_obj = _brd.get(col_key, [])[idx]
-                _brd[col_key].pop(idx)
-                _brd.setdefault(_dk, []).append(_card_obj)
-                st.session_state["tr_board"] = _brd
-                st.rerun()
+    # Action row: Pin + Move to board
+    _pin_col, _mv_col = st.columns([1, 2])
+    with _pin_col:
+        if st.button("📌 Pin", key=f"tr_pin_{col_key}_{idx}", use_container_width=True,
+                     help="Save this theme to your project"):
+            _tr_folders_pin = load_project_folders()
+            if _tr_folders_pin:
+                _tr_fid_pin = _tr_folders_pin[0].get("id", "")
+                _pin_user = st.session_state.get("logged_in_user", "internal")
+                _vel_icon_p = _tr_vel_icon.get(vel, "")
+                add_curadoria_item(
+                    _pin_user, "trend",
+                    f"{_vel_icon_p} {card.get('name','')} {score_lbl}",
+                    f"{card.get('note','')}\n\nSources: {', '.join(srcs)}"
+                    + (f"\n{urls[0]}" if urls else ""),
+                )
+                st.success("Pinned!")
+            else:
+                st.warning("Create a project folder first.")
+
+    with _mv_col:
+        st.markdown('<div style="font-size:10px;color:#9dc4d8;margin:4px 0 2px;'
+                    'letter-spacing:.05em;text-transform:uppercase;">Move to board →</div>',
+                    unsafe_allow_html=True)
+        _dests = [d for d in [("high","🔺 Rising"),("stable","➡️ Stable"),("decline","📉 Cooling")]
+                  if d[0] != col_key]
+        _bc1, _bc2 = st.columns(2)
+        for _bi, (_dk, _dl) in enumerate(_dests):
+            with (_bc1 if _bi == 0 else _bc2):
+                if st.button(_dl, key=f"tr_mv_{col_key}_{idx}_{_dk}",
+                             use_container_width=True):
+                    _brd = st.session_state.get("tr_board", {})
+                    _card_obj = _brd.get(col_key, [])[idx]
+                    _brd[col_key].pop(idx)
+                    _brd.setdefault(_dk, []).append(_card_obj)
+                    st.session_state["tr_board"] = _brd
+                    st.rerun()
 
 if _tr_board_data is not None:
     _tr_total = sum(len(v) for v in _tr_board_data.values())
