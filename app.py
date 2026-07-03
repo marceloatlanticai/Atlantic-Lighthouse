@@ -5309,17 +5309,19 @@ if "tr_board" not in st.session_state:
                 _tr_auto_txt = "\n".join(
                     f"[{i}] {s.get('source','?').upper()} | {s.get('title','')[:100]}"
                     f" | URL:{s.get('url','')[:80]}"
+                    + (f" | THUMB:{s.get('thumbnail','')[:120]}" if s.get('thumbnail') else "")
                     for i, s in enumerate(_tr_auto_sigs[:80])
                 )
                 _tr_auto_resp = _ant_auto.Anthropic(api_key=_tr_ant_key_auto).messages.create(
                     model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
-                    max_tokens=2000,
+                    max_tokens=2500,
                     messages=[{"role": "user", "content":
                         f"You are a cultural trends analyst. Analyse these {min(len(_tr_auto_sigs),80)} "
                         f"signals from various sources and identify 10–16 distinct trending themes.\n\n"
                         f"For each theme return: name (2-5 words, title case), velocity (RISING/STABLE/DECLINING), "
                         f"score_num (integer -100 to +100), score_label (e.g. '+42%'), "
-                        f"sources (list), note (max 12 words), urls (up to 2 real URLs from signals).\n\n"
+                        f"sources (list), note (max 12 words), urls (up to 2 real URLs from signals), "
+                        f"thumbnail (use a THUMB: value from a representative signal if available, else empty string).\n\n"
                         f"Respond ONLY with a valid JSON array.\n\nSIGNALS:\n{_tr_auto_txt}"}],
                 )
                 _tr_auto_raw = _tr_auto_resp.content[0].text.strip()
@@ -5335,6 +5337,7 @@ if "tr_board" not in st.session_state:
                         "note":        _th.get("note",""),
                         "urls":        [u for u in _th.get("urls",[]) if u.startswith("http")][:2],
                         "velocity":    _vel,
+                        "thumbnail":   _th.get("thumbnail",""),
                     }
                     if _vel == "RISING":
                         _tr_auto_board["high"].append(_card)
@@ -5445,7 +5448,7 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
         st.markdown('<div style="font-size:10px;color:#9dc4d8;margin:4px 0 2px;'
                     'letter-spacing:.05em;text-transform:uppercase;">Move to board →</div>',
                     unsafe_allow_html=True)
-        _dests = [d for d in [("high","🔺 Rising"),("stable","➡️ Stable"),("decline","📉 Cooling")]
+        _dests = [d for d in [("high","↑ Rising"),("stable","→ Stable"),("decline","↓ Cooling")]
                   if d[0] != col_key]
         _bc1, _bc2 = st.columns(2)
         for _bi, (_dk, _dl) in enumerate(_dests):
