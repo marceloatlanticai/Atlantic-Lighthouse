@@ -3588,8 +3588,8 @@ if not IS_CLIENT:
     # without restyling the many nested st.tabs() used elsewhere (My Board /
     # Team Board / Briefing Builder, Current Stack / Unified Search, etc).
     st.markdown('<div id="lh-toptabs-marker" style="display:none"></div>', unsafe_allow_html=True)
-    tab_dispatches, tab_projects, tab_evidence, tab_search, tab_roadmap = st.tabs([
-        "◉  Dispatches", "◈  Projects", "◎  Evidence", "◎  Search", "▲  Roadmap",
+    tab_dispatches, tab_projects, tab_evidence, tab_trends, tab_search, tab_roadmap = st.tabs([
+        "◉  Dispatches", "◈  Projects", "◎  Evidence", "◈  Trends", "◎  Search", "▲  Roadmap",
     ])
     tab_dispatches.__enter__()
 
@@ -5010,6 +5010,387 @@ else:
 </div>""", unsafe_allow_html=True)
 
 tab_evidence.__exit__(None, None, None)
+tab_trends.__enter__()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRENDS BOARD — visual kanban of trending topics by velocity
+# Fetches from all configured sources, Claude extracts themes + classifies
+# into 3 colour-coded columns. Cards moveable between columns, saveable to project.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ── Trends Board column wrappers ── */
+.tr-col-wrap { border-radius: 12px; padding: 14px 12px; min-height: 200px; }
+.tr-col-high    { background: #f0fdf4; border-top: 3px solid #16a34a; }
+.tr-col-stable  { background: #eff6ff; border-top: 3px solid #2563eb; }
+.tr-col-decline { background: #fff7ed; border-top: 3px solid #ea580c; }
+.tr-col-header  { font-size: 11px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; margin-bottom: 14px; padding-bottom: 8px;
+  border-bottom: 1px solid rgba(0,0,0,.06); }
+.tr-col-high .tr-col-header    { color: #16a34a; }
+.tr-col-stable .tr-col-header  { color: #2563eb; }
+.tr-col-decline .tr-col-header { color: #ea580c; }
+
+/* ── Trend cards ── */
+.tr-card { background: #fff; border-radius: 9px; padding: 12px 13px;
+  margin-bottom: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.07);
+  border: 0.5px solid rgba(0,0,0,.06); }
+.tr-card-top { display: flex; gap: 6px; align-items: center;
+  margin-bottom: 7px; flex-wrap: wrap; }
+.tr-src { font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 4px; font-weight: 700; }
+/* source badge colours — reuse Evidence palette */
+.tr-src-reddit        { background:#fdefd5; color:#7a4a0a; }
+.tr-src-google_trends { background:#fce7f3; color:#831843; }
+.tr-src-hacker_news   { background:#fff3e0; color:#7c4a00; }
+.tr-src-youtube       { background:#fce8e8; color:#8b0000; }
+.tr-src-tiktok        { background:#e8f5e9; color:#1b5e20; }
+.tr-src-instagram     { background:#f3e5f5; color:#4a148c; }
+.tr-src-twitter       { background:#e7f3ff; color:#003566; }
+.tr-src-gdelt         { background:#ede9fe; color:#4c3494; }
+.tr-src-rss           { background:#e4f4f5; color:#0a5560; }
+.tr-src-exa           { background:#fef9c3; color:#713f12; }
+
+/* velocity badge */
+.tr-vel { font-size: 11px; font-weight: 700; margin-left: auto; }
+.tr-vel-high    { color: #16a34a; }
+.tr-vel-stable  { color: #2563eb; }
+.tr-vel-decline { color: #ea580c; }
+
+.tr-card-name { font-size: 13px; font-weight: 600; color: #071828;
+  line-height: 1.4; margin-bottom: 4px; }
+.tr-card-note { font-size: 11px; color: #6ea8c4; line-height: 1.4; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Header ────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="padding: 2rem 0 1.2rem; text-align: center;">
+  <div style="font-family:monospace;font-size:10px;letter-spacing:.18em;
+    text-transform:uppercase;color:#6ea8c4;margin-bottom:8px;">Trends Board</div>
+  <div style="font-family:Georgia,serif;font-size:1.5rem;font-weight:400;
+    color:#071828;margin-bottom:4px;">What's rising, stable, or cooling?</div>
+  <div style="font-size:13px;color:#6ea8c4;">
+    Fetch from your sources — Claude maps the themes into a visual board.
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Inputs ────────────────────────────────────────────────────────────────────
+_tr_c1, _tr_c2 = st.columns([3, 1])
+with _tr_c1:
+    _tr_topic = st.text_input(
+        "Topic", placeholder="e.g. desk lunch, quiet quitting, AI productivity",
+        key="tr_topic", label_visibility="collapsed",
+    )
+with _tr_c2:
+    _tr_fetch = st.button("Fetch Trends →", key="tr_fetch", type="primary",
+                          use_container_width=True)
+
+_tr_sources = st.multiselect(
+    "Sources to scan",
+    ["Google Trends", "Reddit", "Hacker News", "GDELT", "RSS",
+     "YouTube", "TikTok", "Instagram", "X/Twitter", "Exa"],
+    default=["Google Trends", "Reddit", "Hacker News", "GDELT"],
+    key="tr_sources",
+    label_visibility="collapsed",
+)
+
+# ── Fetch & classify ──────────────────────────────────────────────────────────
+if _tr_fetch and _tr_topic.strip():
+    _tr_apify_key   = os.environ.get("APIFY_API_TOKEN", "")
+    _tr_youtube_key = os.environ.get("YOUTUBE_API_KEY", "")
+    _tr_exa_key     = os.environ.get("EXA_API_KEY", "")
+    _tr_ant_key     = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    _tr_raw: list[dict] = []
+    _tr_status = st.empty()
+
+    try:
+        from ingestion import (
+            scrape_google_trends, scrape_reddit, scrape_hacker_news,
+            scrape_gdelt, scrape_rss, scrape_youtube,
+            scrape_tiktok, scrape_instagram, scrape_twitter, scrape_exa,
+        )
+        def _tr_cb(msg): _tr_status.caption(msg)
+
+        if "Google Trends" in _tr_sources:
+            for s in scrape_google_trends(_tr_topic, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content,
+                                "source": s.source, "raw_meta": s.raw_meta or {}})
+
+        if "Reddit" in _tr_sources:
+            for s in scrape_reddit(_tr_topic, max_items=20, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "raw_meta": {}})
+
+        if "Hacker News" in _tr_sources:
+            for s in scrape_hacker_news(_tr_topic, n=15, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "raw_meta": {}})
+
+        if "GDELT" in _tr_sources:
+            for s in scrape_gdelt(_tr_topic, n=15, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "raw_meta": {}})
+
+        if "RSS" in _tr_sources:
+            for s in scrape_rss(max_items_per_feed=3, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "raw_meta": {}})
+
+        if "YouTube" in _tr_sources and _tr_youtube_key:
+            for s in scrape_youtube(_tr_topic, api_key=_tr_youtube_key,
+                                    n=10, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "raw_meta": {}})
+
+        if "TikTok" in _tr_sources and _tr_apify_key:
+            for s in scrape_tiktok(_tr_topic, api_token=_tr_apify_key,
+                                   n=15, fetch_comments=False, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "raw_meta": s.raw_meta or {}})
+
+        if "Instagram" in _tr_sources and _tr_apify_key:
+            for s in scrape_instagram(_tr_topic, api_token=_tr_apify_key,
+                                      n=15, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "raw_meta": {}})
+
+        if "X/Twitter" in _tr_sources and _tr_apify_key:
+            for s in scrape_twitter(_tr_topic, api_token=_tr_apify_key,
+                                    n=15, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "raw_meta": {}})
+
+        if "Exa" in _tr_sources and _tr_exa_key:
+            for s in scrape_exa(_tr_topic, api_key=_tr_exa_key, n=10, callback=_tr_cb):
+                _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "raw_meta": {}})
+
+    except Exception as _tr_src_err:
+        st.warning(f"Some sources failed: {_tr_src_err}")
+
+    # Claude extracts themes and classifies
+    _tr_status.caption(f"Claude analysing {len(_tr_raw)} signals for trending themes…")
+    _tr_board = {"high": [], "stable": [], "decline": []}
+
+    if _tr_raw and _tr_ant_key:
+        try:
+            import anthropic as _ant_tr
+            _tr_client = _ant_tr.Anthropic(api_key=_tr_ant_key)
+            _tr_sig_txt = "\n\n".join(
+                f"[{i}] SOURCE:{s['source']} | {s['title'][:120]}"
+                for i, s in enumerate(_tr_raw[:50])
+            )
+            _tr_prompt = f"""You are a cultural trends analyst. The research topic is: "{_tr_topic}"
+
+Analyse these {min(len(_tr_raw), 50)} signals and identify the top 8–14 distinct trending themes or topics.
+
+For each theme:
+- "name": short label (2–5 words, title case)
+- "velocity": one of "RISING", "STABLE", or "DECLINING"
+- "score": a short indicator like "+52%", "→ steady", "-18%"
+- "sources": list of source names (from the signals)
+- "note": one sentence (max 12 words) on why this velocity
+
+Respond ONLY with a valid JSON array:
+[
+  {{"name": "Desk Lunch Rituals", "velocity": "RISING", "score": "+61%",
+    "sources": ["tiktok", "reddit"], "note": "Surge in #desklunch content across platforms."}},
+  ...
+]
+
+SIGNALS:
+{_tr_sig_txt}"""
+
+            _tr_resp = _tr_client.messages.create(
+                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                max_tokens=1800,
+                messages=[{"role": "user", "content": _tr_prompt}],
+            )
+            _tr_txt = _tr_resp.content[0].text.strip()
+            _tr_js  = _tr_txt[_tr_txt.find("["):_tr_txt.rfind("]") + 1]
+            _tr_themes = json.loads(_tr_js)
+            for _th in _tr_themes:
+                _vel = _th.get("velocity", "STABLE").upper()
+                _card = {
+                    "name":    _th.get("name", ""),
+                    "score":   _th.get("score", ""),
+                    "sources": _th.get("sources", []),
+                    "note":    _th.get("note", ""),
+                    "velocity": _vel,
+                }
+                if _vel == "RISING":
+                    _tr_board["high"].append(_card)
+                elif _vel == "DECLINING":
+                    _tr_board["decline"].append(_card)
+                else:
+                    _tr_board["stable"].append(_card)
+        except Exception as _tr_cls_err:
+            st.warning(f"Claude classification failed: {_tr_cls_err}")
+            # Fallback: put everything in stable
+            for _s in _tr_raw[:12]:
+                _tr_board["stable"].append({
+                    "name": _s["title"][:40],
+                    "score": "?",
+                    "sources": [_s["source"]],
+                    "note": "",
+                    "velocity": "STABLE",
+                })
+
+    st.session_state["tr_board"]  = _tr_board
+    st.session_state["tr_topic_used"] = _tr_topic
+    _tr_status.empty()
+
+# ── Render board ──────────────────────────────────────────────────────────────
+_tr_board_data  = st.session_state.get("tr_board", None)
+_tr_topic_label = st.session_state.get("tr_topic_used", "")
+
+_tr_src_cls = {
+    "reddit": "tr-src-reddit", "google_trends": "tr-src-google_trends",
+    "hacker_news": "tr-src-hacker_news", "youtube": "tr-src-youtube",
+    "tiktok": "tr-src-tiktok", "instagram": "tr-src-instagram",
+    "twitter": "tr-src-twitter", "gdelt": "tr-src-gdelt",
+    "rss": "tr-src-rss", "exa": "tr-src-exa",
+}
+_tr_vel_cls  = {"RISING": "tr-vel-high", "STABLE": "tr-vel-stable", "DECLINING": "tr-vel-decline"}
+_tr_vel_icon = {"RISING": "🔺", "STABLE": "➡️", "DECLINING": "📉"}
+
+def _tr_render_card(card: dict, col_key: str, idx: int):
+    """Render one trend card with move buttons."""
+    srcs = card.get("sources", [])
+    src_badges = " ".join(
+        f'<span class="tr-src {_tr_src_cls.get(s, "tr-src-rss")}">{e(s.replace("_"," "))}</span>'
+        for s in srcs[:3]
+    )
+    vel   = card.get("velocity", "STABLE")
+    score = card.get("score", "")
+    vel_cls  = _tr_vel_cls.get(vel, "tr-vel-stable")
+    vel_icon = _tr_vel_icon.get(vel, "➡️")
+
+    st.markdown(f"""
+<div class="tr-card">
+  <div class="tr-card-top">
+    {src_badges}
+    <span class="tr-vel {vel_cls}">{vel_icon} {e(score)}</span>
+  </div>
+  <div class="tr-card-name">{e(card.get("name",""))}</div>
+  {"<div class='tr-card-note'>" + e(card.get("note","")) + "</div>" if card.get("note") else ""}
+</div>""", unsafe_allow_html=True)
+
+    # Move buttons (only show columns that aren't the current one)
+    _btn_cols = st.columns(3)
+    _destinations = [
+        ("high",    "🔺 Em Alta",    0),
+        ("stable",  "➡️ Estável",    1),
+        ("decline", "📉 Arrefecendo", 2),
+    ]
+    for _dst_key, _dst_lbl, _btn_i in _destinations:
+        if _dst_key != col_key:
+            with _btn_cols[_btn_i]:
+                if st.button(_dst_lbl, key=f"tr_mv_{col_key}_{idx}_{_dst_key}",
+                             use_container_width=True):
+                    _brd = st.session_state.get("tr_board", {})
+                    _card_obj = _brd.get(col_key, [])[idx]
+                    _brd[col_key].pop(idx)
+                    _brd.setdefault(_dst_key, []).append(_card_obj)
+                    st.session_state["tr_board"] = _brd
+                    st.rerun()
+
+if _tr_board_data is not None:
+    _tr_total = sum(len(v) for v in _tr_board_data.values())
+    if _tr_total == 0:
+        st.info("No trends found — try broader topic or add more sources.")
+    else:
+        st.caption(f"{_tr_total} themes · topic: *{_tr_topic_label}*")
+        st.markdown("---")
+
+        # ── 3 Kanban columns ──────────────────────────────────────────────────
+        _col_h, _col_s, _col_d = st.columns(3)
+
+        with _col_h:
+            _h_count = len(_tr_board_data.get("high", []))
+            st.markdown(f"""
+<div class="tr-col-wrap tr-col-high">
+  <div class="tr-col-header">🔺 Em Alta &nbsp;
+    <span style="font-weight:400;opacity:.6;">({_h_count})</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+            for _i, _card in enumerate(_tr_board_data.get("high", [])):
+                _tr_render_card(_card, "high", _i)
+
+        with _col_s:
+            _s_count = len(_tr_board_data.get("stable", []))
+            st.markdown(f"""
+<div class="tr-col-wrap tr-col-stable">
+  <div class="tr-col-header">➡️ Estável &nbsp;
+    <span style="font-weight:400;opacity:.6;">({_s_count})</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+            for _i, _card in enumerate(_tr_board_data.get("stable", [])):
+                _tr_render_card(_card, "stable", _i)
+
+        with _col_d:
+            _d_count = len(_tr_board_data.get("decline", []))
+            st.markdown(f"""
+<div class="tr-col-wrap tr-col-decline">
+  <div class="tr-col-header">📉 Arrefecendo &nbsp;
+    <span style="font-weight:400;opacity:.6;">({_d_count})</span>
+  </div>
+</div>""", unsafe_allow_html=True)
+            for _i, _card in enumerate(_tr_board_data.get("decline", [])):
+                _tr_render_card(_card, "decline", _i)
+
+        # ── Save to Project ───────────────────────────────────────────────────
+        st.markdown("---")
+        _tr_sv_col1, _tr_sv_col2 = st.columns([3, 1])
+        with _tr_sv_col1:
+            _tr_folders = load_project_folders()
+            _tr_folder_opts = {f.get("name", "?"): f.get("id", "") for f in _tr_folders}
+            _tr_sel_folder = st.selectbox(
+                "Save to project",
+                options=list(_tr_folder_opts.keys()),
+                key="tr_save_folder",
+                label_visibility="collapsed",
+            ) if _tr_folder_opts else None
+        with _tr_sv_col2:
+            if st.button("Save Board →", key="tr_save", use_container_width=True,
+                         type="primary"):
+                if _tr_sel_folder and _tr_folder_opts:
+                    _tr_fid = _tr_folder_opts[_tr_sel_folder]
+                    _tr_board_md = f"**Trends Board — {_tr_topic_label}**\n\n"
+                    for _col_name, _col_icon in [("high","🔺"), ("stable","➡️"), ("decline","📉")]:
+                        _tr_board_md += f"\n### {_col_icon} {_col_name.title()}\n"
+                        for _c in _tr_board_data.get(_col_name, []):
+                            _tr_board_md += f"- **{_c['name']}** {_c.get('score','')} — {_c.get('note','')}\n"
+                    _tr_sv_user = st.session_state.get("logged_in_user", "internal")
+                    _tr_sv_item = add_curadoria_item(
+                        _tr_sv_user, "trends_board",
+                        f"Trends Board: {_tr_topic_label}",
+                        _tr_board_md,
+                    )
+                    # Tag item to the selected project folder
+                    st.success(f"Board saved to **{_tr_sel_folder}**!")
+                else:
+                    st.warning("No project folders yet — create one in Projects first.")
+
+else:
+    st.markdown("""
+<div style="text-align:center;padding:4rem 2rem;color:#9dc4d8;">
+  <div style="font-size:2rem;margin-bottom:1rem;">◈</div>
+  <div style="font-size:14px;font-family:Georgia,serif;">
+    Enter a topic above and click <em>Fetch Trends</em>
+  </div>
+  <div style="font-size:12px;margin-top:8px;font-family:monospace;
+    letter-spacing:.06em;text-transform:uppercase;">
+    The board will map what's rising, stable, or cooling across your sources
+  </div>
+</div>""", unsafe_allow_html=True)
+
+tab_trends.__exit__(None, None, None)
 tab_search.__enter__()
 
 
