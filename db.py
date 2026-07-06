@@ -96,6 +96,9 @@ def load_signals(limit: int = 200) -> list:
                 for k in ("timestamp", "title", "content", "source", "url"):
                     if row.get(k):
                         sig[k] = row[k]
+                # Hoist thumbnail from raw_meta so s.get("thumbnail") works everywhere
+                if not sig.get("thumbnail"):
+                    sig["thumbnail"] = (sig.get("raw_meta") or {}).get("thumbnail", "")
                 signals.append(sig)
             return signals
         except Exception as exc:
