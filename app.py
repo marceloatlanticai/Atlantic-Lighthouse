@@ -5275,7 +5275,27 @@ if _tr_fetch and _tr_topic.strip():
         if _k not in _tr_seen:
             _tr_seen.add(_k)
             _tr_deduped.append(_r)
-    _tr_raw = _tr_deduped[:80]
+
+    # ── Round-robin balancing: interleave sources so no single source dominates ──
+    from collections import defaultdict as _defdict
+    _tr_src_buckets: dict = _defdict(list)
+    for _r in _tr_deduped:
+        _tr_src_buckets[_r.get("source", "other")].append(_r)
+    _tr_balanced: list = []
+    _tr_src_iters = {k: iter(v) for k, v in _tr_src_buckets.items()}
+    while _tr_src_iters:
+        for _src in list(_tr_src_iters):
+            try:
+                _tr_balanced.append(next(_tr_src_iters[_src]))
+            except StopIteration:
+                del _tr_src_iters[_src]
+    _tr_raw = _tr_balanced[:90]
+
+    # Build URL→thumbnail map — more reliable than asking Claude to reproduce URLs
+    _tr_url_thumb: dict = {
+        r.get("url", ""): r.get("thumbnail", "")
+        for r in _tr_raw if r.get("url") and r.get("thumbnail")
+    }
 
     # Claude extracts themes, classifies, and picks representative URLs
     _tr_status.caption(f"Claude analysing {len(_tr_raw)} signals for trending themes…")
@@ -5287,9 +5307,8 @@ if _tr_fetch and _tr_topic.strip():
             _tr_client = _ant_tr.Anthropic(api_key=_tr_ant_key)
             _tr_sig_txt = "\n".join(
                 f"[{i}] {s['source'].upper()} | {s['title'][:100]}"
-                f" | URL:{s.get('url','')[:80]}"
-                f"{' | THUMB:' + s.get('thumbnail','')[:80] if s.get('thumbnail') else ''}"
-                for i, s in enumerate(_tr_raw[:70])
+                f" | URL:{s.get('url','')[:120]}"
+                for i, s in enumerate(_tr_raw[:80])
             )
             _tr_prompt = f"""You are a cultural trends analyst. Research topic: "{_tr_topic}"
 
@@ -5302,8 +5321,7 @@ For each theme return:
 - "score_label": e.g. "+52%", "→ steady", "-18%"
 - "sources": list of source names involved
 - "note": one sentence, max 12 words, explaining the velocity
-- "urls": up to 2 representative URLs from the signals above (exact URLs, or empty list)
-- "thumbnail": one THUMB: URL from the signals if available, otherwise empty string
+- "urls": up to 2 representative URLs from the signals above (exact URLs from the URL: field, copy them exactly)
 - "emotion": the single dominant emotion in the conversation (e.g. "nostalgia", "frustration", "excitement", "anxiety", "joy", "irony", "pride", "fear")
 - "hook": the dominant hook type driving engagement (e.g. "contrarian claim", "comparison", "personal story", "data & stats", "transformation", "controversy", "question", "humor")
 - "tone": the dominant tone across signals (e.g. "casual", "formal", "ironic", "vulnerable", "educational", "outraged", "playful", "aspirational")
@@ -5312,8 +5330,8 @@ Respond ONLY with a valid JSON array. Example:
 [{{"name": "Ketchup Packet Redesign", "velocity": "RISING", "score_num": 58,
    "score_label": "+58%", "sources": ["hacker_news", "reddit"],
    "note": "Multiple stories on new bottle ergonomics and accessibility.",
-   "urls": ["https://example.com/article"],
-   "emotion": "nostalgia", "hook": "comparison", "tone": "playful"}}]
+   "urls": ["https://example.com/article"], "emotion": "nostalgia",
+   "hook": "comparison", "tone": "playful"}}]
 
 SIGNALS:
 {_tr_sig_txt}"""
@@ -5326,15 +5344,23 @@ SIGNALS:
             _tr_txt = _tr_resp.content[0].text.strip()
             _tr_js  = _tr_txt[_tr_txt.find("["):_tr_txt.rfind("]") + 1]
             for _th in json.loads(_tr_js):
-                _vel = _th.get("velocity", "STABLE").upper()
+                _vel  = _th.get("velocity", "STABLE").upper()
+                _urls = [u for u in _th.get("urls", []) if u.startswith("http")][:2]
+                # Look up thumbnail from our map using URLs Claude picked — more reliable
+                # than asking Claude to reproduce long CDN URLs
+                _thumb = ""
+                for _u in _urls:
+                    if _u in _tr_url_thumb:
+                        _thumb = _tr_url_thumb[_u]
+                        break
                 _card = {
                     "name":        _th.get("name", ""),
                     "score_num":   int(_th.get("score_num", 0)),
                     "score_label": _th.get("score_label", ""),
                     "sources":     _th.get("sources", []),
                     "note":        _th.get("note", ""),
-                    "urls":        [u for u in _th.get("urls", []) if u.startswith("http")][:2],
-                    "thumbnail":   _th.get("thumbnail", "") if str(_th.get("thumbnail","")).startswith("http") else "",
+                    "urls":        _urls,
+                    "thumbnail":   _thumb,
                     "velocity":    _vel,
                     "emotion":     _th.get("emotion", ""),
                     "hook":        _th.get("hook", ""),

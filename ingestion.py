@@ -373,6 +373,12 @@ def scrape_tiktok(
                     "likes": likes,
                     "hashtags": item.get("hashtags", []),
                     "comments_enriched": fetch_comments,
+                    "thumbnail": (
+                        item.get("videoMeta", {}).get("coverUrl")
+                        or item.get("covers", {}).get("default")
+                        or item.get("coverUrl")
+                        or ""
+                    ),
                 },
             ))
     except Exception as exc:
@@ -405,11 +411,14 @@ def scrape_instagram(
     try:
         from apify_client import ApifyClient
         client = ApifyClient(api_token)
-        # Convert topic to hashtags: "desk lunch UK" → ["desklunch", "desklunchuk"]
-        words = [w.lower() for w in topic.replace(",", " ").split() if len(w) > 2]
-        hashtags = [words[0]] + (["".join(words[:2])] if len(words) > 1 else [])
+        # Convert topic to individual hashtags: "desk lunch UK" → ["desklunch", "lunch", "uk"]
+        # Use each word individually — concatenated hashtags rarely exist on Instagram
+        words = [w.lower().strip(".,!?#") for w in topic.replace(",", " ").split() if len(w) > 2]
+        hashtags = list(dict.fromkeys(words))[:5]  # unique, max 5
+        if not hashtags:
+            hashtags = [topic.lower().replace(" ", "")]
         run_input = {
-            "hashtags": hashtags[:3],
+            "hashtags": hashtags,
             "resultsLimit": n,
             "scrapeStories": False,
         }
@@ -437,6 +446,12 @@ def scrape_instagram(
                     "likes": likes,
                     "comments": comments,
                     "hashtags": item.get("hashtags", []),
+                    "thumbnail": (
+                        item.get("displayUrl")
+                        or item.get("thumbnailUrl")
+                        or item.get("previewUrl")
+                        or ""
+                    ),
                 },
             ))
     except Exception as exc:
@@ -800,6 +815,11 @@ def scrape_youtube(
                 raw_meta={
                     "channel": snippet.get("channelTitle"),
                     "region": region_code,
+                    "thumbnail": (
+                        snippet.get("thumbnails", {}).get("medium", {}).get("url")
+                        or snippet.get("thumbnails", {}).get("default", {}).get("url")
+                        or f"https://i.ytimg.com/vi/{vid_id}/mqdefault.jpg"
+                    ),
                 },
             ))
     except Exception as exc:
