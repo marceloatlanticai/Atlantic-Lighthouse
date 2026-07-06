@@ -5518,61 +5518,107 @@ SIGNALS:
 # ── Auto-load from DB on first open (no fetch needed) ─────────────────────────
 if "tr_board" not in st.session_state:
     _tr_ant_key_auto = os.environ.get("ANTHROPIC_API_KEY", "")
-    _tr_auto_sigs = load_signals(limit=300)
+    _tr_auto_sigs_raw = load_signals(limit=500)
+
+    # Prioritise visual/social signals (YouTube, Instagram, TikTok) — they have thumbnails
+    # and are more relevant for trends than RSS. Sort: social-with-thumb first, then rest.
+    _social_src = {"youtube", "instagram", "tiktok", "twitter", "reddit"}
+    _tr_auto_sigs = sorted(
+        _tr_auto_sigs_raw,
+        key=lambda s: (
+            0 if (s.get("source","") in _social_src and s.get("thumbnail","")) else
+            1 if s.get("source","") in _social_src else 2
+        )
+    )
+
     if _tr_auto_sigs and _tr_ant_key_auto:
-        with st.spinner("Loading latest trends from your signals…"):
-            try:
-                import anthropic as _ant_auto
-                _tr_auto_txt = "\n".join(
-                    f"[{i}] {s.get('source','?').upper()} | {s.get('title','')[:100]}"
-                    f" | URL:{s.get('url','')[:80]}"
-                    + (f" | THUMB:{s.get('thumbnail','')[:120]}" if s.get('thumbnail') else "")
-                    for i, s in enumerate(_tr_auto_sigs[:80])
-                )
-                _tr_auto_resp = _ant_auto.Anthropic(api_key=_tr_ant_key_auto).messages.create(
-                    model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
-                    max_tokens=2500,
-                    messages=[{"role": "user", "content":
-                        f"You are a cultural trends analyst. Analyse these {min(len(_tr_auto_sigs),80)} "
-                        f"signals from various sources and identify 10–16 distinct trending themes.\n\n"
-                        f"For each theme return: name (2-5 words, title case), velocity (RISING/STABLE/DECLINING), "
-                        f"score_num (integer -100 to +100), score_label (e.g. '+42%'), "
-                        f"sources (list), note (max 12 words), urls (up to 2 real URLs from signals), "
-                        f"thumbnail (use a THUMB: value from a representative signal if available, else empty string), "
-                        f"emotion (dominant emotion e.g. 'nostalgia','frustration','excitement','anxiety','joy','irony'), "
-                        f"hook (dominant hook type e.g. 'contrarian claim','comparison','personal story','data & stats','controversy','humor'), "
-                        f"tone (dominant tone e.g. 'casual','ironic','vulnerable','educational','outraged','playful','aspirational').\n\n"
-                        f"Respond ONLY with a valid JSON array.\n\nSIGNALS:\n{_tr_auto_txt}"}],
-                )
-                _tr_auto_raw = _tr_auto_resp.content[0].text.strip()
-                _tr_auto_js  = _tr_auto_raw[_tr_auto_raw.find("["):_tr_auto_raw.rfind("]")+1]
-                _tr_auto_board: dict = {"high": [], "stable": [], "decline": []}
-                for _th in json.loads(_tr_auto_js):
-                    _vel = _th.get("velocity","STABLE").upper()
-                    _card = {
-                        "name":        _th.get("name",""),
-                        "score_num":   int(_th.get("score_num",0)),
-                        "score_label": _th.get("score_label",""),
-                        "sources":     _th.get("sources",[]),
-                        "note":        _th.get("note",""),
-                        "urls":        [u for u in _th.get("urls",[]) if u.startswith("http")][:2],
-                        "velocity":    _vel,
-                        "thumbnail":   _th.get("thumbnail",""),
-                        "emotion":     _th.get("emotion",""),
-                        "hook":        _th.get("hook",""),
-                        "tone":        _th.get("tone",""),
-                    }
-                    if _vel == "RISING":
-                        _tr_auto_board["high"].append(_card)
-                    elif _vel == "DECLINING":
-                        _tr_auto_board["decline"].append(_card)
-                    else:
-                        _tr_auto_board["stable"].append(_card)
-                st.session_state["tr_board"]      = _tr_auto_board
-                st.session_state["tr_topic_used"] = "latest signals"
-                st.session_state["tr_terms_used"] = []
-            except Exception:
-                pass  # silently skip if auto-load fails
+        # Custom loading animation
+        _auto_anim = st.empty()
+        _auto_anim.markdown("""
+<style>
+@keyframes _tr_dot { 0%,100%{opacity:.2;transform:scale(.7)} 50%{opacity:1;transform:scale(1.15)} }
+@keyframes _tr_bar { 0%,100%{width:0%} 50%{width:100%} }
+</style>
+<div style="text-align:center;padding:2.5rem 1rem 2rem;">
+  <div style="font-family:Georgia,serif;font-size:1rem;color:#274d68;margin-bottom:6px;">
+    Reading your signals
+  </div>
+  <div style="font-size:11px;font-family:monospace;letter-spacing:.1em;
+    text-transform:uppercase;color:#9dc4d8;margin-bottom:1.4rem;">
+    Claude is mapping what's trending…
+  </div>
+  <div style="display:flex;justify-content:center;gap:10px;margin-bottom:1.2rem;">
+    <div style="width:11px;height:11px;border-radius:50%;background:#6ea8c4;
+      animation:_tr_dot 1.4s ease-in-out infinite;"></div>
+    <div style="width:11px;height:11px;border-radius:50%;background:#4a90c4;
+      animation:_tr_dot 1.4s ease-in-out .25s infinite;"></div>
+    <div style="width:11px;height:11px;border-radius:50%;background:#274d68;
+      animation:_tr_dot 1.4s ease-in-out .5s infinite;"></div>
+    <div style="width:11px;height:11px;border-radius:50%;background:#4a90c4;
+      animation:_tr_dot 1.4s ease-in-out .75s infinite;"></div>
+    <div style="width:11px;height:11px;border-radius:50%;background:#6ea8c4;
+      animation:_tr_dot 1.4s ease-in-out 1s infinite;"></div>
+  </div>
+  <div style="max-width:220px;margin:0 auto;height:3px;background:#e8f1f5;
+    border-radius:2px;overflow:hidden;">
+    <div style="height:3px;background:linear-gradient(90deg,#6ea8c4,#274d68);
+      border-radius:2px;animation:_tr_bar 2s ease-in-out infinite;"></div>
+  </div>
+</div>""", unsafe_allow_html=True)
+        try:
+            import anthropic as _ant_auto
+            _tr_auto_txt = "\n".join(
+                f"[{i}] {s.get('source','?').upper()} | {s.get('title','')[:100]}"
+                f" | URL:{s.get('url','')[:80]}"
+                + (f" | THUMB:{s.get('thumbnail','')[:120]}" if s.get('thumbnail') else "")
+                for i, s in enumerate(_tr_auto_sigs[:80])
+            )
+            _tr_auto_resp = _ant_auto.Anthropic(api_key=_tr_ant_key_auto).messages.create(
+                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                max_tokens=2500,
+                messages=[{"role": "user", "content":
+                    f"You are a cultural trends analyst. Analyse these {min(len(_tr_auto_sigs),80)} "
+                    f"signals from various sources and identify 10–16 distinct trending themes.\n\n"
+                    f"For each theme return: name (2-5 words, title case), velocity (RISING/STABLE/DECLINING), "
+                    f"score_num (integer -100 to +100), score_label (e.g. '+42%'), "
+                    f"sources (list), note (max 12 words), urls (up to 2 real URLs from signals), "
+                    f"thumbnail (use a THUMB: value from a representative signal if available, else empty string), "
+                    f"emotion (dominant emotion e.g. 'nostalgia','frustration','excitement','anxiety','joy','irony'), "
+                    f"hook (dominant hook type e.g. 'contrarian claim','comparison','personal story','data & stats','controversy','humor'), "
+                    f"tone (dominant tone e.g. 'casual','ironic','vulnerable','educational','outraged','playful','aspirational').\n\n"
+                    f"Respond ONLY with a valid JSON array.\n\nSIGNALS:\n{_tr_auto_txt}"}],
+            )
+            _tr_auto_raw = _tr_auto_resp.content[0].text.strip()
+            _tr_auto_js  = _tr_auto_raw[_tr_auto_raw.find("["):_tr_auto_raw.rfind("]")+1]
+            _tr_auto_board: dict = {"high": [], "stable": [], "decline": []}
+            for _th in json.loads(_tr_auto_js):
+                _vel = _th.get("velocity","STABLE").upper()
+                _card = {
+                    "name":        _th.get("name",""),
+                    "score_num":   int(_th.get("score_num",0)),
+                    "score_label": _th.get("score_label",""),
+                    "sources":     _th.get("sources",[]),
+                    "note":        _th.get("note",""),
+                    "urls":        [u for u in _th.get("urls",[]) if u.startswith("http")][:2],
+                    "velocity":    _vel,
+                    "thumbnail":   _th.get("thumbnail",""),
+                    "emotion":     _th.get("emotion",""),
+                    "hook":        _th.get("hook",""),
+                    "tone":        _th.get("tone",""),
+                }
+                if _vel == "RISING":
+                    _tr_auto_board["high"].append(_card)
+                elif _vel == "DECLINING":
+                    _tr_auto_board["decline"].append(_card)
+                else:
+                    _tr_auto_board["stable"].append(_card)
+            st.session_state["tr_board"]      = _tr_auto_board
+            st.session_state["tr_topic_used"] = "latest signals"
+            st.session_state["tr_terms_used"] = []
+        except Exception:
+            pass  # silently skip if auto-load fails
+        finally:
+            _auto_anim.empty()  # always clear the animation
 
 _tr_board_data  = st.session_state.get("tr_board", None)
 _tr_topic_label = st.session_state.get("tr_topic_used", "")
