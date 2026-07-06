@@ -5254,18 +5254,30 @@ if _tr_fetch and _tr_topic.strip():
                                     "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
 
         if "TikTok" in _tr_sources and _tr_apify_key:
+            _tt_before = len(_tr_raw)
             for s in scrape_tiktok(_tr_topic, api_token=_tr_apify_key,
-                                   n=20, fetch_comments=False, callback=_tr_cb):
+                                   n=30, fetch_comments=False, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
                                 "source": s.source, "url": s.url or "",
                                 "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
+            _tt_count = len(_tr_raw) - _tt_before
+            if _tt_count == 0:
+                _tr_status.caption("⚠️ TikTok returned 0 results — trying without comments…")
+        elif "TikTok" in _tr_sources and not _tr_apify_key:
+            st.warning("TikTok selected but APIFY_API_TOKEN is not set.")
 
         if "Instagram" in _tr_sources and _tr_apify_key:
+            _ig_before = len(_tr_raw)
             for s in scrape_instagram(_tr_topic, api_token=_tr_apify_key,
-                                      n=20, callback=_tr_cb):
+                                      n=30, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
                                 "source": s.source, "url": s.url or "",
                                 "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
+            _ig_count = len(_tr_raw) - _ig_before
+            if _ig_count == 0:
+                _tr_status.caption("⚠️ Instagram returned 0 results — hashtag may be too specific.")
+        elif "Instagram" in _tr_sources and not _tr_apify_key:
+            st.warning("Instagram selected but APIFY_API_TOKEN is not set.")
 
         if "X/Twitter" in _tr_sources and _tr_apify_key:
             for s in scrape_twitter(_tr_topic, api_token=_tr_apify_key,
@@ -5324,27 +5336,32 @@ if _tr_fetch and _tr_topic.strip():
                 f" | URL:{s.get('url','')[:120]}"
                 for i, s in enumerate(_tr_raw[:80])
             )
+            _n_sigs = min(len(_tr_raw), 80)
+            _n_themes_min = max(3, min(8, _n_sigs // 4))  # scale: 3 themes for 12 sigs, 8 for 80
+            _n_themes_max = max(6, min(18, _n_sigs // 2))
             _tr_prompt = f"""You are a cultural trends analyst. Research topic: "{_tr_topic}"
 
-Analyse these {min(len(_tr_raw),70)} signals. Identify 10–18 distinct trending themes.
+Analyse these {_n_sigs} signals and identify {_n_themes_min}–{_n_themes_max} distinct trending themes.
+IMPORTANT: Always return at least {_n_themes_min} themes even if signals are sparse — use your knowledge of the topic to infer broader themes visible in the content.
+Never return an empty array.
 
 For each theme return:
 - "name": 2–5 words, title case
 - "velocity": "RISING", "STABLE", or "DECLINING"
 - "score_num": integer -100 to +100 (positive = rising, 0 = stable, negative = declining)
 - "score_label": e.g. "+52%", "→ steady", "-18%"
-- "sources": list of source names involved
+- "sources": list of source names involved (e.g. ["tiktok"])
 - "note": one sentence, max 12 words, explaining the velocity
 - "urls": up to 2 representative URLs from the signals above (exact URLs from the URL: field, copy them exactly)
-- "emotion": the single dominant emotion in the conversation (e.g. "nostalgia", "frustration", "excitement", "anxiety", "joy", "irony", "pride", "fear")
-- "hook": the dominant hook type driving engagement (e.g. "contrarian claim", "comparison", "personal story", "data & stats", "transformation", "controversy", "question", "humor")
-- "tone": the dominant tone across signals (e.g. "casual", "formal", "ironic", "vulnerable", "educational", "outraged", "playful", "aspirational")
+- "emotion": the single dominant emotion (e.g. "nostalgia", "frustration", "excitement", "anxiety", "joy", "irony", "pride", "fear")
+- "hook": the dominant hook type (e.g. "contrarian claim", "comparison", "personal story", "data & stats", "transformation", "controversy", "question", "humor")
+- "tone": the dominant tone (e.g. "casual", "formal", "ironic", "vulnerable", "educational", "outraged", "playful", "aspirational")
 
-Respond ONLY with a valid JSON array. Example:
+Respond ONLY with a valid JSON array — never empty. Example:
 [{{"name": "Ketchup Packet Redesign", "velocity": "RISING", "score_num": 58,
-   "score_label": "+58%", "sources": ["hacker_news", "reddit"],
-   "note": "Multiple stories on new bottle ergonomics and accessibility.",
-   "urls": ["https://example.com/article"], "emotion": "nostalgia",
+   "score_label": "+58%", "sources": ["tiktok"],
+   "note": "Multiple creators showing new bottle ergonomics.",
+   "urls": ["https://www.tiktok.com/@user/video/123"], "emotion": "nostalgia",
    "hook": "comparison", "tone": "playful"}}]
 
 SIGNALS:
@@ -5357,7 +5374,17 @@ SIGNALS:
             )
             _tr_txt = _tr_resp.content[0].text.strip()
             _tr_js  = _tr_txt[_tr_txt.find("["):_tr_txt.rfind("]") + 1]
-            for _th in json.loads(_tr_js):
+            _tr_themes = json.loads(_tr_js) if _tr_js else []
+            # Fallback: if Claude returned [] (valid but empty), build cards directly from signals
+            if not _tr_themes and _tr_raw:
+                _tr_themes = [
+                    {"name": _s["title"][:45], "velocity": "STABLE", "score_num": 0,
+                     "score_label": "—", "sources": [_s.get("source","rss")],
+                     "note": "", "urls": [_s.get("url","")] if _s.get("url") else [],
+                     "emotion": "", "hook": "", "tone": ""}
+                    for _s in _tr_raw[:12]
+                ]
+            for _th in _tr_themes:
                 _vel  = _th.get("velocity", "STABLE").upper()
                 _urls = [u for u in _th.get("urls", []) if u.startswith("http")][:2]
                 # Look up thumbnail from our map using URLs Claude picked — more reliable
@@ -5399,6 +5426,7 @@ SIGNALS:
     st.session_state["tr_board"]       = _tr_board
     st.session_state["tr_topic_used"]  = _tr_topic
     st.session_state["tr_terms_used"]  = _tr_expanded_terms
+    st.session_state["tr_raw_count"]   = len(_tr_raw)
     _tr_status.empty()
 
 # ── Hunch: fetch & classify ───────────────────────────────────────────────────
@@ -5806,7 +5834,16 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
 if _tr_board_data is not None:
     _tr_total = sum(len(v) for v in _tr_board_data.values())
     if _tr_total == 0:
-        st.info("No trends found — try a broader topic or add more sources.")
+        # Distinguish between "scrapers returned nothing" vs "Claude found no themes"
+        _tr_raw_count = st.session_state.get("tr_raw_count", None)
+        if _tr_raw_count == 0:
+            st.warning(
+                "**No signals returned from selected sources.** "
+                "Possible causes: API rate limits reached, no posts found for this topic/hashtag, "
+                "or APIFY_API_TOKEN may be missing. Try adding RSS, Reddit, or YouTube as extra sources."
+            )
+        else:
+            st.info("No trends found — try a broader topic or add more sources.")
     else:
         _terms_str = ", ".join(_tr_terms_label[:4]) if _tr_terms_label else _tr_topic_label
         st.caption(f"{_tr_total} themes · searched: *{_terms_str}*")
