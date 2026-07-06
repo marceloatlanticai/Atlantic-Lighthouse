@@ -340,7 +340,7 @@ def scrape_tiktok(
             "searchQueries": [topic],
             "maxItems": n,
             "shouldDownloadVideos": False,
-            "shouldDownloadCovers": False,
+            "shouldDownloadCovers": True,  # populate coverUrl fields in response
         }
         run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input, timeout_secs=90)
         videos = list(client.dataset(run["defaultDatasetId"]).iterate_items())
@@ -375,8 +375,13 @@ def scrape_tiktok(
                     "comments_enriched": fetch_comments,
                     "thumbnail": (
                         item.get("videoMeta", {}).get("coverUrl")
+                        or item.get("videoMeta", {}).get("originalCoverUrl")
+                        or item.get("staticCoverUrl")
+                        or item.get("originCoverUrl")
                         or item.get("covers", {}).get("default")
+                        or item.get("covers", {}).get("origin")
                         or item.get("coverUrl")
+                        or item.get("imageUrl")
                         or ""
                     ),
                 },

@@ -5071,6 +5071,20 @@ st.markdown("""
 .tr-dim-hook    { background: #fef9c3; color: #713f12; }
 .tr-dim-tone    { background: #e0f2fe; color: #0c4a6e; }
 
+/* ── Social source placeholders (shown when CDN blocks the real thumbnail) ── */
+.tr-thumb-wrap { position: relative; width: 100%; height: 120px; border-radius: 6px;
+  margin-bottom: 8px; overflow: hidden; }
+.tr-thumb-wrap img { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  object-fit: cover; z-index: 2; transition: opacity .15s; }
+.tr-ph-tiktok { background: linear-gradient(135deg, #010101 30%, #1a1a2e 100%);
+  display: flex; align-items: center; justify-content: center; }
+.tr-ph-tiktok::before { content: "♪"; font-size: 2.2rem;
+  color: rgba(255,255,255,.3); position: absolute; z-index: 1; }
+.tr-ph-instagram { background: linear-gradient(135deg, #833ab4 0%, #fd1d1d 50%, #fcb045 100%);
+  display: flex; align-items: center; justify-content: center; }
+.tr-ph-instagram::before { content: "✦"; font-size: 2rem;
+  color: rgba(255,255,255,.35); position: absolute; z-index: 1; }
+
 /* ── Hunch mode ── */
 .hn-col-wrap { border-radius: 12px; padding: 14px 12px; min-height: 120px; }
 .hn-col-confirms   { background: #f0fdf4; border-top: 3px solid #16a34a; }
@@ -5702,12 +5716,23 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
                 break
 
     thumb_src = _tr_proxy_thumb(thumb)
-    thumb_html = (
-        f'<img src="{thumb_src}" style="width:100%;height:120px;object-fit:cover;'
-        f'border-radius:6px;margin-bottom:8px;display:block;" '
-        f'onerror="this.style.display=\'none\'" />'
-        if thumb_src else ""
-    )
+
+    # Placeholder class for sources whose CDN blocks hotlinks
+    _card_source = (srcs[0] if srcs else "").lower()
+    _ph_cls = {"tiktok": "tr-ph-tiktok", "instagram": "tr-ph-instagram"}.get(_card_source, "")
+
+    if thumb_src:
+        # Overlay img on top of placeholder bg; if img fails, opacity→0 reveals gradient
+        thumb_html = (
+            f'<div class="tr-thumb-wrap {_ph_cls}">'
+            f'<img src="{thumb_src}" onerror="this.style.opacity=0;" />'
+            f'</div>'
+        )
+    elif _ph_cls:
+        # No URL at all — show branded placeholder
+        thumb_html = f'<div class="tr-thumb-wrap {_ph_cls}"></div>'
+    else:
+        thumb_html = ""
 
     # Link row
     link_html = ""
@@ -5937,12 +5962,18 @@ if _hn_board_data:
         urls = card.get("urls",[])
         thumb = card.get("thumbnail","")
         thumb_src = _tr_proxy_thumb(thumb)
-        thumb_html = (
-            f'<img src="{thumb_src}" style="width:100%;height:100px;object-fit:cover;'
-            f'border-radius:6px;margin-bottom:8px;display:block;" '
-            f'onerror="this.style.display=\'none\'" />'
-            if thumb_src else ""
-        )
+        _hn_src = card.get("source","").lower()
+        _hn_ph_cls = {"tiktok": "tr-ph-tiktok", "instagram": "tr-ph-instagram"}.get(_hn_src, "")
+        if thumb_src:
+            thumb_html = (
+                f'<div class="tr-thumb-wrap {_hn_ph_cls}" style="height:100px;">'
+                f'<img src="{thumb_src}" onerror="this.style.opacity=0;" />'
+                f'</div>'
+            )
+        elif _hn_ph_cls:
+            thumb_html = f'<div class="tr-thumb-wrap {_hn_ph_cls}" style="height:100px;"></div>'
+        else:
+            thumb_html = ""
         link_html = ""
         if urls:
             links = " · ".join(
