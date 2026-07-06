@@ -5062,6 +5062,42 @@ st.markdown("""
 .tr-card-name { font-size: 13px; font-weight: 600; color: #071828;
   line-height: 1.4; margin-bottom: 4px; }
 .tr-card-note { font-size: 11px; color: #6ea8c4; line-height: 1.4; }
+
+/* dimension tags */
+.tr-dims { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px; }
+.tr-dim { font-size: 9.5px; font-weight: 600; letter-spacing: .05em;
+  text-transform: uppercase; padding: 2px 7px; border-radius: 20px; }
+.tr-dim-emotion { background: #fce7f3; color: #831843; }
+.tr-dim-hook    { background: #fef9c3; color: #713f12; }
+.tr-dim-tone    { background: #e0f2fe; color: #0c4a6e; }
+
+/* ── Hunch mode ── */
+.hn-col-wrap { border-radius: 12px; padding: 14px 12px; min-height: 120px; }
+.hn-col-confirms   { background: #f0fdf4; border-top: 3px solid #16a34a; }
+.hn-col-challenges { background: #fff7ed; border-top: 3px solid #ea580c; }
+.hn-col-unexpected { background: #f5f3ff; border-top: 3px solid #7c3aed; }
+.hn-col-header { font-size: 11px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; margin-bottom: 14px; padding-bottom: 8px;
+  border-bottom: 1px solid rgba(0,0,0,.06); }
+.hn-col-confirms .hn-col-header   { color: #16a34a; }
+.hn-col-challenges .hn-col-header { color: #ea580c; }
+.hn-col-unexpected .hn-col-header { color: #7c3aed; }
+.hn-card { background: #fff; border-radius: 9px; padding: 12px 13px;
+  margin-bottom: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.07);
+  border: 0.5px solid rgba(0,0,0,.06); }
+.hn-card-top { display: flex; align-items: center; margin-bottom: 7px; gap: 6px; }
+.hn-card-name { font-size: 13px; font-weight: 600; color: #071828;
+  line-height: 1.4; margin-bottom: 5px; }
+.hn-card-quote { font-size: 11px; color: #4a6d82; line-height: 1.55;
+  font-style: italic; border-left: 2px solid #cde0ea;
+  padding-left: 9px; margin: 6px 0 7px; }
+.hn-card-note { font-size: 11px; color: #6ea8c4; line-height: 1.4; }
+.hn-rel { font-size: 11px; font-weight: 700; margin-left: auto; white-space: nowrap; }
+.hn-rel-confirms   { color: #16a34a; }
+.hn-rel-challenges { color: #ea580c; }
+.hn-rel-unexpected { color: #7c3aed; }
+.hn-input-wrap { background: #f0f7fb; border: 1.5px dashed #9dc4d8;
+  border-radius: 12px; padding: 14px 16px; margin: 10px 0 6px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -5097,6 +5133,27 @@ _tr_sources = st.multiselect(
     default=["Saved signals", "Reddit", "Instagram", "X/Twitter", "YouTube", "TikTok"],
     key="tr_sources", label_visibility="collapsed",
 )
+
+# ── 💡 Hunch input ────────────────────────────────────────────────────────────
+st.markdown('<div class="hn-input-wrap">', unsafe_allow_html=True)
+st.markdown(
+    '<div style="font-size:10px;font-weight:700;letter-spacing:.12em;'
+    'text-transform:uppercase;color:#4a6d82;margin-bottom:8px;">'
+    '💡 Test a Hunch &nbsp;<span style="font-weight:400;opacity:.65;">'
+    '— type a hypothesis and Claude finds evidence for & against it</span></div>',
+    unsafe_allow_html=True,
+)
+_hn_col1, _hn_col2 = st.columns([4, 1])
+with _hn_col1:
+    _tr_hunch = st.text_input(
+        "hunch", label_visibility="collapsed",
+        placeholder='e.g. "People avoid soup at their desk because they fear spilling on their laptop"',
+        key="tr_hunch",
+    )
+with _hn_col2:
+    _tr_hunch_fetch = st.button("Find Evidence →", key="tr_hunch_fetch",
+                                use_container_width=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
 # ── Fetch & classify ──────────────────────────────────────────────────────────
 if _tr_fetch and _tr_topic.strip():
@@ -5247,12 +5304,16 @@ For each theme return:
 - "note": one sentence, max 12 words, explaining the velocity
 - "urls": up to 2 representative URLs from the signals above (exact URLs, or empty list)
 - "thumbnail": one THUMB: URL from the signals if available, otherwise empty string
+- "emotion": the single dominant emotion in the conversation (e.g. "nostalgia", "frustration", "excitement", "anxiety", "joy", "irony", "pride", "fear")
+- "hook": the dominant hook type driving engagement (e.g. "contrarian claim", "comparison", "personal story", "data & stats", "transformation", "controversy", "question", "humor")
+- "tone": the dominant tone across signals (e.g. "casual", "formal", "ironic", "vulnerable", "educational", "outraged", "playful", "aspirational")
 
 Respond ONLY with a valid JSON array. Example:
 [{{"name": "Ketchup Packet Redesign", "velocity": "RISING", "score_num": 58,
    "score_label": "+58%", "sources": ["hacker_news", "reddit"],
    "note": "Multiple stories on new bottle ergonomics and accessibility.",
-   "urls": ["https://example.com/article"]}}]
+   "urls": ["https://example.com/article"],
+   "emotion": "nostalgia", "hook": "comparison", "tone": "playful"}}]
 
 SIGNALS:
 {_tr_sig_txt}"""
@@ -5275,6 +5336,9 @@ SIGNALS:
                     "urls":        [u for u in _th.get("urls", []) if u.startswith("http")][:2],
                     "thumbnail":   _th.get("thumbnail", "") if str(_th.get("thumbnail","")).startswith("http") else "",
                     "velocity":    _vel,
+                    "emotion":     _th.get("emotion", ""),
+                    "hook":        _th.get("hook", ""),
+                    "tone":        _th.get("tone", ""),
                 }
                 if _vel == "RISING":
                     _tr_board["high"].append(_card)
@@ -5296,6 +5360,159 @@ SIGNALS:
     st.session_state["tr_topic_used"]  = _tr_topic
     st.session_state["tr_terms_used"]  = _tr_expanded_terms
     _tr_status.empty()
+
+# ── Hunch: fetch & classify ───────────────────────────────────────────────────
+if _tr_hunch_fetch and _tr_hunch.strip():
+    _hn_apify_key   = os.environ.get("APIFY_API_TOKEN", "")
+    _hn_youtube_key = os.environ.get("YOUTUBE_API_KEY", "")
+    _hn_ant_key     = os.environ.get("ANTHROPIC_API_KEY", "")
+    _hn_exa_key     = os.environ.get("EXA_API_KEY", "")
+    _hn_raw: list[dict] = []
+    _hn_status = st.empty()
+
+    # Use hunch text as the search topic
+    _hn_topic = _tr_hunch.strip()
+
+    try:
+        from ingestion import (
+            scrape_reddit, scrape_hacker_news, scrape_gdelt, scrape_rss,
+            scrape_youtube, scrape_tiktok, scrape_instagram, scrape_twitter,
+        )
+        def _hn_cb(msg): _hn_status.caption(msg)
+
+        if "Saved signals" in _tr_sources:
+            _hn_status.caption("Searching saved signals…")
+            _hn_all_db = load_signals(limit=500)
+            _hn_words = set(_hn_topic.lower().split())
+            for _s in _hn_all_db:
+                _txt = f"{_s.get('title','')} {_s.get('content','')}".lower()
+                if any(w in _txt for w in _hn_words if len(w) > 3):
+                    _hn_raw.append({"title": _s.get("title",""),
+                                    "content": _s.get("content","")[:300],
+                                    "source": _s.get("source","rss"),
+                                    "url": _s.get("url",""),
+                                    "thumbnail": _s.get("thumbnail","")})
+            _hn_raw = _hn_raw[:50]
+
+        if "Reddit" in _tr_sources:
+            for s in scrape_reddit(_hn_topic, max_items=20, callback=_hn_cb):
+                _hn_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "url": s.url or "", "thumbnail": ""})
+
+        if "Hacker News" in _tr_sources:
+            for s in scrape_hacker_news(_hn_topic, n=15, callback=_hn_cb):
+                _hn_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "url": s.url or "", "thumbnail": ""})
+
+        if "YouTube" in _tr_sources and _hn_youtube_key:
+            for s in scrape_youtube(_hn_topic, api_key=_hn_youtube_key, n=12, callback=_hn_cb):
+                _hn_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "url": s.url or "",
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail","")})
+
+        if "TikTok" in _tr_sources and _hn_apify_key:
+            for s in scrape_tiktok(_hn_topic, api_token=_hn_apify_key,
+                                   n=15, fetch_comments=False, callback=_hn_cb):
+                _hn_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "url": s.url or "",
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail","")})
+
+        if "Instagram" in _tr_sources and _hn_apify_key:
+            for s in scrape_instagram(_hn_topic, api_token=_hn_apify_key,
+                                      n=15, callback=_hn_cb):
+                _hn_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "url": s.url or "",
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail","")})
+
+        if "X/Twitter" in _tr_sources and _hn_apify_key:
+            for s in scrape_twitter(_hn_topic, api_token=_hn_apify_key,
+                                    n=15, callback=_hn_cb):
+                _hn_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "url": s.url or "", "thumbnail": ""})
+
+        if "RSS" in _tr_sources:
+            for s in scrape_rss(max_items_per_feed=4, callback=_hn_cb):
+                _hn_raw.append({"title": s.title, "content": s.content[:300],
+                                "source": s.source, "url": s.url or "", "thumbnail": ""})
+
+    except Exception as _hn_src_err:
+        st.warning(f"Some sources failed: {_hn_src_err}")
+
+    # Deduplicate
+    _hn_seen, _hn_deduped = set(), []
+    for _r in _hn_raw:
+        _k = _r.get("title","")[:60].lower()
+        if _k not in _hn_seen:
+            _hn_seen.add(_k)
+            _hn_deduped.append(_r)
+    _hn_raw = _hn_deduped[:70]
+
+    # Claude classifies each finding vs. the hunch
+    _hn_board = {"confirms": [], "challenges": [], "unexpected": []}
+    if _hn_raw and _hn_ant_key:
+        _hn_status.caption(f"Claude analysing {len(_hn_raw)} signals against your hunch…")
+        try:
+            import anthropic as _ant_hn
+            _hn_sig_txt = "\n".join(
+                f"[{i}] {s['source'].upper()} | {s['title'][:100]} | {s['content'][:200]}"
+                f" | URL:{s.get('url','')[:80]}"
+                f"{' | THUMB:' + s.get('thumbnail','')[:80] if s.get('thumbnail') else ''}"
+                for i, s in enumerate(_hn_raw[:60])
+            )
+            _hn_prompt = f"""You are a cultural intelligence analyst testing a hypothesis.
+
+HUNCH: "{_hn_topic}"
+
+Analyse these {min(len(_hn_raw),60)} signals and identify 8–12 relevant findings.
+
+For each finding return:
+- "name": 2–5 words, title case — the finding's headline
+- "relation": one of "CONFIRMS", "CHALLENGES", or "UNEXPECTED"
+  * CONFIRMS = evidence that supports or validates the hunch
+  * CHALLENGES = evidence that contradicts or complicates the hunch
+  * UNEXPECTED = interesting finding that emerged but wasn't in the hypothesis
+- "quote": the most relevant 1–2 sentences from a signal that best illustrates this (exact excerpt or close paraphrase)
+- "source": the source name (e.g. "reddit", "youtube")
+- "note": one sentence max 12 words explaining why this matters strategically
+- "urls": up to 2 URLs from the signals (exact URLs starting with http)
+- "thumbnail": a THUMB: value from the signals if available, else empty string
+
+Prioritise signals most relevant to the hunch. Skip off-topic noise.
+Respond ONLY with a valid JSON array.
+
+SIGNALS:
+{_hn_sig_txt}"""
+
+            _hn_resp = _ant_hn.Anthropic(api_key=_hn_ant_key).messages.create(
+                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                max_tokens=2500,
+                messages=[{"role": "user", "content": _hn_prompt}],
+            )
+            _hn_txt = _hn_resp.content[0].text.strip()
+            _hn_js  = _hn_txt[_hn_txt.find("["):_hn_txt.rfind("]")+1]
+            for _fnd in json.loads(_hn_js):
+                _rel = _fnd.get("relation","UNEXPECTED").upper()
+                _hcard = {
+                    "name":      _fnd.get("name",""),
+                    "relation":  _rel,
+                    "quote":     _fnd.get("quote",""),
+                    "source":    _fnd.get("source",""),
+                    "note":      _fnd.get("note",""),
+                    "urls":      [u for u in _fnd.get("urls",[]) if u.startswith("http")][:2],
+                    "thumbnail": _fnd.get("thumbnail","") if str(_fnd.get("thumbnail","")).startswith("http") else "",
+                }
+                if _rel == "CONFIRMS":
+                    _hn_board["confirms"].append(_hcard)
+                elif _rel == "CHALLENGES":
+                    _hn_board["challenges"].append(_hcard)
+                else:
+                    _hn_board["unexpected"].append(_hcard)
+        except Exception as _hn_cls_err:
+            st.warning(f"Hunch analysis failed: {_hn_cls_err}")
+
+    st.session_state["tr_hunch_board"] = _hn_board
+    st.session_state["tr_hunch_text"]  = _hn_topic
+    _hn_status.empty()
 
 # ── Render board ──────────────────────────────────────────────────────────────
 # ── Auto-load from DB on first open (no fetch needed) ─────────────────────────
@@ -5321,7 +5538,10 @@ if "tr_board" not in st.session_state:
                         f"For each theme return: name (2-5 words, title case), velocity (RISING/STABLE/DECLINING), "
                         f"score_num (integer -100 to +100), score_label (e.g. '+42%'), "
                         f"sources (list), note (max 12 words), urls (up to 2 real URLs from signals), "
-                        f"thumbnail (use a THUMB: value from a representative signal if available, else empty string).\n\n"
+                        f"thumbnail (use a THUMB: value from a representative signal if available, else empty string), "
+                        f"emotion (dominant emotion e.g. 'nostalgia','frustration','excitement','anxiety','joy','irony'), "
+                        f"hook (dominant hook type e.g. 'contrarian claim','comparison','personal story','data & stats','controversy','humor'), "
+                        f"tone (dominant tone e.g. 'casual','ironic','vulnerable','educational','outraged','playful','aspirational').\n\n"
                         f"Respond ONLY with a valid JSON array.\n\nSIGNALS:\n{_tr_auto_txt}"}],
                 )
                 _tr_auto_raw = _tr_auto_resp.content[0].text.strip()
@@ -5338,6 +5558,9 @@ if "tr_board" not in st.session_state:
                         "urls":        [u for u in _th.get("urls",[]) if u.startswith("http")][:2],
                         "velocity":    _vel,
                         "thumbnail":   _th.get("thumbnail",""),
+                        "emotion":     _th.get("emotion",""),
+                        "hook":        _th.get("hook",""),
+                        "tone":        _th.get("tone",""),
                     }
                     if _vel == "RISING":
                         _tr_auto_board["high"].append(_card)
@@ -5373,7 +5596,7 @@ _tr_src_cls = {
     "rss": "tr-src-rss", "exa": "tr-src-exa",
 }
 _tr_vel_cls  = {"RISING": "tr-vel-high", "STABLE": "tr-vel-stable", "DECLINING": "tr-vel-decline"}
-_tr_vel_icon = {"RISING": "🔺", "STABLE": "➡️", "DECLINING": "📉"}
+_tr_vel_icon = {"RISING": "▲", "STABLE": "→", "DECLINING": "▼"}
 
 def _tr_render_card(card: dict, col_key: str, idx: int):
     srcs = card.get("sources", [])
@@ -5412,6 +5635,18 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
         )
         link_html = f'<div style="margin-top:6px;">{links}</div>'
 
+    # Dimension tags
+    _dims_html = ""
+    _dim_parts = []
+    if card.get("emotion"):
+        _dim_parts.append(f'<span class="tr-dim tr-dim-emotion">● {e(card["emotion"])}</span>')
+    if card.get("hook"):
+        _dim_parts.append(f'<span class="tr-dim tr-dim-hook">⚡ {e(card["hook"])}</span>')
+    if card.get("tone"):
+        _dim_parts.append(f'<span class="tr-dim tr-dim-tone">~ {e(card["tone"])}</span>')
+    if _dim_parts:
+        _dims_html = f'<div class="tr-dims">{"".join(_dim_parts)}</div>'
+
     st.markdown(f"""
 <div class="tr-card">
   {thumb_html}
@@ -5421,17 +5656,22 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
   </div>
   <div class="tr-card-name">{e(card.get("name",""))}</div>
   {"<div class='tr-card-note'>" + e(card.get("note","")) + "</div>" if card.get("note") else ""}
+  {_dims_html}
   {link_html}
 </div>""", unsafe_allow_html=True)
 
-    # Action row: Pin + Move to board
-    _pin_col, _mv_col = st.columns([1, 2])
-    with _pin_col:
+    # Action row: label + 3 buttons (Pin, move A, move B) in one aligned row
+    st.markdown('<div style="font-size:10px;color:#9dc4d8;margin:8px 0 4px;'
+                'letter-spacing:.05em;text-transform:uppercase;">Move to board →</div>',
+                unsafe_allow_html=True)
+    _dests = [d for d in [("high","↑ Rising"),("stable","→ Stable"),("decline","↓ Cooling")]
+              if d[0] != col_key]
+    _bc_pin, _bc1, _bc2 = st.columns(3)
+    with _bc_pin:
         if st.button("📌 Pin", key=f"tr_pin_{col_key}_{idx}", use_container_width=True,
                      help="Save this theme to your project"):
             _tr_folders_pin = load_project_folders()
             if _tr_folders_pin:
-                _tr_fid_pin = _tr_folders_pin[0].get("id", "")
                 _pin_user = st.session_state.get("logged_in_user", "internal")
                 _vel_icon_p = _tr_vel_icon.get(vel, "")
                 add_curadoria_item(
@@ -5443,24 +5683,16 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
                 st.success("Pinned!")
             else:
                 st.warning("Create a project folder first.")
-
-    with _mv_col:
-        st.markdown('<div style="font-size:10px;color:#9dc4d8;margin:4px 0 2px;'
-                    'letter-spacing:.05em;text-transform:uppercase;">Move to board →</div>',
-                    unsafe_allow_html=True)
-        _dests = [d for d in [("high","↑ Rising"),("stable","→ Stable"),("decline","↓ Cooling")]
-                  if d[0] != col_key]
-        _bc1, _bc2 = st.columns(2)
-        for _bi, (_dk, _dl) in enumerate(_dests):
-            with (_bc1 if _bi == 0 else _bc2):
-                if st.button(_dl, key=f"tr_mv_{col_key}_{idx}_{_dk}",
-                             use_container_width=True):
-                    _brd = st.session_state.get("tr_board", {})
-                    _card_obj = _brd.get(col_key, [])[idx]
-                    _brd[col_key].pop(idx)
-                    _brd.setdefault(_dk, []).append(_card_obj)
-                    st.session_state["tr_board"] = _brd
-                    st.rerun()
+    for _bi, (_dk, _dl) in enumerate(_dests):
+        with (_bc1 if _bi == 0 else _bc2):
+            if st.button(_dl, key=f"tr_mv_{col_key}_{idx}_{_dk}",
+                         use_container_width=True):
+                _brd = st.session_state.get("tr_board", {})
+                _card_obj = _brd.get(col_key, [])[idx]
+                _brd[col_key].pop(idx)
+                _brd.setdefault(_dk, []).append(_card_obj)
+                st.session_state["tr_board"] = _brd
+                st.rerun()
 
 if _tr_board_data is not None:
     _tr_total = sum(len(v) for v in _tr_board_data.values())
@@ -5489,7 +5721,7 @@ if _tr_board_data is not None:
             _s_count = len(_tr_board_data.get("stable", []))
             st.markdown(f"""
 <div class="tr-col-wrap tr-col-stable">
-  <div class="tr-col-header">➡️ Stable
+  <div class="tr-col-header">→ Stable
     <span style="font-weight:400;opacity:.55;margin-left:4px;">({_s_count})</span>
   </div>
 </div>""", unsafe_allow_html=True)
@@ -5500,7 +5732,7 @@ if _tr_board_data is not None:
             _d_count = len(_tr_board_data.get("decline", []))
             st.markdown(f"""
 <div class="tr-col-wrap tr-col-decline">
-  <div class="tr-col-header">📉 Cooling
+  <div class="tr-col-header">▼ Cooling
     <span style="font-weight:400;opacity:.55;margin-left:4px;">({_d_count})</span>
   </div>
 </div>""", unsafe_allow_html=True)
@@ -5594,6 +5826,138 @@ else:
     Claude will map what's rising, stable, or cooling across all your sources
   </div>
 </div>""", unsafe_allow_html=True)
+
+# ── Hunch board render ────────────────────────────────────────────────────────
+_hn_board_data = st.session_state.get("tr_hunch_board", None)
+_hn_text_used  = st.session_state.get("tr_hunch_text", "")
+
+if _hn_board_data:
+    _hn_total = sum(len(v) for v in _hn_board_data.values())
+    st.markdown("---")
+    st.markdown(f"""
+<div style="padding:.6rem 0 .8rem;">
+  <div style="font-family:monospace;font-size:10px;letter-spacing:.18em;
+    text-transform:uppercase;color:#7c3aed;margin-bottom:4px;">💡 Hunch Results</div>
+  <div style="font-size:13px;color:#274d68;font-style:italic;">
+    "{e(_hn_text_used)}"
+  </div>
+  <div style="font-size:11px;color:#9dc4d8;margin-top:3px;">{_hn_total} findings</div>
+</div>""", unsafe_allow_html=True)
+
+    def _hn_render_card(card: dict, col_key: str, idx: int):
+        src = card.get("source","")
+        src_cls = _tr_src_cls.get(src, "tr-src-rss")
+        rel = card.get("relation","UNEXPECTED")
+        rel_cls = {"CONFIRMS":"hn-rel-confirms","CHALLENGES":"hn-rel-challenges"}.get(rel,"hn-rel-unexpected")
+        rel_icon = {"CONFIRMS":"✓","CHALLENGES":"✗","UNEXPECTED":"◎"}.get(rel,"◎")
+        urls = card.get("urls",[])
+        thumb = card.get("thumbnail","")
+        thumb_html = (
+            f'<img src="{thumb}" style="width:100%;height:100px;object-fit:cover;'
+            f'border-radius:6px;margin-bottom:8px;display:block;" '
+            f'onerror="this.style.display=\'none\'" />'
+            if thumb else ""
+        )
+        link_html = ""
+        if urls:
+            links = " · ".join(
+                f'<a href="{u}" target="_blank" style="color:#6ea8c4;font-size:10px;'
+                f'text-decoration:none;">{urllib.parse.urlparse(u).netloc or u[:30]}</a>'
+                for u in urls
+            )
+            link_html = f'<div style="margin-top:6px;">{links}</div>'
+        quote_html = (
+            f'<div class="hn-card-quote">{e(card.get("quote",""))}</div>'
+            if card.get("quote") else ""
+        )
+        st.markdown(f"""
+<div class="hn-card">
+  {thumb_html}
+  <div class="hn-card-top">
+    <span class="tr-src {src_cls}">{e(src.replace("_"," "))}</span>
+    <span class="hn-rel {rel_cls}">{rel_icon} {rel.title()}</span>
+  </div>
+  <div class="hn-card-name">{e(card.get("name",""))}</div>
+  {quote_html}
+  {"<div class='hn-card-note'>" + e(card.get("note","")) + "</div>" if card.get("note") else ""}
+  {link_html}
+</div>""", unsafe_allow_html=True)
+        # Pin button
+        if st.button("📌 Pin", key=f"hn_pin_{col_key}_{idx}", use_container_width=True,
+                     help="Save this finding to your project"):
+            _hn_folders_pin = load_project_folders()
+            if _hn_folders_pin:
+                _hn_pin_user = st.session_state.get("logged_in_user","internal")
+                add_curadoria_item(
+                    _hn_pin_user, "hunch_finding",
+                    f"{rel_icon} {card.get('name','')} [{rel.title()}]",
+                    f"Hunch: {_hn_text_used}\n\n{card.get('quote','')}\n\n{card.get('note','')}"
+                    + (f"\n{urls[0]}" if urls else ""),
+                )
+                st.success("Pinned!")
+            else:
+                st.warning("Create a project folder first.")
+
+    _hn_c1, _hn_c2, _hn_c3 = st.columns(3)
+    with _hn_c1:
+        _hc = len(_hn_board_data.get("confirms",[]))
+        st.markdown(f"""
+<div class="hn-col-wrap hn-col-confirms">
+  <div class="hn-col-header">✓ Confirms <span style="font-weight:400;opacity:.55;margin-left:4px;">({_hc})</span></div>
+</div>""", unsafe_allow_html=True)
+        for _i, _c in enumerate(_hn_board_data.get("confirms",[])):
+            _hn_render_card(_c, "confirms", _i)
+
+    with _hn_c2:
+        _hch = len(_hn_board_data.get("challenges",[]))
+        st.markdown(f"""
+<div class="hn-col-wrap hn-col-challenges">
+  <div class="hn-col-header">✗ Challenges <span style="font-weight:400;opacity:.55;margin-left:4px;">({_hch})</span></div>
+</div>""", unsafe_allow_html=True)
+        for _i, _c in enumerate(_hn_board_data.get("challenges",[])):
+            _hn_render_card(_c, "challenges", _i)
+
+    with _hn_c3:
+        _hu = len(_hn_board_data.get("unexpected",[]))
+        st.markdown(f"""
+<div class="hn-col-wrap hn-col-unexpected">
+  <div class="hn-col-header">◎ Unexpected <span style="font-weight:400;opacity:.55;margin-left:4px;">({_hu})</span></div>
+</div>""", unsafe_allow_html=True)
+        for _i, _c in enumerate(_hn_board_data.get("unexpected",[])):
+            _hn_render_card(_c, "unexpected", _i)
+
+    # Save hunch to project
+    st.markdown("---")
+    _hn_sv1, _hn_sv2 = st.columns([3,1])
+    with _hn_sv1:
+        _hn_folders = load_project_folders()
+        _hn_folder_opts = {f.get("name","?"): f.get("id","") for f in _hn_folders}
+        _hn_sel_folder = st.selectbox(
+            "Save hunch to project", options=list(_hn_folder_opts.keys()),
+            key="hn_save_folder", label_visibility="collapsed",
+        ) if _hn_folder_opts else None
+    with _hn_sv2:
+        if st.button("Save Hunch →", key="hn_save", use_container_width=True, type="primary"):
+            if _hn_sel_folder and _hn_folder_opts:
+                _hn_md = f'**Hunch: “{_hn_text_used}”**\n\n'
+                for _col_name, _col_icon in [("confirms","✓ Confirms"),
+                                              ("challenges","✗ Challenges"),
+                                              ("unexpected","◎ Unexpected")]:
+                    _hn_md += f"\n### {_col_icon}\n"
+                    for _c in _hn_board_data.get(_col_name,[]):
+                        _url_str = (" — " + _c["urls"][0]) if _c.get("urls") else ""
+                        _hn_md += f"- **{_c['name']}** — {_c.get('note','')}{_url_str}\n"
+                        if _c.get("quote"):
+                            _hn_md += f"  > {_c['quote']}\n"
+                add_curadoria_item(
+                    st.session_state.get("logged_in_user","internal"),
+                    "hunch_board",
+                    f"Hunch: {_hn_text_used}",
+                    _hn_md,
+                )
+                st.success(f"Hunch saved to **{_hn_sel_folder}**!")
+            else:
+                st.warning("No project folders yet — create one in Projects first.")
 
 tab_trends.__exit__(None, None, None)
 tab_search.__enter__()
