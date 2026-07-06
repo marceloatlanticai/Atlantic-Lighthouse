@@ -5634,6 +5634,17 @@ def _tr_thumb_from_url(url: str) -> str:
         return f"https://i.ytimg.com/vi/{_yt.group(1)}/mqdefault.jpg"
     return ""
 
+def _tr_proxy_thumb(url: str) -> str:
+    """Route TikTok/Instagram CDN URLs through wsrv.nl to bypass hotlink protection.
+    YouTube and other open CDNs are returned as-is."""
+    if not url:
+        return ""
+    _protected = ("tiktokcdn.com", "tiktok.com", "cdninstagram.com",
+                  "fbcdn.net", "instagram.com")
+    if any(d in url for d in _protected):
+        return f"https://wsrv.nl/?url={urllib.parse.quote(url, safe='')}&n=-1&w=480"
+    return url
+
 _tr_src_cls = {
     "reddit": "tr-src-reddit", "google_trends": "tr-src-google_trends",
     "hacker_news": "tr-src-hacker_news", "youtube": "tr-src-youtube",
@@ -5664,11 +5675,12 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
             if thumb:
                 break
 
+    thumb_src = _tr_proxy_thumb(thumb)
     thumb_html = (
-        f'<img src="{thumb}" style="width:100%;height:120px;object-fit:cover;'
+        f'<img src="{thumb_src}" style="width:100%;height:120px;object-fit:cover;'
         f'border-radius:6px;margin-bottom:8px;display:block;" '
         f'onerror="this.style.display=\'none\'" />'
-        if thumb else ""
+        if thumb_src else ""
     )
 
     # Link row
@@ -5898,11 +5910,12 @@ if _hn_board_data:
         rel_icon = {"CONFIRMS":"✓","CHALLENGES":"✗","UNEXPECTED":"◎"}.get(rel,"◎")
         urls = card.get("urls",[])
         thumb = card.get("thumbnail","")
+        thumb_src = _tr_proxy_thumb(thumb)
         thumb_html = (
-            f'<img src="{thumb}" style="width:100%;height:100px;object-fit:cover;'
+            f'<img src="{thumb_src}" style="width:100%;height:100px;object-fit:cover;'
             f'border-radius:6px;margin-bottom:8px;display:block;" '
             f'onerror="this.style.display=\'none\'" />'
-            if thumb else ""
+            if thumb_src else ""
         )
         link_html = ""
         if urls:
