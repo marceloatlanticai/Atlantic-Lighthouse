@@ -504,10 +504,10 @@ def scrape_twitter(
     try:
         from apify_client import ApifyClient
         client = ApifyClient(api_token)
-        # danek/twitter-scraper — simpler, no auth needed, searchTerms + maxItems
+        # danek/twitter-scraper — uses max_posts (not maxItems)
         run_input = {
             "searchTerms": [topic],
-            "maxItems": n,
+            "max_posts": n,
         }
         run = client.actor("danek/twitter-scraper").call(run_input=run_input)
         items_list = list(client.dataset(run.default_dataset_id).iterate_items())

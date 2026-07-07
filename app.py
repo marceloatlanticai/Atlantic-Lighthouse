@@ -981,7 +981,8 @@ with st.sidebar:
             _ing_limit = st.slider("Max signals", 20, 200, 100, key="ing_limit")
             _ing_sources = st.multiselect(
                 "Sources",
-                ["Reddit", "RSS", "GDELT", "Google Trends", "Hacker News", "Exa", "YouTube"],
+                ["Reddit", "RSS", "GDELT", "Google Trends", "Hacker News", "Exa",
+                 "YouTube", "TikTok", "Instagram", "X/Twitter"],
                 default=["Reddit", "RSS", "GDELT", "Google Trends", "Hacker News"],
                 key="ing_sources",
             )
@@ -992,6 +993,16 @@ with st.sidebar:
             ) if "Google Trends" in (_ing_sources if "ing_sources" in st.session_state else []) else "🌍 Worldwide"
             _geo_map = {"🌍 Worldwide": "", "🇬🇧 UK": "GB", "🇺🇸 USA": "US", "🇧🇷 Brazil": "BR"}
             _geo_code = _geo_map.get(_ing_geo, "")
+
+            # Key warnings — show before running so user knows what will be skipped
+            _ing_needs_apify  = {"TikTok", "Instagram", "X/Twitter"} & set(_ing_sources)
+            _ing_needs_youtube = "YouTube" in _ing_sources
+            _ing_has_apify    = bool(os.environ.get("APIFY_API_TOKEN", ""))
+            _ing_has_youtube  = bool(os.environ.get("YOUTUBE_API_KEY", ""))
+            if _ing_needs_apify and not _ing_has_apify:
+                st.warning("⚠️ APIFY_API_TOKEN not set — TikTok / Instagram / X/Twitter will be skipped.")
+            if _ing_needs_youtube and not _ing_has_youtube:
+                st.warning("⚠️ YOUTUBE_API_KEY not set — YouTube will be skipped. Add it to Streamlit Cloud secrets.")
 
             if st.button("⚡ Start ingestion", use_container_width=True, key="run_ingestion_btn"):
                 _ing_log = st.empty()
@@ -1013,6 +1024,9 @@ with st.sidebar:
                             use_hacker_news="Hacker News" in _ing_sources,
                             use_exa="Exa" in _ing_sources,
                             use_youtube="YouTube" in _ing_sources,
+                            use_tiktok="TikTok" in _ing_sources,
+                            use_instagram="Instagram" in _ing_sources,
+                            use_twitter="X/Twitter" in _ing_sources,
                             trends_geo=_geo_code,
                             callback=_ing_cb,
                         )
