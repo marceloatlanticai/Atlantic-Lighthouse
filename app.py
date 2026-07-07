@@ -5205,7 +5205,10 @@ if _tr_fetch and _tr_topic.strip():
             scrape_gdelt, scrape_rss, scrape_youtube,
             scrape_tiktok, scrape_instagram, scrape_twitter, scrape_exa,
         )
-        def _tr_cb(msg): _tr_status.caption(msg)
+        _tr_log: list[str] = []  # collect all status messages for debug
+        def _tr_cb(msg):
+            _tr_status.caption(msg)
+            _tr_log.append(msg)
 
         # Saved signals — keyword search across DB
         if "Saved signals" in _tr_sources:
@@ -5427,6 +5430,7 @@ SIGNALS:
     st.session_state["tr_topic_used"]  = _tr_topic
     st.session_state["tr_terms_used"]  = _tr_expanded_terms
     st.session_state["tr_raw_count"]   = len(_tr_raw)
+    st.session_state["tr_log"]         = _tr_log
     _tr_status.empty()
 
 # ── Hunch: fetch & classify ───────────────────────────────────────────────────
@@ -5588,6 +5592,14 @@ if "tr_board" not in st.session_state:
     _tr_ant_key_auto = os.environ.get("ANTHROPIC_API_KEY", "")
     _tr_auto_sigs_raw = load_signals(limit=500)
 
+    if not _tr_auto_sigs_raw:
+        # DB has no signals — guide user to run ingestion
+        st.info(
+            "**No saved signals yet.** "
+            "To populate the Trends Board, open the sidebar and run **Ingestion** "
+            "for your topic first — or use the search box above to fetch live signals now."
+        )
+
     # Prioritise visual/social signals (YouTube, Instagram, TikTok) — they have thumbnails
     # and are more relevant for trends than RSS. Sort: social-with-thumb first, then rest.
     _social_src = {"youtube", "instagram", "tiktok", "twitter", "reddit"}
@@ -5635,22 +5647,28 @@ if "tr_board" not in st.session_state:
 </div>""", unsafe_allow_html=True)
         try:
             import anthropic as _ant_auto
+            # Build URL→thumbnail map (same approach as manual search — don't ask Claude to reproduce URLs)
+            _auto_url_thumb: dict = {
+                s.get("url",""): s.get("thumbnail","")
+                for s in _tr_auto_sigs[:80] if s.get("url") and s.get("thumbnail")
+            }
             _tr_auto_txt = "\n".join(
                 f"[{i}] {s.get('source','?').upper()} | {s.get('title','')[:100]}"
                 f" | URL:{s.get('url','')[:80]}"
-                + (f" | THUMB:{s.get('thumbnail','')[:120]}" if s.get('thumbnail') else "")
                 for i, s in enumerate(_tr_auto_sigs[:80])
             )
+            _n_auto = min(len(_tr_auto_sigs), 80)
+            _n_themes_auto = max(3, min(16, _n_auto // 4))
             _tr_auto_resp = _ant_auto.Anthropic(api_key=_tr_ant_key_auto).messages.create(
                 model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
                 max_tokens=2500,
                 messages=[{"role": "user", "content":
-                    f"You are a cultural trends analyst. Analyse these {min(len(_tr_auto_sigs),80)} "
-                    f"signals from various sources and identify 10–16 distinct trending themes.\n\n"
+                    f"You are a cultural trends analyst. Analyse these {_n_auto} "
+                    f"signals from various sources and identify {_n_themes_auto}–{min(16,_n_auto//2)} distinct trending themes. "
+                    f"Never return an empty array — always identify at least {_n_themes_auto} themes.\n\n"
                     f"For each theme return: name (2-5 words, title case), velocity (RISING/STABLE/DECLINING), "
                     f"score_num (integer -100 to +100), score_label (e.g. '+42%'), "
-                    f"sources (list), note (max 12 words), urls (up to 2 real URLs from signals), "
-                    f"thumbnail (use a THUMB: value from a representative signal if available, else empty string), "
+                    f"sources (list), note (max 12 words), urls (up to 2 exact URLs from the URL: fields), "
                     f"emotion (dominant emotion e.g. 'nostalgia','frustration','excitement','anxiety','joy','irony'), "
                     f"hook (dominant hook type e.g. 'contrarian claim','comparison','personal story','data & stats','controversy','humor'), "
                     f"tone (dominant tone e.g. 'casual','ironic','vulnerable','educational','outraged','playful','aspirational').\n\n"
@@ -5658,18 +5676,35 @@ if "tr_board" not in st.session_state:
             )
             _tr_auto_raw = _tr_auto_resp.content[0].text.strip()
             _tr_auto_js  = _tr_auto_raw[_tr_auto_raw.find("["):_tr_auto_raw.rfind("]")+1]
+            _tr_auto_themes = json.loads(_tr_auto_js) if _tr_auto_js else []
+            # Fallback: if Claude returned [] build cards from signals directly
+            if not _tr_auto_themes:
+                _tr_auto_themes = [
+                    {"name": s.get("title","")[:45], "velocity": "STABLE", "score_num": 0,
+                     "score_label": "—", "sources": [s.get("source","rss")],
+                     "note": "", "urls": [s.get("url","")] if s.get("url") else [],
+                     "emotion": "", "hook": "", "tone": ""}
+                    for s in _tr_auto_sigs[:12]
+                ]
             _tr_auto_board: dict = {"high": [], "stable": [], "decline": []}
-            for _th in json.loads(_tr_auto_js):
+            for _th in _tr_auto_themes:
                 _vel = _th.get("velocity","STABLE").upper()
+                _urls = [u for u in _th.get("urls",[]) if u.startswith("http")][:2]
+                # Look up thumbnail from map
+                _auto_thumb = ""
+                for _u in _urls:
+                    if _u in _auto_url_thumb:
+                        _auto_thumb = _auto_url_thumb[_u]
+                        break
                 _card = {
                     "name":        _th.get("name",""),
                     "score_num":   int(_th.get("score_num",0)),
                     "score_label": _th.get("score_label",""),
                     "sources":     _th.get("sources",[]),
                     "note":        _th.get("note",""),
-                    "urls":        [u for u in _th.get("urls",[]) if u.startswith("http")][:2],
+                    "urls":        _urls,
                     "velocity":    _vel,
-                    "thumbnail":   _th.get("thumbnail",""),
+                    "thumbnail":   _auto_thumb,
                     "emotion":     _th.get("emotion",""),
                     "hook":        _th.get("hook",""),
                     "tone":        _th.get("tone",""),
@@ -5683,8 +5718,9 @@ if "tr_board" not in st.session_state:
             st.session_state["tr_board"]      = _tr_auto_board
             st.session_state["tr_topic_used"] = "latest signals"
             st.session_state["tr_terms_used"] = []
-        except Exception:
-            pass  # silently skip if auto-load fails
+        except Exception as _auto_err:
+            # Surface the error so it's visible — don't silently skip
+            st.warning(f"Auto-load failed: {_auto_err}")
         finally:
             _auto_anim.empty()  # always clear the animation
 
@@ -5842,6 +5878,11 @@ if _tr_board_data is not None:
                 "Possible causes: API rate limits reached, no posts found for this topic/hashtag, "
                 "or APIFY_API_TOKEN may be missing. Try adding RSS, Reddit, or YouTube as extra sources."
             )
+            _tr_log_show = st.session_state.get("tr_log", [])
+            if _tr_log_show:
+                with st.expander("🔍 Debug log — what happened during the search"):
+                    for _msg in _tr_log_show:
+                        st.caption(_msg)
         else:
             st.info("No trends found — try a broader topic or add more sources.")
     else:
