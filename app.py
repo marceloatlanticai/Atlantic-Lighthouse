@@ -1032,6 +1032,9 @@ with st.sidebar:
                         )
                     st.success(f"✅ {_result['total']} signals saved — " + " · ".join(f"{k}: {v}" for k, v in _result["by_source"].items()))
                     st.cache_data.clear()
+                    # Clear cached gallery + board so Trends tab rebuilds with fresh data
+                    for _k in ("tr_gallery", "tr_board", "tr_topic_used", "tr_terms_used"):
+                        st.session_state.pop(_k, None)
                     st.rerun()
                 except Exception as _ing_exc:
                     st.error(f"Ingestion failed: {_ing_exc}")
