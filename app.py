@@ -5592,152 +5592,26 @@ SIGNALS:
     _hn_status.empty()
 
 # ── Render board ──────────────────────────────────────────────────────────────
-# ── Auto-load from DB on first open (no fetch needed) ─────────────────────────
-if "tr_board" not in st.session_state:
-    _tr_ant_key_auto = os.environ.get("ANTHROPIC_API_KEY", "")
-    _tr_auto_sigs_raw = load_signals(limit=500)
+# ── Auto-load: Source Gallery (instant, no Claude needed) ─────────────────────
+if "tr_gallery" not in st.session_state:
+    _tr_auto_raw_sigs = load_signals(limit=400)
+    _gal_order_pref = ["youtube", "tiktok", "instagram", "twitter",
+                       "reddit", "google_trends", "hacker_news", "rss", "exa", "gdelt"]
+    _gal_map: dict = {}
+    for _gs in _tr_auto_raw_sigs:
+        _gal_map.setdefault(_gs.get("source", "other"), []).append(_gs)
+    _gal_ordered = [s for s in _gal_order_pref if s in _gal_map]
+    _gal_ordered += sorted([s for s in _gal_map if s not in _gal_ordered])
+    st.session_state["tr_gallery"] = {
+        "ordered": _gal_ordered,
+        "by_source": _gal_map,
+        "total": len(_tr_auto_raw_sigs),
+    }
 
-    if not _tr_auto_sigs_raw:
-        # DB has no signals — guide user to run ingestion
-        st.info(
-            "**No saved signals yet.** "
-            "To populate the Trends Board, open the sidebar and run **Ingestion** "
-            "for your topic first — or use the search box above to fetch live signals now."
-        )
-
-    # YouTube first (product requirement), then other social-with-thumbs, then rest.
-    _social_src = {"youtube", "instagram", "tiktok", "twitter", "reddit"}
-    _tr_auto_sigs = sorted(
-        _tr_auto_sigs_raw,
-        key=lambda s: (
-            0 if (s.get("source","") == "youtube" and s.get("thumbnail","")) else
-            1 if s.get("source","") == "youtube" else
-            2 if (s.get("source","") in _social_src and s.get("thumbnail","")) else
-            3 if s.get("source","") in _social_src else 4
-        )
-    )
-
-    if _tr_auto_sigs and _tr_ant_key_auto:
-        # Custom loading animation
-        _auto_anim = st.empty()
-        _auto_anim.markdown("""
-<style>
-@keyframes _tr_dot { 0%,100%{opacity:.2;transform:scale(.7)} 50%{opacity:1;transform:scale(1.15)} }
-@keyframes _tr_bar { 0%,100%{width:0%} 50%{width:100%} }
-</style>
-<div style="text-align:center;padding:2.5rem 1rem 2rem;">
-  <div style="font-family:Georgia,serif;font-size:1rem;color:#274d68;margin-bottom:6px;">
-    Reading your signals
-  </div>
-  <div style="font-size:11px;font-family:monospace;letter-spacing:.1em;
-    text-transform:uppercase;color:#9dc4d8;margin-bottom:1.4rem;">
-    Claude is mapping what's trending…
-  </div>
-  <div style="display:flex;justify-content:center;gap:10px;margin-bottom:1.2rem;">
-    <div style="width:11px;height:11px;border-radius:50%;background:#6ea8c4;
-      animation:_tr_dot 1.4s ease-in-out infinite;"></div>
-    <div style="width:11px;height:11px;border-radius:50%;background:#4a90c4;
-      animation:_tr_dot 1.4s ease-in-out .25s infinite;"></div>
-    <div style="width:11px;height:11px;border-radius:50%;background:#274d68;
-      animation:_tr_dot 1.4s ease-in-out .5s infinite;"></div>
-    <div style="width:11px;height:11px;border-radius:50%;background:#4a90c4;
-      animation:_tr_dot 1.4s ease-in-out .75s infinite;"></div>
-    <div style="width:11px;height:11px;border-radius:50%;background:#6ea8c4;
-      animation:_tr_dot 1.4s ease-in-out 1s infinite;"></div>
-  </div>
-  <div style="max-width:220px;margin:0 auto;height:3px;background:#e8f1f5;
-    border-radius:2px;overflow:hidden;">
-    <div style="height:3px;background:linear-gradient(90deg,#6ea8c4,#274d68);
-      border-radius:2px;animation:_tr_bar 2s ease-in-out infinite;"></div>
-  </div>
-</div>""", unsafe_allow_html=True)
-        try:
-            import anthropic as _ant_auto
-            # Build URL→thumbnail map (same approach as manual search — don't ask Claude to reproduce URLs)
-            _auto_url_thumb: dict = {
-                s.get("url",""): s.get("thumbnail","")
-                for s in _tr_auto_sigs[:80] if s.get("url") and s.get("thumbnail")
-            }
-            _tr_auto_txt = "\n".join(
-                f"[{i}] {s.get('source','?').upper()} | {s.get('title','')[:100]}"
-                f" | URL:{s.get('url','')[:80]}"
-                for i, s in enumerate(_tr_auto_sigs[:80])
-            )
-            _n_auto = min(len(_tr_auto_sigs), 60)  # cap at 60 to keep response size manageable
-            _n_themes_auto = max(5, min(20, _n_auto // 4))  # scale themes: 5 min, up to 20
-            _tr_auto_resp = _ant_auto.Anthropic(api_key=_tr_ant_key_auto).messages.create(
-                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
-                max_tokens=4000,
-                messages=[{"role": "user", "content":
-                    f"You are a cultural trends analyst. Analyse these {_n_auto} "
-                    f"signals from various sources and identify {_n_themes_auto}–{min(30,_n_auto//2)} distinct trending themes. "
-                    f"Never return an empty array — always identify at least {_n_themes_auto} themes.\n\n"
-                    f"For each theme return: name (2-5 words, title case), velocity (RISING/STABLE/DECLINING), "
-                    f"score_num (integer -100 to +100), score_label (e.g. '+42%'), "
-                    f"sources (list), note (max 12 words), urls (up to 2 exact URLs from the URL: fields), "
-                    f"emotion (dominant emotion e.g. 'nostalgia','frustration','excitement','anxiety','joy','irony'), "
-                    f"hook (dominant hook type e.g. 'contrarian claim','comparison','personal story','data & stats','controversy','humor'), "
-                    f"tone (dominant tone e.g. 'casual','ironic','vulnerable','educational','outraged','playful','aspirational').\n\n"
-                    f"Respond ONLY with a valid JSON array.\n\nSIGNALS:\n{_tr_auto_txt}"}],
-            )
-            _tr_auto_raw = _tr_auto_resp.content[0].text.strip()
-            _tr_auto_js  = _tr_auto_raw[_tr_auto_raw.find("["):_tr_auto_raw.rfind("]")+1]
-            # Repair truncated JSON: find last complete object and close the array
-            if _tr_auto_js and not _tr_auto_js.rstrip().endswith("]"):
-                _last_obj = _tr_auto_js.rfind("},")
-                if _last_obj > 0:
-                    _tr_auto_js = _tr_auto_js[:_last_obj+1] + "]"
-            _tr_auto_themes = json.loads(_tr_auto_js) if _tr_auto_js else []
-            # Fallback: if Claude returned [] build cards from signals directly
-            if not _tr_auto_themes:
-                _tr_auto_themes = [
-                    {"name": s.get("title","")[:45], "velocity": "STABLE", "score_num": 0,
-                     "score_label": "—", "sources": [s.get("source","rss")],
-                     "note": "", "urls": [s.get("url","")] if s.get("url") else [],
-                     "emotion": "", "hook": "", "tone": ""}
-                    for s in _tr_auto_sigs[:12]
-                ]
-            _tr_auto_board: dict = {"high": [], "stable": [], "decline": []}
-            for _th in _tr_auto_themes:
-                _vel = _th.get("velocity","STABLE").upper()
-                _urls = [u for u in _th.get("urls",[]) if u.startswith("http")][:2]
-                # Look up thumbnail from map
-                _auto_thumb = ""
-                for _u in _urls:
-                    if _u in _auto_url_thumb:
-                        _auto_thumb = _auto_url_thumb[_u]
-                        break
-                _card = {
-                    "name":        _th.get("name",""),
-                    "score_num":   int(_th.get("score_num",0)),
-                    "score_label": _th.get("score_label",""),
-                    "sources":     _th.get("sources",[]),
-                    "note":        _th.get("note",""),
-                    "urls":        _urls,
-                    "velocity":    _vel,
-                    "thumbnail":   _auto_thumb,
-                    "emotion":     _th.get("emotion",""),
-                    "hook":        _th.get("hook",""),
-                    "tone":        _th.get("tone",""),
-                }
-                if _vel == "RISING":
-                    _tr_auto_board["high"].append(_card)
-                elif _vel == "DECLINING":
-                    _tr_auto_board["decline"].append(_card)
-                else:
-                    _tr_auto_board["stable"].append(_card)
-            st.session_state["tr_board"]      = _tr_auto_board
-            st.session_state["tr_topic_used"] = "latest signals"
-            st.session_state["tr_terms_used"] = []
-        except Exception as _auto_err:
-            # Surface the error so it's visible — don't silently skip
-            st.warning(f"Auto-load failed: {_auto_err}")
-        finally:
-            _auto_anim.empty()  # always clear the animation
-
-_tr_board_data  = st.session_state.get("tr_board", None)
-_tr_topic_label = st.session_state.get("tr_topic_used", "")
-_tr_terms_label = st.session_state.get("tr_terms_used", [])
+_tr_board_data   = st.session_state.get("tr_board", None)
+_tr_gallery_data = st.session_state.get("tr_gallery", None)
+_tr_topic_label  = st.session_state.get("tr_topic_used", "")
+_tr_terms_label  = st.session_state.get("tr_terms_used", [])
 
 def _tr_thumb_from_url(url: str) -> str:
     """Derive a thumbnail URL from a content URL where possible."""
@@ -5878,6 +5752,101 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
                 st.session_state["tr_board"] = _brd
                 st.rerun()
 
+# ── Source Gallery — shown on first open (before any manual search) ───────────
+if _tr_board_data is None and _tr_gallery_data:
+    _gal_total = _tr_gallery_data.get("total", 0)
+    if _gal_total == 0:
+        st.info(
+            "**No saved signals yet.** "
+            "Open the sidebar and run **Ingestion** for your topic first — "
+            "or use the search box above to fetch live signals now."
+        )
+    else:
+        _gal_src_labels = {
+            "youtube": "▶  YouTube", "tiktok": "♪  TikTok",
+            "instagram": "✦  Instagram", "twitter": "𝕏  X / Twitter",
+            "reddit": "💬  Reddit", "google_trends": "📈  Google Trends",
+            "hacker_news": "🔸  Hacker News", "rss": "📡  RSS",
+            "exa": "◎  Exa", "gdelt": "🌐  GDELT",
+        }
+        _gal_src_colors = {
+            "youtube": "#ff0033", "tiktok": "#0fa3b5", "instagram": "#c13584",
+            "twitter": "#1d9bf0", "reddit": "#ff4500", "google_trends": "#4285f4",
+            "hacker_news": "#ff6600", "rss": "#f5a623", "exa": "#8b5cf6",
+            "gdelt": "#16a34a",
+        }
+
+        st.markdown(
+            f"<p style='font-family:\"JetBrains Mono\",monospace;font-size:10px;"
+            f"letter-spacing:.1em;text-transform:uppercase;color:#9dc4d8;"
+            f"margin-bottom:.4rem;'>{_gal_total} saved signals · browse by source</p>",
+            unsafe_allow_html=True,
+        )
+
+        for _gsrc in _tr_gallery_data.get("ordered", []):
+            _gsigs = _tr_gallery_data["by_source"].get(_gsrc, [])
+            if not _gsigs:
+                continue
+            _glabel = _gal_src_labels.get(_gsrc, _gsrc.replace("_", " ").title())
+            _gcolor = _gal_src_colors.get(_gsrc, "#6ea8c4")
+            _gcount = len(_gsigs)
+            _gshow  = _gsigs[:6]
+
+            # Source row header
+            st.markdown(
+                f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:11px;'
+                f'letter-spacing:.1em;text-transform:uppercase;color:{_gcolor};'
+                f'margin:1.4rem 0 .5rem;padding-bottom:5px;'
+                f'border-bottom:1px solid {_gcolor}33;">'
+                f'{_glabel} <span style="color:#9dc4d8;font-size:9px;'
+                f'font-weight:400;">· {_gcount} signals</span></div>',
+                unsafe_allow_html=True,
+            )
+
+            # Signal cards in columns
+            _gcols = st.columns(len(_gshow))
+            for _gci, _gsig in enumerate(_gshow):
+                with _gcols[_gci]:
+                    _gu   = _gsig.get("url", "")
+                    _gth  = _gsig.get("thumbnail", "")
+                    _gtit = _gsig.get("title", "")[:55]
+                    _gsrc2 = _gsig.get("source", "")
+                    # Derive YouTube thumbnail from URL if missing
+                    if not _gth and _gu:
+                        _yt_m = _re_global.search(
+                            r"(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})", _gu
+                        )
+                        if _yt_m:
+                            _gth = f"https://i.ytimg.com/vi/{_yt_m.group(1)}/mqdefault.jpg"
+                    # Proxy CDN URLs
+                    if _gth:
+                        _gth_disp = _tr_proxy_thumb(_gth)
+                    else:
+                        _gth_disp = ""
+                    _gph = {"tiktok": "tr-ph-tiktok", "instagram": "tr-ph-instagram"}.get(_gsrc2, "")
+                    if _gth_disp:
+                        _gimg_html = (
+                            f'<div class="tr-thumb-wrap {_gph}" style="height:88px;margin-bottom:6px;">'
+                            f'<img src="{_gth_disp}" onerror="this.style.opacity=0;" /></div>'
+                        )
+                    elif _gph:
+                        _gimg_html = f'<div class="tr-thumb-wrap {_gph}" style="height:88px;margin-bottom:6px;"></div>'
+                    else:
+                        _gimg_html = ""
+                    _glink = (f'<a href="{e(_gu)}" target="_blank" rel="noopener" '
+                              f'style="font-size:9px;color:{_gcolor};text-decoration:none;">'
+                              f'→ open</a>') if _gu else ""
+                    st.markdown(
+                        f'<div style="background:rgba(255,255,255,.035);border-radius:8px;'
+                        f'padding:8px;border:1px solid rgba(255,255,255,.07);height:100%;">'
+                        f'{_gimg_html}'
+                        f'<div style="font-size:11px;color:#c8e0ea;line-height:1.35;'
+                        f'margin-bottom:5px;font-family:Georgia,serif;">{e(_gtit)}</div>'
+                        f'{_glink}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+# ── Claude Themes Board — shown after a manual search ─────────────────────────
 if _tr_board_data is not None:
     _tr_total = sum(len(v) for v in _tr_board_data.values())
     if _tr_total == 0:
@@ -5891,7 +5860,8 @@ if _tr_board_data is not None:
             )
             _tr_log_show = st.session_state.get("tr_log", [])
             if _tr_log_show:
-                with st.expander("🔍 Debug log — what happened during the search"):
+                with st.expander("🔍 Debug log — what happened during the search",
+                                 expanded=True):
                     for _msg in _tr_log_show:
                         st.caption(_msg)
         else:
