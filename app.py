@@ -5372,11 +5372,16 @@ SIGNALS:
 
             _tr_resp = _tr_client.messages.create(
                 model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
-                max_tokens=2500,
+                max_tokens=4000,
                 messages=[{"role": "user", "content": _tr_prompt}],
             )
             _tr_txt = _tr_resp.content[0].text.strip()
             _tr_js  = _tr_txt[_tr_txt.find("["):_tr_txt.rfind("]") + 1]
+            # Repair truncated JSON if needed
+            if _tr_js and not _tr_js.rstrip().endswith("]"):
+                _last = _tr_js.rfind("},")
+                if _last > 0:
+                    _tr_js = _tr_js[:_last+1] + "]"
             _tr_themes = json.loads(_tr_js) if _tr_js else []
             # Fallback: if Claude returned [] (valid but empty), build cards directly from signals
             if not _tr_themes and _tr_raw:
@@ -5657,11 +5662,11 @@ if "tr_board" not in st.session_state:
                 f" | URL:{s.get('url','')[:80]}"
                 for i, s in enumerate(_tr_auto_sigs[:80])
             )
-            _n_auto = min(len(_tr_auto_sigs), 80)
-            _n_themes_auto = max(3, min(16, _n_auto // 4))
+            _n_auto = min(len(_tr_auto_sigs), 60)  # cap at 60 to keep response size manageable
+            _n_themes_auto = max(3, min(10, _n_auto // 5))  # scale themes with signals
             _tr_auto_resp = _ant_auto.Anthropic(api_key=_tr_ant_key_auto).messages.create(
                 model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
-                max_tokens=2500,
+                max_tokens=4000,
                 messages=[{"role": "user", "content":
                     f"You are a cultural trends analyst. Analyse these {_n_auto} "
                     f"signals from various sources and identify {_n_themes_auto}–{min(16,_n_auto//2)} distinct trending themes. "
@@ -5676,6 +5681,11 @@ if "tr_board" not in st.session_state:
             )
             _tr_auto_raw = _tr_auto_resp.content[0].text.strip()
             _tr_auto_js  = _tr_auto_raw[_tr_auto_raw.find("["):_tr_auto_raw.rfind("]")+1]
+            # Repair truncated JSON: find last complete object and close the array
+            if _tr_auto_js and not _tr_auto_js.rstrip().endswith("]"):
+                _last_obj = _tr_auto_js.rfind("},")
+                if _last_obj > 0:
+                    _tr_auto_js = _tr_auto_js[:_last_obj+1] + "]"
             _tr_auto_themes = json.loads(_tr_auto_js) if _tr_auto_js else []
             # Fallback: if Claude returned [] build cards from signals directly
             if not _tr_auto_themes:
