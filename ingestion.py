@@ -298,10 +298,10 @@ def _fetch_tiktok_comments(video_url: str, api_token: str, max_comments: int = 1
         client = ApifyClient(api_token)
         run = client.actor("apify/tiktok-comment-scraper").call(
             run_input={"postURLs": [video_url], "commentsPerPost": max_comments},
-            timeout_secs=60,
         )
+
         comments = []
-        for c in client.dataset(run["defaultDatasetId"]).iterate_items():
+        for c in client.dataset(run.default_dataset_id).iterate_items():
             text = c.get("text") or c.get("commentText") or ""
             likes = c.get("diggCount") or c.get("likeCount") or 0
             if text:
@@ -340,10 +340,10 @@ def scrape_tiktok(
             "searchQueries": [topic],
             "maxItems": n,
             "shouldDownloadVideos": False,
-            "shouldDownloadCovers": False,  # keep False — free tier; URLs still in response
+            "shouldDownloadCovers": True,   # download to Apify storage → stable URL, bypasses TikTok CDN hotlink block
         }
-        run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input, timeout_secs=90)
-        videos = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input)
+        videos = list(client.dataset(run.default_dataset_id).iterate_items())
         for idx, item in enumerate(videos):
             vid_url = item.get("webVideoUrl") or item.get("authorMeta", {}).get("url", "")
             ts = item.get("createTimeISO") or datetime.now(tz=timezone.utc).isoformat()
@@ -374,14 +374,16 @@ def scrape_tiktok(
                     "hashtags": item.get("hashtags", []),
                     "comments_enriched": fetch_comments,
                     "thumbnail": (
-                        item.get("videoMeta", {}).get("coverUrl")
+                        # When shouldDownloadCovers=True, Apify stores the image
+                        # and returns a stable URL — check common field names
+                        item.get("coverUrl")                               # top-level (downloaded)
+                        or item.get("imageUrl")                            # alternative top-level
+                        or item.get("videoMeta", {}).get("coverUrl")       # nested
                         or item.get("videoMeta", {}).get("originalCoverUrl")
                         or item.get("staticCoverUrl")
                         or item.get("originCoverUrl")
                         or item.get("covers", {}).get("default")
                         or item.get("covers", {}).get("origin")
-                        or item.get("coverUrl")
-                        or item.get("imageUrl")
                         or ""
                     ),
                 },
@@ -468,8 +470,8 @@ def scrape_instagram(
             "resultsLimit": n,
             "addParentData": False,
         }
-        run = client.actor("apify/instagram-scraper").call(run_input=run_input, timeout_secs=120)
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        run = client.actor("apify/instagram-scraper").call(run_input=run_input)
+        items = list(client.dataset(run.default_dataset_id).iterate_items())
         signals = _parse_ig_items(items)
 
     except Exception as exc:
@@ -508,8 +510,8 @@ def scrape_twitter(
             "queryType": "Latest",
             "addUserInfo": True,
         }
-        run = client.actor("apidojo/tweet-scraper").call(run_input=run_input, timeout_secs=90)
-        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+        run = client.actor("apidojo/tweet-scraper").call(run_input=run_input)
+        for item in client.dataset(run.default_dataset_id).iterate_items():
             # apidojo/tweet-scraper output fields
             tweet_url = (
                 item.get("url") or item.get("tweetUrl")
