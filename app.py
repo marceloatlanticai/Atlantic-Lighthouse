@@ -5790,61 +5790,62 @@ if _tr_board_data is None and _tr_gallery_data:
             _glabel = _gal_src_labels.get(_gsrc, _gsrc.replace("_", " ").title())
             _gcolor = _gal_src_colors.get(_gsrc, "#6ea8c4")
             _gcount = len(_gsigs)
-            _gshow  = _gsigs[:6]
+            # Show up to 9 cards in 3-per-row chunks (bigger, more readable)
+            _gshow  = _gsigs[:9]
 
             # Source row header
             st.markdown(
                 f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:11px;'
                 f'letter-spacing:.1em;text-transform:uppercase;color:{_gcolor};'
-                f'margin:1.4rem 0 .5rem;padding-bottom:5px;'
+                f'margin:1.6rem 0 .6rem;padding-bottom:5px;'
                 f'border-bottom:1px solid {_gcolor}33;">'
                 f'{_glabel} <span style="color:#9dc4d8;font-size:9px;'
                 f'font-weight:400;">· {_gcount} signals</span></div>',
                 unsafe_allow_html=True,
             )
 
-            # Signal cards in columns
-            _gcols = st.columns(len(_gshow))
-            for _gci, _gsig in enumerate(_gshow):
-                with _gcols[_gci]:
-                    _gu   = _gsig.get("url", "")
-                    _gth  = _gsig.get("thumbnail", "")
-                    _gtit = _gsig.get("title", "")[:55]
-                    _gsrc2 = _gsig.get("source", "")
-                    # Derive YouTube thumbnail from URL if missing
-                    if not _gth and _gu:
-                        _yt_m = _re_global.search(
-                            r"(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})", _gu
+            # Render 3 cards per row
+            for _grow_start in range(0, len(_gshow), 3):
+                _grow_items = _gshow[_grow_start:_grow_start + 3]
+                _gcols = st.columns(3)
+                for _gci, _gsig in enumerate(_grow_items):
+                    with _gcols[_gci]:
+                        _gu    = _gsig.get("url", "")
+                        _gth   = _gsig.get("thumbnail", "")
+                        _gtit  = _gsig.get("title", "")[:80]
+                        _gsrc2 = _gsig.get("source", "")
+                        # Derive YouTube thumbnail from URL if missing
+                        if not _gth and _gu:
+                            _yt_m = _re_global.search(
+                                r"(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})", _gu
+                            )
+                            if _yt_m:
+                                _gth = f"https://i.ytimg.com/vi/{_yt_m.group(1)}/mqdefault.jpg"
+                        _gth_disp = _tr_proxy_thumb(_gth) if _gth else ""
+                        _gph = {"tiktok": "tr-ph-tiktok", "instagram": "tr-ph-instagram"}.get(_gsrc2, "")
+                        if _gth_disp:
+                            _gimg_html = (
+                                f'<div class="tr-thumb-wrap {_gph}" style="height:140px;margin-bottom:8px;">'
+                                f'<img src="{_gth_disp}" onerror="this.style.opacity=0;" /></div>'
+                            )
+                        elif _gph:
+                            _gimg_html = f'<div class="tr-thumb-wrap {_gph}" style="height:140px;margin-bottom:8px;"></div>'
+                        else:
+                            _gimg_html = ""
+                        _glink = (
+                            f'<a href="{e(_gu)}" target="_blank" rel="noopener" '
+                            f'style="font-size:10px;color:{_gcolor};text-decoration:none;'
+                            f'font-family:\'JetBrains Mono\',monospace;">→ open</a>'
+                        ) if _gu else ""
+                        st.markdown(
+                            f'<div style="background:rgba(255,255,255,.04);border-radius:10px;'
+                            f'padding:10px;border:1px solid rgba(255,255,255,.08);margin-bottom:10px;">'
+                            f'{_gimg_html}'
+                            f'<div style="font-size:13px;color:#c8e0ea;line-height:1.4;'
+                            f'margin-bottom:7px;font-family:Georgia,serif;">{e(_gtit)}</div>'
+                            f'{_glink}</div>',
+                            unsafe_allow_html=True,
                         )
-                        if _yt_m:
-                            _gth = f"https://i.ytimg.com/vi/{_yt_m.group(1)}/mqdefault.jpg"
-                    # Proxy CDN URLs
-                    if _gth:
-                        _gth_disp = _tr_proxy_thumb(_gth)
-                    else:
-                        _gth_disp = ""
-                    _gph = {"tiktok": "tr-ph-tiktok", "instagram": "tr-ph-instagram"}.get(_gsrc2, "")
-                    if _gth_disp:
-                        _gimg_html = (
-                            f'<div class="tr-thumb-wrap {_gph}" style="height:88px;margin-bottom:6px;">'
-                            f'<img src="{_gth_disp}" onerror="this.style.opacity=0;" /></div>'
-                        )
-                    elif _gph:
-                        _gimg_html = f'<div class="tr-thumb-wrap {_gph}" style="height:88px;margin-bottom:6px;"></div>'
-                    else:
-                        _gimg_html = ""
-                    _glink = (f'<a href="{e(_gu)}" target="_blank" rel="noopener" '
-                              f'style="font-size:9px;color:{_gcolor};text-decoration:none;">'
-                              f'→ open</a>') if _gu else ""
-                    st.markdown(
-                        f'<div style="background:rgba(255,255,255,.035);border-radius:8px;'
-                        f'padding:8px;border:1px solid rgba(255,255,255,.07);height:100%;">'
-                        f'{_gimg_html}'
-                        f'<div style="font-size:11px;color:#c8e0ea;line-height:1.35;'
-                        f'margin-bottom:5px;font-family:Georgia,serif;">{e(_gtit)}</div>'
-                        f'{_glink}</div>',
-                        unsafe_allow_html=True,
-                    )
 
 # ── Claude Themes Board — shown after a manual search ─────────────────────────
 if _tr_board_data is not None:

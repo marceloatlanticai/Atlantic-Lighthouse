@@ -506,34 +506,54 @@ def scrape_twitter(
         client = ApifyClient(api_token)
         run_input = {
             "searchTerms": [topic],
-            "maxTweets": n,
-            "queryType": "Latest",
-            "addUserInfo": True,
+            "maxItems": n,
+            "sort": "Latest",
         }
         run = client.actor("apidojo/tweet-scraper").call(run_input=run_input)
-        for item in client.dataset(run.default_dataset_id).iterate_items():
-            # apidojo/tweet-scraper output fields
-            tweet_url = (
-                item.get("url") or item.get("tweetUrl")
-                or item.get("tweet_url") or ""
+        items_list = list(client.dataset(run.default_dataset_id).iterate_items())
+        if callback:
+            callback(f"[X/Twitter] Dataset returned {len(items_list)} raw items")
+        if items_list and callback:
+            _s0 = items_list[0]
+            callback(f"[X/Twitter] Keys: {list(_s0.keys())[:15]}")
+            # Log actual text value of first item to diagnose field name
+            _t0 = (_s0.get("rawContent") or _s0.get("text") or _s0.get("fullText")
+                   or _s0.get("full_text") or _s0.get("renderedContent") or "")
+            callback(f"[X/Twitter] First text sample: {str(_t0)[:80]!r}")
+        for item in items_list:
+            # apidojo/tweet-scraper — try every known text field name
+            text = (
+                item.get("rawContent") or item.get("text") or item.get("fullText")
+                or item.get("full_text") or item.get("renderedContent")
+                or item.get("tweetText") or item.get("content") or ""
             )
+            # URL — build from tweet ID if direct field missing
+            tweet_url = (
+                item.get("url") or item.get("tweetUrl") or item.get("tweet_url") or ""
+            )
+            if not tweet_url:
+                _tid = item.get("id") or item.get("tweet_id") or ""
+                if _tid:
+                    tweet_url = f"https://twitter.com/i/web/status/{_tid}"
             ts = (
                 item.get("createdAt") or item.get("created_at")
                 or datetime.now(tz=timezone.utc).isoformat()
             )
-            text = item.get("text") or item.get("fullText") or item.get("full_text") or ""
             # author can be nested or flat
             author = item.get("author") or item.get("user") or {}
             if isinstance(author, dict):
                 handle = (author.get("userName") or author.get("username")
-                          or author.get("screen_name") or "")
+                          or author.get("screen_name") or author.get("name") or "")
             else:
                 handle = str(author)
-            likes = item.get("likeCount") or item.get("favorite_count") or 0
-            retweets = item.get("retweetCount") or item.get("retweet_count") or 0
-            replies = item.get("replyCount") or item.get("reply_count") or 0
-            if not text:
+            likes    = item.get("likeCount")    or item.get("favorite_count") or 0
+            retweets = item.get("retweetCount") or item.get("retweet_count")  or 0
+            replies  = item.get("replyCount")   or item.get("reply_count")    or 0
+            # Skip only if BOTH text AND url are empty
+            if not text and not tweet_url:
                 continue
+            if not text:
+                text = f"[Tweet] {tweet_url}"
             content = (
                 f"{text}\n\n"
                 f"@{handle} · Likes: {likes:,} · Retweets: {retweets:,} · Replies: {replies:,}"
