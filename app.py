@@ -5783,7 +5783,30 @@ if _tr_board_data is None and _tr_gallery_data:
             unsafe_allow_html=True,
         )
 
-        for _gsrc in _tr_gallery_data.get("ordered", []):
+        # Always render YouTube row first — even if empty, show CTA
+        _gal_yt_sigs = _tr_gallery_data["by_source"].get("youtube", [])
+        if not _gal_yt_sigs:
+            _yt_empty_html = (
+                '<div style="font-family:\'JetBrains Mono\',monospace;font-size:11px;'
+                'letter-spacing:.1em;text-transform:uppercase;color:#ff0033;'
+                'margin:1.6rem 0 .5rem;padding-bottom:5px;'
+                'border-bottom:1px solid rgba(255,0,51,.2);">'
+                '&#9654;&#xFE0E;  YouTube '
+                '<span style="color:#9dc4d8;font-size:9px;font-weight:400;">· no signals yet</span>'
+                '</div>'
+                '<div style="font-size:12px;color:#9dc4d8;font-family:Georgia,serif;'
+                'padding:6px 0 4px;">'
+                'Run <strong>Ingestion &#8594; YouTube</strong> in the sidebar to populate '
+                'this row with video signals for your topic.'
+                '</div>'
+            )
+            st.markdown(_yt_empty_html, unsafe_allow_html=True)
+
+        # Render all sources — YouTube first if it has data, then rest
+        _gal_ordered_with_yt = ["youtube"] + [
+            s for s in _tr_gallery_data.get("ordered", []) if s != "youtube"
+        ]
+        for _gsrc in _gal_ordered_with_yt:
             _gsigs = _tr_gallery_data["by_source"].get(_gsrc, [])
             if not _gsigs:
                 continue
