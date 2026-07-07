@@ -536,7 +536,7 @@ iframe { border: none !important; }
    Scoped via the invisible #lh-toptabs-marker that sits right before this
    st.tabs() — only THIS tab bar gets the bold beacon treatment; nested tabs
    (My Board, Briefing Builder, Current Stack, etc.) keep the default look. */
-div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] [data-baseweb="tab-list"] {
     gap: 6px;
     background: #071828;
@@ -545,15 +545,15 @@ div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
     margin: 4px 0 1.4rem;
     box-shadow: 0 6px 24px rgba(7,24,40,.18);
 }
-div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] [data-baseweb="tab-list"] [data-baseweb="tab-border"] {
     display: none !important;
 }
-div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
     display: none !important;
 }
-div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"] {
     flex: 1 1 0;
     height: 52px;
@@ -570,29 +570,29 @@ div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
    theme default) otherwise wins over the inherited color above, since a
    direct rule on the element beats inheritance regardless of !important on
    the ancestor. Re-assert the tab text color here so it isn't dark-on-dark. */
-div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"] p {
     font-size: 11px !important;
     font-weight: 700 !important;
     letter-spacing: .18em;
     color: rgba(208,234,240,.55) !important;
 }
-div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
     color: #0fa3b5 !important;
     background: rgba(10,125,140,.16);
 }
-div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"]:hover p {
     color: #0fa3b5 !important;
 }
-div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[aria-selected="true"] {
     color: #ffffff !important;
     background: #0a7d8c !important;
     box-shadow: 0 2px 10px rgba(10,125,140,.45);
 }
-div[data-testid="stElementContainer"]:has(> div #lh-toptabs-marker)
+div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[aria-selected="true"] p {
     color: #ffffff !important;
 }
@@ -5605,14 +5605,15 @@ if "tr_board" not in st.session_state:
             "for your topic first — or use the search box above to fetch live signals now."
         )
 
-    # Prioritise visual/social signals (YouTube, Instagram, TikTok) — they have thumbnails
-    # and are more relevant for trends than RSS. Sort: social-with-thumb first, then rest.
+    # YouTube first (product requirement), then other social-with-thumbs, then rest.
     _social_src = {"youtube", "instagram", "tiktok", "twitter", "reddit"}
     _tr_auto_sigs = sorted(
         _tr_auto_sigs_raw,
         key=lambda s: (
-            0 if (s.get("source","") in _social_src and s.get("thumbnail","")) else
-            1 if s.get("source","") in _social_src else 2
+            0 if (s.get("source","") == "youtube" and s.get("thumbnail","")) else
+            1 if s.get("source","") == "youtube" else
+            2 if (s.get("source","") in _social_src and s.get("thumbnail","")) else
+            3 if s.get("source","") in _social_src else 4
         )
     )
 
