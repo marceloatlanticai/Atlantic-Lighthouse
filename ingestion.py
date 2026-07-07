@@ -1009,11 +1009,20 @@ def run_ingestion(
         counts["exa"] = len(r)
 
     if use_youtube and youtube_key:
-        r = scrape_youtube(topic, api_key=youtube_key, n=15,
-                           region_code=youtube_region,
-                           client_tag=client_tag, callback=callback)
-        all_signals.extend(r)
-        counts["youtube"] = len(r)
+        # Split topic by comma and search each term individually
+        # (YouTube API doesn't handle comma-separated multi-topic strings well)
+        _yt_terms = [t.strip() for t in topic.split(",") if t.strip()][:3]
+        _yt_seen_ids: set = set()
+        _yt_count = 0
+        for _yt_term in _yt_terms:
+            for sig in scrape_youtube(_yt_term, api_key=youtube_key, n=10,
+                                      region_code=youtube_region,
+                                      client_tag=client_tag, callback=callback):
+                if sig.id not in _yt_seen_ids:
+                    _yt_seen_ids.add(sig.id)
+                    all_signals.append(sig)
+                    _yt_count += 1
+        counts["youtube"] = _yt_count
 
     if use_tiktok and apify_key:
         r = scrape_tiktok(topic, api_token=apify_key, n=20,
@@ -1029,7 +1038,9 @@ def run_ingestion(
         counts["instagram"] = len(r)
 
     if use_twitter and apify_key:
-        r = scrape_twitter(topic, api_token=apify_key, n=20,
+        # Use first term only — long comma-separated strings return noResults on Twitter
+        _tw_term = topic.split(",")[0].strip()
+        r = scrape_twitter(_tw_term, api_token=apify_key, n=20,
                            client_tag=client_tag, callback=callback)
         all_signals.extend(r)
         counts["twitter"] = len(r)
