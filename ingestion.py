@@ -340,7 +340,7 @@ def scrape_tiktok(
             "searchQueries": [topic],
             "maxItems": n,
             "shouldDownloadVideos": False,
-            "shouldDownloadCovers": True,  # populate coverUrl fields in response
+            "shouldDownloadCovers": False,  # keep False — free tier; URLs still in response
         }
         run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input, timeout_secs=90)
         videos = list(client.dataset(run["defaultDatasetId"]).iterate_items())
@@ -405,7 +405,7 @@ def scrape_instagram(
 ) -> list[Signal]:
     """
     Search Instagram hashtags/posts related to the topic via Apify.
-    Actor: apify/instagram-hashtag-scraper
+    Tries apify/instagram-hashtag-scraper with individual words AND full topic.
     Requires: APIFY_API_TOKEN secret.
     """
     if not api_token:
@@ -413,32 +413,22 @@ def scrape_instagram(
     if callback:
         callback(f"[Instagram] Searching '{topic[:40]}' via Apify…")
     signals: list[Signal] = []
-    try:
-        from apify_client import ApifyClient
-        client = ApifyClient(api_token)
-        # Convert topic to individual hashtags: "desk lunch UK" → ["desklunch", "lunch", "uk"]
-        # Use each word individually — concatenated hashtags rarely exist on Instagram
-        words = [w.lower().strip(".,!?#") for w in topic.replace(",", " ").split() if len(w) > 2]
-        hashtags = list(dict.fromkeys(words))[:5]  # unique, max 5
-        if not hashtags:
-            hashtags = [topic.lower().replace(" ", "")]
-        run_input = {
-            "hashtags": hashtags,
-            "resultsLimit": n,
-            "scrapeStories": False,
-        }
-        run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input, timeout_secs=90)
-        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+
+    def _parse_ig_items(items):
+        result = []
+        for item in items:
             post_url = item.get("url") or item.get("shortCode", "")
             if post_url and not post_url.startswith("http"):
                 post_url = f"https://www.instagram.com/p/{post_url}/"
             ts = item.get("timestamp") or datetime.now(tz=timezone.utc).isoformat()
-            caption = item.get("caption") or ""
-            owner = item.get("ownerUsername") or ""
-            likes = item.get("likesCount") or 0
-            comments = item.get("commentsCount") or 0
+            caption = (item.get("caption") or item.get("text") or "").strip()
+            owner = item.get("ownerUsername") or item.get("username") or ""
+            likes = item.get("likesCount") or item.get("likeCount") or 0
+            comments = item.get("commentsCount") or item.get("commentCount") or 0
+            if not caption and not post_url:
+                continue
             content = f"{caption}\n\n@{owner} | Likes: {likes:,} | Comments: {comments:,}".strip()
-            signals.append(Signal(
+            result.append(Signal(
                 id=_make_id(post_url, str(ts)),
                 title=_clean_title(caption[:100], content),
                 content=content[:4000],
@@ -455,10 +445,33 @@ def scrape_instagram(
                         item.get("displayUrl")
                         or item.get("thumbnailUrl")
                         or item.get("previewUrl")
+                        or item.get("imageUrl")
                         or ""
                     ),
                 },
             ))
+        return result
+
+    try:
+        from apify_client import ApifyClient
+        client = ApifyClient(api_token)
+
+        # Build hashtag URLs for apify/instagram-scraper (directUrls approach — more stable)
+        words = [w.lower().strip(".,!?#") for w in topic.replace(",", " ").split() if len(w) > 2]
+        full_tag = topic.lower().replace(" ", "")
+        tags = list(dict.fromkeys([full_tag] + words))[:4]
+        direct_urls = [f"https://www.instagram.com/explore/tags/{t}/" for t in tags]
+
+        run_input = {
+            "directUrls": direct_urls,
+            "resultsType": "posts",
+            "resultsLimit": n,
+            "addParentData": False,
+        }
+        run = client.actor("apify/instagram-scraper").call(run_input=run_input, timeout_secs=120)
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        signals = _parse_ig_items(items)
+
     except Exception as exc:
         if callback:
             callback(f"[Instagram] Error: {exc}")
@@ -478,7 +491,7 @@ def scrape_twitter(
 ) -> list[Signal]:
     """
     Search X/Twitter for posts related to the topic via Apify.
-    Actor: apify/twitter-scraper
+    Actor: apidojo/tweet-scraper (confirmed working in user's Apify account).
     Requires: APIFY_API_TOKEN secret.
     """
     if not api_token:
@@ -491,20 +504,34 @@ def scrape_twitter(
         client = ApifyClient(api_token)
         run_input = {
             "searchTerms": [topic],
-            "maxItems": n,
+            "maxTweets": n,
             "queryType": "Latest",
-            "lang": "en",
+            "addUserInfo": True,
         }
-        run = client.actor("apify/twitter-scraper").call(run_input=run_input, timeout_secs=90)
+        run = client.actor("apidojo/tweet-scraper").call(run_input=run_input, timeout_secs=90)
         for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-            tweet_url = item.get("url") or item.get("tweetUrl") or ""
-            ts = item.get("createdAt") or datetime.now(tz=timezone.utc).isoformat()
-            text = item.get("fullText") or item.get("text") or ""
-            author = item.get("author", {}) or {}
-            handle = author.get("userName") or author.get("screen_name") or ""
+            # apidojo/tweet-scraper output fields
+            tweet_url = (
+                item.get("url") or item.get("tweetUrl")
+                or item.get("tweet_url") or ""
+            )
+            ts = (
+                item.get("createdAt") or item.get("created_at")
+                or datetime.now(tz=timezone.utc).isoformat()
+            )
+            text = item.get("text") or item.get("fullText") or item.get("full_text") or ""
+            # author can be nested or flat
+            author = item.get("author") or item.get("user") or {}
+            if isinstance(author, dict):
+                handle = (author.get("userName") or author.get("username")
+                          or author.get("screen_name") or "")
+            else:
+                handle = str(author)
             likes = item.get("likeCount") or item.get("favorite_count") or 0
             retweets = item.get("retweetCount") or item.get("retweet_count") or 0
-            replies = item.get("replyCount") or 0
+            replies = item.get("replyCount") or item.get("reply_count") or 0
+            if not text:
+                continue
             content = (
                 f"{text}\n\n"
                 f"@{handle} · Likes: {likes:,} · Retweets: {retweets:,} · Replies: {replies:,}"
