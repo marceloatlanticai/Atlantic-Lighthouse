@@ -5340,8 +5340,8 @@ if _tr_fetch and _tr_topic.strip():
                 for i, s in enumerate(_tr_raw[:80])
             )
             _n_sigs = min(len(_tr_raw), 80)
-            _n_themes_min = max(3, min(8, _n_sigs // 4))  # scale: 3 themes for 12 sigs, 8 for 80
-            _n_themes_max = max(6, min(18, _n_sigs // 2))
+            _n_themes_min = max(5, min(12, _n_sigs // 4))   # scale: 5 min, 12 max at low signal count
+            _n_themes_max = max(12, min(30, _n_sigs // 2))  # up to 30 themes for rich datasets
             _tr_prompt = f"""You are a cultural trends analyst. Research topic: "{_tr_topic}"
 
 Analyse these {_n_sigs} signals and identify {_n_themes_min}–{_n_themes_max} distinct trending themes.
@@ -5663,13 +5663,13 @@ if "tr_board" not in st.session_state:
                 for i, s in enumerate(_tr_auto_sigs[:80])
             )
             _n_auto = min(len(_tr_auto_sigs), 60)  # cap at 60 to keep response size manageable
-            _n_themes_auto = max(3, min(10, _n_auto // 5))  # scale themes with signals
+            _n_themes_auto = max(5, min(20, _n_auto // 4))  # scale themes: 5 min, up to 20
             _tr_auto_resp = _ant_auto.Anthropic(api_key=_tr_ant_key_auto).messages.create(
                 model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
                 max_tokens=4000,
                 messages=[{"role": "user", "content":
                     f"You are a cultural trends analyst. Analyse these {_n_auto} "
-                    f"signals from various sources and identify {_n_themes_auto}–{min(16,_n_auto//2)} distinct trending themes. "
+                    f"signals from various sources and identify {_n_themes_auto}–{min(30,_n_auto//2)} distinct trending themes. "
                     f"Never return an empty array — always identify at least {_n_themes_auto} themes.\n\n"
                     f"For each theme return: name (2-5 words, title case), velocity (RISING/STABLE/DECLINING), "
                     f"score_num (integer -100 to +100), score_label (e.g. '+42%'), "
