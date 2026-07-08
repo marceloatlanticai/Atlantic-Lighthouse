@@ -3621,7 +3621,7 @@ def render_footer():
 if content:
     current_user = st.session_state.get("logged_in_user", "internal")
     masthead_html = build_masthead_html(content, signals, client_name, brief_tagline)
-    st.components.v1.html(masthead_html, height=460, scrolling=False)
+    st.components.v1.html(masthead_html, height=510, scrolling=False)
 else:
     current_user = st.session_state.get("logged_in_user", "internal")
 
@@ -5345,12 +5345,20 @@ if _tr_fetch and _tr_topic.strip():
     _tr_status = st.empty()
 
     def _tr_set_status(msg: str) -> None:
-        """Render a styled loading bar in the status placeholder."""
+        """Render a styled loading bar with animated dots."""
         _tr_status.markdown(
+            f'<style>'
+            f'@keyframes _lhblink{{0%,100%{{opacity:.15;}}50%{{opacity:1;}}}}'
+            f'._lhd1{{display:inline-block;animation:_lhblink 1.2s 0s infinite;}}'
+            f'._lhd2{{display:inline-block;animation:_lhblink 1.2s .4s infinite;}}'
+            f'._lhd3{{display:inline-block;animation:_lhblink 1.2s .8s infinite;}}'
+            f'</style>'
             f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:11.5px;'
             f'color:#0a5560;background:#e4f4f5;border-left:3px solid #0fa3b5;'
             f'border-radius:0 6px 6px 0;padding:7px 12px;margin:4px 0;">'
-            f'⏳ {msg}</div>',
+            f'{msg}'
+            f'<span class="_lhd1">.</span><span class="_lhd2">.</span><span class="_lhd3">.</span>'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
@@ -5676,6 +5684,24 @@ if _tr_hunch_fetch and _tr_hunch.strip():
     _hn_raw: list[dict] = []
     _hn_status = st.empty()
 
+    def _hn_set_status(msg: str) -> None:
+        """Render a styled loading bar with animated dots (hunch section)."""
+        _hn_status.markdown(
+            f'<style>'
+            f'@keyframes _lhblink{{0%,100%{{opacity:.15;}}50%{{opacity:1;}}}}'
+            f'._lhd1{{display:inline-block;animation:_lhblink 1.2s 0s infinite;}}'
+            f'._lhd2{{display:inline-block;animation:_lhblink 1.2s .4s infinite;}}'
+            f'._lhd3{{display:inline-block;animation:_lhblink 1.2s .8s infinite;}}'
+            f'</style>'
+            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:11.5px;'
+            f'color:#0a5560;background:#e4f4f5;border-left:3px solid #0fa3b5;'
+            f'border-radius:0 6px 6px 0;padding:7px 12px;margin:4px 0;">'
+            f'{msg}'
+            f'<span class="_lhd1">.</span><span class="_lhd2">.</span><span class="_lhd3">.</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
     # Use hunch text as the search topic
     _hn_topic = _tr_hunch.strip()
 
@@ -5684,10 +5710,10 @@ if _tr_hunch_fetch and _tr_hunch.strip():
             scrape_reddit, scrape_hacker_news, scrape_gdelt, scrape_rss,
             scrape_youtube, scrape_tiktok, scrape_instagram, scrape_twitter,
         )
-        def _hn_cb(msg): _hn_status.caption(msg)
+        def _hn_cb(msg): _hn_set_status(msg)
 
         if "Saved signals" in _tr_sources:
-            _hn_status.caption("Searching saved signals…")
+            _hn_set_status("Searching saved signals…")
             _hn_all_db = load_signals(limit=500)
             _hn_words = set(_hn_topic.lower().split())
             for _s in _hn_all_db:
@@ -5701,22 +5727,26 @@ if _tr_hunch_fetch and _tr_hunch.strip():
             _hn_raw = _hn_raw[:50]
 
         if "Reddit" in _tr_sources:
+            _hn_set_status(f"[Reddit] Searching '{_hn_topic[:30]}'…")
             for s in scrape_reddit(_hn_topic, max_items=20, callback=_hn_cb):
                 _hn_raw.append({"title": s.title, "content": s.content[:300],
                                 "source": s.source, "url": s.url or "", "thumbnail": ""})
 
         if "Hacker News" in _tr_sources:
+            _hn_set_status(f"[Hacker News] Searching '{_hn_topic[:30]}'…")
             for s in scrape_hacker_news(_hn_topic, n=15, callback=_hn_cb):
                 _hn_raw.append({"title": s.title, "content": s.content[:300],
                                 "source": s.source, "url": s.url or "", "thumbnail": ""})
 
         if "YouTube" in _tr_sources and _hn_youtube_key:
+            _hn_set_status(f"[YouTube] Searching '{_hn_topic[:30]}'…")
             for s in scrape_youtube(_hn_topic, api_key=_hn_youtube_key, n=12, callback=_hn_cb):
                 _hn_raw.append({"title": s.title, "content": s.content[:300],
                                 "source": s.source, "url": s.url or "",
                                 "thumbnail": (s.raw_meta or {}).get("thumbnail","")})
 
         if "TikTok" in _tr_sources and _hn_apify_key:
+            _hn_set_status(f"[TikTok] Searching '{_hn_topic[:30]}' via Apify…")
             for s in scrape_tiktok(_hn_topic, api_token=_hn_apify_key,
                                    n=15, fetch_comments=False, callback=_hn_cb):
                 _hn_raw.append({"title": s.title, "content": s.content[:300],
@@ -5724,6 +5754,7 @@ if _tr_hunch_fetch and _tr_hunch.strip():
                                 "thumbnail": (s.raw_meta or {}).get("thumbnail","")})
 
         if "Instagram" in _tr_sources and _hn_apify_key:
+            _hn_set_status(f"[Instagram] Searching '{_hn_topic[:30]}' via Apify…")
             for s in scrape_instagram(_hn_topic, api_token=_hn_apify_key,
                                       n=15, callback=_hn_cb):
                 _hn_raw.append({"title": s.title, "content": s.content[:300],
@@ -5731,12 +5762,14 @@ if _tr_hunch_fetch and _tr_hunch.strip():
                                 "thumbnail": (s.raw_meta or {}).get("thumbnail","")})
 
         if "X/Twitter" in _tr_sources and _hn_apify_key:
+            _hn_set_status(f"[X/Twitter] Searching '{_hn_topic[:30]}' via Apify…")
             for s in scrape_twitter(_hn_topic, api_token=_hn_apify_key,
                                     n=15, callback=_hn_cb):
                 _hn_raw.append({"title": s.title, "content": s.content[:300],
                                 "source": s.source, "url": s.url or "", "thumbnail": ""})
 
         if "RSS" in _tr_sources:
+            _hn_set_status("Reading RSS feeds…")
             for s in scrape_rss(max_items_per_feed=4, callback=_hn_cb):
                 _hn_raw.append({"title": s.title, "content": s.content[:300],
                                 "source": s.source, "url": s.url or "", "thumbnail": ""})
@@ -5756,7 +5789,7 @@ if _tr_hunch_fetch and _tr_hunch.strip():
     # Claude classifies each finding vs. the hunch
     _hn_board = {"confirms": [], "challenges": [], "unexpected": []}
     if _hn_raw and _hn_ant_key:
-        _hn_status.caption(f"Claude analysing {len(_hn_raw)} signals against your hunch…")
+        _hn_set_status(f"Claude analysing {len(_hn_raw)} signals against your hunch…")
         try:
             import anthropic as _ant_hn
             _hn_sig_txt = "\n".join(
