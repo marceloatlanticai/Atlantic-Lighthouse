@@ -5179,6 +5179,44 @@ st.markdown("""
   border: 1px solid #c4b5fd; border-radius: 20px; padding: 4px 11px;
   font-size: 11px; margin: 0 5px 5px 0; cursor: pointer; }
 
+/* ── Heat Map ── */
+.hm-wrap { margin-bottom: 24px; }
+.hm-legend { display: flex; align-items: center; gap: 10px;
+  margin-bottom: 10px; }
+.hm-legend-bar { flex: 1; height: 8px; border-radius: 4px;
+  background: linear-gradient(to right, #3b82f6, #8b5cf6, #f97316); }
+.hm-legend-label { font-size: 10px; color: #9dc4d8;
+  font-family: monospace; letter-spacing: .06em; white-space: nowrap; }
+.hm-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.hm-tile { border-radius: 9px; padding: 10px 12px; cursor: default;
+  transition: transform .12s; border-width: 1.5px; border-style: solid; }
+.hm-tile:hover { transform: translateY(-1px); }
+.hm-tile-cat { font-size: 9px; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; margin-bottom: 4px; }
+.hm-tile-name { font-size: 11px; font-weight: 600; color: #071828;
+  line-height: 1.35; }
+/* confirms = warm/hot */
+.hm-hot-1 { background: #fff7ed; border-color: #f97316; }
+.hm-hot-1 .hm-tile-cat { color: #c2410c; }
+.hm-hot-2 { background: #fff7f0; border-color: #fb923c; }
+.hm-hot-2 .hm-tile-cat { color: #c2410c; }
+.hm-hot-3 { background: #fffbf5; border-color: #fdba74; }
+.hm-hot-3 .hm-tile-cat { color: #c2410c; }
+/* unexpected = purple/medium */
+.hm-mid-1 { background: #f5f3ff; border-color: #8b5cf6; }
+.hm-mid-1 .hm-tile-cat { color: #6d28d9; }
+.hm-mid-2 { background: #f8f5ff; border-color: #a78bfa; }
+.hm-mid-2 .hm-tile-cat { color: #6d28d9; }
+.hm-mid-3 { background: #faf8ff; border-color: #c4b5fd; }
+.hm-mid-3 .hm-tile-cat { color: #6d28d9; }
+/* challenges = cool/cold */
+.hm-cold-1 { background: #eff6ff; border-color: #3b82f6; }
+.hm-cold-1 .hm-tile-cat { color: #1d4ed8; }
+.hm-cold-2 { background: #f0f7ff; border-color: #60a5fa; }
+.hm-cold-2 .hm-tile-cat { color: #1d4ed8; }
+.hm-cold-3 { background: #f5faff; border-color: #93c5fd; }
+.hm-cold-3 .hm-tile-cat { color: #1d4ed8; }
+
 /* ── Hunch mode ── */
 .hn-col-wrap { border-radius: 12px; padding: 14px 12px; min-height: 120px; }
 .hn-col-confirms   { background: #f0fdf4; border-top: 3px solid #16a34a; }
@@ -5211,58 +5249,41 @@ st.markdown("""
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
-<div style="padding:1.2rem 0 1rem;text-align:center;">
+<div style="padding:1.2rem 0 .8rem;text-align:center;">
   <div style="font-family:monospace;font-size:10px;letter-spacing:.18em;
-    text-transform:uppercase;color:#6ea8c4;margin-bottom:6px;">Strategic Openings</div>
+    text-transform:uppercase;color:#6ea8c4;margin-bottom:6px;">Research Lab</div>
   <div style="font-family:Georgia,serif;font-size:1.4rem;font-weight:400;
-    color:#071828;margin-bottom:3px;">What can this brand do with this — right now?</div>
+    color:#071828;margin-bottom:3px;">What does the evidence actually say?</div>
   <div style="font-size:12px;color:#6ea8c4;">
-    Claude reads your signals and surfaces 3 specific creative opportunities.
+    Start with a hypothesis — Claude maps what confirms, challenges, and surprises.
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Inputs ────────────────────────────────────────────────────────────────────
-# ── Inputs ────────────────────────────────────────────────────────────────────
-_tr_c1, _tr_c2 = st.columns([3, 1])
-with _tr_c1:
-    _tr_topic = st.text_input(
-        "Topic", placeholder="e.g. Heinz, desk lunch, quiet quitting",
-        key="tr_topic", label_visibility="collapsed",
-    )
-with _tr_c2:
-    _tr_fetch = st.button("Find Openings →", key="tr_fetch", type="primary",
-                          use_container_width=True)
-
-_tr_sources = st.multiselect(
-    "Sources to scan",
-    ["Saved signals", "Google Trends", "Reddit", "Hacker News", "GDELT", "RSS",
-     "YouTube", "TikTok", "Instagram", "X/Twitter", "Exa"],
-    default=["Saved signals", "Reddit", "Instagram", "X/Twitter", "YouTube", "TikTok"],
-    key="tr_sources", label_visibility="collapsed",
-)
-
-# ── 💡 Hunch input ────────────────────────────────────────────────────────────
-st.markdown('<div class="hn-input-wrap">', unsafe_allow_html=True)
+# ── PRIMARY: Hunch input ──────────────────────────────────────────────────────
 st.markdown(
-    '<div style="font-size:10px;font-weight:700;letter-spacing:.12em;'
-    'text-transform:uppercase;color:#4a6d82;margin-bottom:8px;">'
-    '💡 Test a Hunch &nbsp;<span style="font-weight:400;opacity:.65;">'
-    '— type a hypothesis and Claude finds evidence for & against it</span></div>',
+    '<div style="background:#f8fbfd;border:2px solid #9dc4d8;border-radius:14px;'
+    'padding:18px 20px 14px;margin-bottom:12px;">',
     unsafe_allow_html=True,
 )
-# ── Auto-suggested hunches (populated after Find Openings) ────────────────────
+st.markdown(
+    '<div style="font-size:13px;font-weight:700;color:#071828;margin-bottom:2px;">'
+    '💡 Test a hypothesis</div>'
+    '<div style="font-size:11px;color:#6ea8c4;margin-bottom:12px;">'
+    'Type a hunch — Claude searches your sources and maps what confirms, challenges, and surprises.</div>',
+    unsafe_allow_html=True,
+)
+# Auto-suggested hunches (populated after Find Openings)
 _tr_hunch_suggestions = st.session_state.get("tr_hunch_suggestions", [])
 if _tr_hunch_suggestions:
-    st.markdown('<div class="hn-sugg-wrap"><div class="hn-sugg-label">Suggested hypotheses — click to test</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hn-sugg-label" style="margin-bottom:6px;">Suggested hypotheses — click to test</div>', unsafe_allow_html=True)
     _sugg_cols = st.columns(len(_tr_hunch_suggestions))
     for _si, _sugg in enumerate(_tr_hunch_suggestions):
         with _sugg_cols[_si]:
-            if st.button(f"→ {_sugg[:70]}", key=f"hn_sugg_{_si}",
+            if st.button(f"→ {_sugg[:65]}", key=f"hn_sugg_{_si}",
                          use_container_width=True, help="Click to test this hypothesis"):
                 st.session_state["tr_hunch_prefill"] = _sugg
                 st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 _hn_col1, _hn_col2 = st.columns([4, 1])
 with _hn_col1:
     _hunch_prefill = st.session_state.pop("tr_hunch_prefill", None)
@@ -5274,8 +5295,31 @@ with _hn_col1:
     )
 with _hn_col2:
     _tr_hunch_fetch = st.button("Find Evidence →", key="tr_hunch_fetch",
-                                use_container_width=True)
+                                type="primary", use_container_width=True)
 st.markdown('</div>', unsafe_allow_html=True)
+
+# Sources multiselect (shared)
+_tr_sources = st.multiselect(
+    "Sources to scan",
+    ["Saved signals", "Google Trends", "Reddit", "Hacker News", "GDELT", "RSS",
+     "YouTube", "TikTok", "Instagram", "X/Twitter", "Exa"],
+    default=["Saved signals", "Reddit", "Instagram", "X/Twitter", "YouTube", "TikTok"],
+    key="tr_sources", label_visibility="collapsed",
+)
+
+# ── SECONDARY: Strategic Openings topic input ─────────────────────────────────
+with st.expander("🔭 Find Strategic Openings — What can this brand do with these signals?",
+                 expanded=False):
+    st.caption("Enter a brand or topic to surface 3 specific creative opportunities from your sources.")
+    _tr_c1, _tr_c2 = st.columns([3, 1])
+    with _tr_c1:
+        _tr_topic = st.text_input(
+            "Topic", placeholder="e.g. Heinz, desk lunch, quiet quitting",
+            key="tr_topic", label_visibility="collapsed",
+        )
+    with _tr_c2:
+        _tr_fetch = st.button("Find Openings →", key="tr_fetch",
+                              use_container_width=True)
 
 # ── Fetch & classify ──────────────────────────────────────────────────────────
 if _tr_fetch and _tr_topic.strip():
@@ -5901,353 +5945,24 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
                 st.session_state["tr_board"] = _brd
                 st.rerun()
 
-# ── Source Gallery — shown on first open (before any manual search) ───────────
-if not _tr_any_result and _tr_gallery_data:
-    _gal_total = _tr_gallery_data.get("total", 0)
-    if _gal_total == 0:
-        st.info(
-            "**No saved signals yet.** "
-            "Open the sidebar and run **Ingestion** for your topic first — "
-            "or use the search box above to fetch live signals now."
-        )
-    else:
-        _gal_src_labels = {
-            "youtube": "▶  YouTube", "tiktok": "♪  TikTok",
-            "instagram": "✦  Instagram", "twitter": "𝕏  X / Twitter",
-            "reddit": "💬  Reddit", "google_trends": "📈  Google Trends",
-            "hacker_news": "🔸  Hacker News", "rss": "📡  RSS",
-            "exa": "◎  Exa", "gdelt": "🌐  GDELT",
-        }
-        _gal_src_colors = {
-            "youtube": "#ff0033", "tiktok": "#0fa3b5", "instagram": "#c13584",
-            "twitter": "#1d9bf0", "reddit": "#ff4500", "google_trends": "#4285f4",
-            "hacker_news": "#ff6600", "rss": "#f5a623", "exa": "#8b5cf6",
-            "gdelt": "#16a34a",
-        }
-
-        st.markdown(
-            f"<p style='font-family:\"JetBrains Mono\",monospace;font-size:10px;"
-            f"letter-spacing:.1em;text-transform:uppercase;color:#9dc4d8;"
-            f"margin-bottom:.4rem;'>{_gal_total} saved signals · browse by source</p>",
-            unsafe_allow_html=True,
-        )
-
-        # Always render YouTube row first — even if empty, show CTA
-        _gal_yt_sigs = _tr_gallery_data["by_source"].get("youtube", [])
-        if not _gal_yt_sigs:
-            _yt_empty_html = (
-                '<div style="font-family:\'JetBrains Mono\',monospace;font-size:11px;'
-                'letter-spacing:.1em;text-transform:uppercase;color:#ff0033;'
-                'margin:1.6rem 0 .5rem;padding-bottom:5px;'
-                'border-bottom:1px solid rgba(255,0,51,.2);">'
-                '&#9654;&#xFE0E;  YouTube '
-                '<span style="color:#9dc4d8;font-size:9px;font-weight:400;">· no signals yet</span>'
-                '</div>'
-                '<div style="font-size:12px;color:#9dc4d8;font-family:Georgia,serif;'
-                'padding:6px 0 4px;">'
-                'Run <strong>Ingestion &#8594; YouTube</strong> in the sidebar to populate '
-                'this row with video signals for your topic.'
-                '</div>'
-            )
-            st.markdown(_yt_empty_html, unsafe_allow_html=True)
-
-        # Render all sources — YouTube first if it has data, then rest
-        _gal_ordered_with_yt = ["youtube"] + [
-            s for s in _tr_gallery_data.get("ordered", []) if s != "youtube"
-        ]
-        for _gsrc in _gal_ordered_with_yt:
-            _gsigs = _tr_gallery_data["by_source"].get(_gsrc, [])
-            if not _gsigs:
-                continue
-            _glabel = _gal_src_labels.get(_gsrc, _gsrc.replace("_", " ").title())
-            _gcolor = _gal_src_colors.get(_gsrc, "#6ea8c4")
-            _gcount = len(_gsigs)
-            # Show up to 9 cards in 3-per-row chunks (bigger, more readable)
-            _gshow  = _gsigs[:9]
-
-            # Source row header
-            st.markdown(
-                f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:11px;'
-                f'letter-spacing:.1em;text-transform:uppercase;color:{_gcolor};'
-                f'margin:1.6rem 0 .6rem;padding-bottom:5px;'
-                f'border-bottom:1px solid {_gcolor}33;">'
-                f'{_glabel} <span style="color:#9dc4d8;font-size:9px;'
-                f'font-weight:400;">· {_gcount} signals</span></div>',
-                unsafe_allow_html=True,
-            )
-
-            # Render 3 cards per row
-            for _grow_start in range(0, len(_gshow), 3):
-                _grow_items = _gshow[_grow_start:_grow_start + 3]
-                _gcols = st.columns(3)
-                for _gci, _gsig in enumerate(_grow_items):
-                    with _gcols[_gci]:
-                        _gu    = _gsig.get("url", "")
-                        _gth   = _gsig.get("thumbnail", "")
-                        _gtit  = _gsig.get("title", "")[:80]
-                        _gsrc2 = _gsig.get("source", "")
-                        # Derive YouTube thumbnail from URL if missing
-                        if not _gth and _gu:
-                            _yt_m = _re_global.search(
-                                r"(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})", _gu
-                            )
-                            if _yt_m:
-                                _gth = f"https://i.ytimg.com/vi/{_yt_m.group(1)}/mqdefault.jpg"
-                        _gth_disp = _tr_proxy_thumb(_gth) if _gth else ""
-                        _gph = {"tiktok": "tr-ph-tiktok", "instagram": "tr-ph-instagram"}.get(_gsrc2, "")
-                        if _gth_disp:
-                            _gimg_html = (
-                                f'<div class="tr-thumb-wrap {_gph}" style="height:140px;margin-bottom:8px;">'
-                                f'<img src="{_gth_disp}" onerror="this.style.opacity=0;" /></div>'
-                            )
-                        elif _gph:
-                            _gimg_html = f'<div class="tr-thumb-wrap {_gph}" style="height:140px;margin-bottom:8px;"></div>'
-                        else:
-                            _gimg_html = ""
-                        _glink = (
-                            f'<a href="{e(_gu)}" target="_blank" rel="noopener" '
-                            f'style="font-size:10px;color:{_gcolor};text-decoration:none;'
-                            f'font-family:\'JetBrains Mono\',monospace;">→ open</a>'
-                        ) if _gu else ""
-                        st.markdown(
-                            f'<div style="background:rgba(255,255,255,.04);border-radius:10px;'
-                            f'padding:10px;border:1px solid rgba(255,255,255,.08);margin-bottom:10px;">'
-                            f'{_gimg_html}'
-                            f'<div style="font-size:13px;color:#c8e0ea;line-height:1.4;'
-                            f'margin-bottom:7px;font-family:Georgia,serif;">{e(_gtit)}</div>'
-                            f'{_glink}</div>',
-                            unsafe_allow_html=True,
-                        )
+# Source Gallery removed — replaced by Hunch-first search flow
 
 # ── Read overview from session state ──────────────────────────────────────────
 _tr_overview_data = st.session_state.get("tr_overview", {})
 
-# ── Strategic Openings — shown after "Find Openings" ──────────────────────────
-if _tr_openings_data is not None:
-    _tr_raw_count = st.session_state.get("tr_raw_count", None)
-    if not _tr_openings_data:
-        if _tr_raw_count == 0:
-            st.warning(
-                "**No signals returned from selected sources.** "
-                "Possible causes: API rate limits reached, no posts found for this topic/hashtag, "
-                "or APIFY_API_TOKEN may be missing. Try adding RSS, Reddit, or YouTube as extra sources."
-            )
-            _tr_log_show = st.session_state.get("tr_log", [])
-            if _tr_log_show:
-                with st.expander("🔍 Debug log — what happened during the search", expanded=True):
-                    for _msg in _tr_log_show:
-                        st.caption(_msg)
-        else:
-            st.info("No openings found — try a broader topic or add more sources.")
-    else:
-        _terms_str = ", ".join(_tr_terms_label[:4]) if _tr_terms_label else _tr_topic_label
-        st.markdown(
-            f"<p style='font-family:\"JetBrains Mono\",monospace;font-size:10px;"
-            f"letter-spacing:.1em;text-transform:uppercase;color:#9dc4d8;"
-            f"margin-bottom:1.2rem;'>{len(_tr_openings_data)} openings · "
-            f"{_tr_raw_count or 0} signals analysed · topic: {e(_terms_str)}</p>",
-            unsafe_allow_html=True,
-        )
+# Strategic Openings render block moved to after Hunch board (below)
 
-        # ── Overview: sentiment + themes + sources ────────────────────────────
-        if _tr_overview_data:
-            _ov_sent    = _tr_overview_data.get("sentiment", {})
-            _ov_themes  = _tr_overview_data.get("themes", [])
-            _ov_srcs    = _tr_overview_data.get("source_counts", {})
-            _ov_pos = int(_ov_sent.get("positive", 0))
-            _ov_neg = int(_ov_sent.get("negative", 0))
-            _ov_neu = int(_ov_sent.get("neutral",  0))
-            _ov_total_sent = max(_ov_pos + _ov_neg + _ov_neu, 1)
-            _ov_pos_pct = round(_ov_pos / _ov_total_sent * 100)
-            _ov_neg_pct = round(_ov_neg / _ov_total_sent * 100)
-            _ov_neu_pct = 100 - _ov_pos_pct - _ov_neg_pct
-
-            # Sentiment bar HTML
-            _ov_bar_segs = ""
-            if _ov_pos_pct:
-                _ov_bar_segs += f'<div class="ov-sent-seg ov-sent-pos" style="width:{_ov_pos_pct}%">{_ov_pos_pct}%</div>'
-            if _ov_neg_pct:
-                _ov_bar_segs += f'<div class="ov-sent-seg ov-sent-neg" style="width:{_ov_neg_pct}%">{_ov_neg_pct}%</div>'
-            if _ov_neu_pct:
-                _ov_bar_segs += f'<div class="ov-sent-seg ov-sent-neu" style="width:{_ov_neu_pct}%">{_ov_neu_pct}%</div>'
-
-            # Theme chips HTML
-            _ov_theme_cls = {"positive": "ov-theme-pos", "negative": "ov-theme-neg", "neutral": "ov-theme-neu"}
-            _ov_themes_html = ""
-            for _th in _ov_themes[:8]:
-                _th_cls = _ov_theme_cls.get(_th.get("dominant_sentiment","neutral"), "ov-theme-neu")
-                _ov_themes_html += (
-                    f'<div class="ov-theme-chip {_th_cls}">'
-                    f'{e(_th.get("label",""))}'
-                    f'<span class="ov-theme-count">{_th.get("count","")}</span>'
-                    f'</div>'
-                )
-
-            # Source pills HTML
-            _ov_src_label_map = {
-                "youtube": ("▶ YouTube", "#ff0033"), "tiktok": ("♪ TikTok", "#0fa3b5"),
-                "instagram": ("✦ Instagram", "#c13584"), "twitter": ("𝕏 Twitter", "#1d9bf0"),
-                "reddit": ("💬 Reddit", "#ff4500"), "google_trends": ("📈 Trends", "#4285f4"),
-                "hacker_news": ("🔸 HN", "#ff6600"), "rss": ("📡 RSS", "#f5a623"),
-                "exa": ("◎ Exa", "#8b5cf6"), "gdelt": ("🌐 GDELT", "#16a34a"),
-            }
-            _ov_src_html = ""
-            for _src, _cnt in sorted(_ov_srcs.items(), key=lambda x: -x[1]):
-                _slbl, _sclr = _ov_src_label_map.get(_src, (_src.replace("_"," ").title(), "#6ea8c4"))
-                _ov_src_html += (
-                    f'<span class="ov-src-pill tr-src {_tr_src_cls.get(_src,"tr-src-rss")}">'
-                    f'{e(_slbl)} · {_cnt}</span> '
-                )
-
-            _ov_summary = e(_ov_sent.get("summary", ""))
-
-            st.markdown(f"""
-<div class="ov-wrap">
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
-    <div>
-      <div class="ov-section-label">Sentiment about "{e(_tr_topic_label)}"</div>
-      <div class="ov-sent-bar">{_ov_bar_segs}</div>
-      <div class="ov-sent-legend">
-        <div class="ov-sent-leg-item"><div class="ov-sent-dot" style="background:#16a34a"></div>Positive {_ov_pos_pct}%</div>
-        <div class="ov-sent-leg-item"><div class="ov-sent-dot" style="background:#dc2626"></div>Negative {_ov_neg_pct}%</div>
-        <div class="ov-sent-leg-item"><div class="ov-sent-dot" style="background:#94a3b8"></div>Neutral {_ov_neu_pct}%</div>
-      </div>
-      {"<div class='ov-sent-summary'>" + _ov_summary + "</div>" if _ov_summary else ""}
-    </div>
-    <div>
-      <div class="ov-section-label">Sources ({_tr_raw_count or 0} signals)</div>
-      <div class="ov-sources">{_ov_src_html}</div>
-    </div>
-  </div>
-  {"<div style='margin-top:16px;border-top:1px solid #f0f4f8;padding-top:14px;'><div class='ov-section-label'>Top themes</div><div class='ov-themes'>" + _ov_themes_html + "</div></div>" if _ov_themes else ""}
-</div>""", unsafe_allow_html=True)
-
-        # ── Opening cards ─────────────────────────────────────────────────────
-        st.markdown(
-            "<div style='font-family:\"JetBrains Mono\",monospace;font-size:9.5px;"
-            "letter-spacing:.14em;text-transform:uppercase;color:#9dc4d8;"
-            "margin:4px 0 16px;'>Strategic openings</div>",
-            unsafe_allow_html=True,
-        )
-
-        _urgency_cfg = {
-            "now":      ("so-urgency-now",      "● Act now"),
-            "emerging": ("so-urgency-emerging",  "◑ Emerging"),
-            "building": ("so-urgency-building",  "○ Building"),
-        }
-        _hook_icons = {
-            "contrarian": "⚡", "validation": "✓", "humor": "😄",
-            "aspiration": "✦", "solidarity": "🤝", "education": "◎", "challenge": "→",
-        }
-
-        for _oi, _op in enumerate(_tr_openings_data):
-            _urgency_key = (_op.get("urgency") or "emerging").lower()
-            _urg_cls, _urg_lbl = _urgency_cfg.get(_urgency_key, ("so-urgency-emerging", "◑ Emerging"))
-            _hook = _op.get("hook", "")
-            _hook_icon = _hook_icons.get(_hook.lower(), "→")
-
-            # Build signal HTML
-            _sig_html = ""
-            for _sig in (_op.get("signals") or [])[:4]:
-                _sig_src  = e(_sig.get("source", "").replace("_", " "))
-                _sig_txt  = e(_sig.get("text", ""))
-                _sig_url  = _sig.get("url", "")
-                _src_cls  = _tr_src_cls.get(_sig.get("source",""), "tr-src-rss")
-                _link_part = (
-                    f' <a href="{e(_sig_url)}" target="_blank" '
-                    f'style="color:#9dc4d8;font-size:10px;text-decoration:none;">→ source</a>'
-                ) if _sig_url else ""
-                _sig_html += (
-                    f'<div class="so-signal">'
-                    f'<div class="so-signal-quote">"{_sig_txt}"</div>'
-                    f'<div class="so-signal-meta">'
-                    f'<span class="tr-src {_src_cls}">{_sig_src}</span>'
-                    f'{_link_part}</div></div>'
-                )
-
-            st.markdown(f"""
-<div class="so-card so-card-{_urgency_key}">
-  <div class="so-header">
-    <div class="so-tension">{e(_op.get("tension",""))}</div>
-    <div class="so-urgency {_urg_cls}">{_urg_lbl}</div>
-  </div>
-  <div class="so-why-now">{e(_op.get("why_now",""))}</div>
-  <div class="so-signals-label">Evidence from signals</div>
-  {_sig_html}
-  <div class="so-angle-wrap">
-    <div class="so-angle-label">Brand angle</div>
-    <div class="so-angle-text">{e(_op.get("brand_angle",""))}</div>
-    {'<div class="so-hook">' + _hook_icon + ' ' + e(_hook) + '</div>' if _hook else ''}
-  </div>
-</div>""", unsafe_allow_html=True)
-
-            # Action row
-            _pin_col, _brief_col, _spacer = st.columns([1, 2, 3])
-            with _pin_col:
-                if st.button("📌 Pin", key=f"so_pin_{_oi}", use_container_width=True,
-                             help="Save this opening to your project board"):
-                    _pin_user = st.session_state.get("logged_in_user", "internal")
-                    _tension  = _op.get("tension", "")
-                    _angle    = _op.get("brand_angle", "")
-                    _content  = (
-                        f"**Topic:** {_tr_topic_label}\n\n"
-                        f"**Why now:** {_op.get('why_now','')}\n\n"
-                        f"**Brand angle:** {_angle}\n\n"
-                        f"**Urgency:** {_urg_lbl}"
-                    )
-                    add_curadoria_item(_pin_user, "strategic_opening", f"Opening: {_tension}", _content)
-                    st.success("Saved to board!")
-            with _brief_col:
-                if st.button("→ Build Brief", key=f"so_brief_{_oi}",
-                             use_container_width=True, type="primary",
-                             help="Save this opening and jump to Briefing Builder"):
-                    _brief_user = st.session_state.get("logged_in_user", "internal")
-                    _tension_b  = _op.get("tension", "")
-                    _angle_b    = _op.get("brand_angle", "")
-                    _brief_txt  = (
-                        f"**Strategic opening:** {_tension_b}\n\n"
-                        f"**Why now:** {_op.get('why_now','')}\n\n"
-                        f"**Brand angle:** {_angle_b}\n\n"
-                        f"**Urgency:** {_urg_lbl}\n\n"
-                        f"**Hook type:** {_hook}"
-                    )
-                    add_curadoria_item(_brief_user, "strategic_opening",
-                                       f"Opening: {_tension_b}", _brief_txt)
-                    # Pre-populate briefing builder topic
-                    st.session_state["briefing_prefill"] = (
-                        f"{_tension_b} — {_angle_b}"
-                    )
-                    st.success("Saved! Go to **Dispatches → Briefing Builder** to build the brief.")
-
-            st.markdown("<hr style='border:none;border-top:1px solid #f0f4f8;margin:0 0 4px;'>",
-                        unsafe_allow_html=True)
-
-# ── Legacy kanban render (backward-compat, only if old tr_board data exists) ───
-elif _tr_board_data is not None:
-    _tr_total = sum(len(v) for v in _tr_board_data.values())
-    if _tr_total > 0:
-        st.caption(f"{_tr_total} themes (legacy view)")
-        _col_h, _col_s, _col_d = st.columns(3)
-        with _col_h:
-            for _i, _card in enumerate(_tr_board_data.get("high", [])):
-                _tr_render_card(_card, "high", _i)
-        with _col_s:
-            for _i, _card in enumerate(_tr_board_data.get("stable", [])):
-                _tr_render_card(_card, "stable", _i)
-        with _col_d:
-            for _i, _card in enumerate(_tr_board_data.get("decline", [])):
-                _tr_render_card(_card, "decline", _i)
-
-if not _tr_any_result:
+_hn_board_shown = bool(st.session_state.get("tr_hunch_board"))
+if not _tr_any_result and not _hn_board_shown:
     st.markdown("""
 <div style="text-align:center;padding:3rem 2rem;color:#9dc4d8;">
-  <div style="font-size:1.8rem;margin-bottom:0.8rem;">◈</div>
+  <div style="font-size:1.8rem;margin-bottom:0.8rem;">💡</div>
   <div style="font-size:14px;font-family:Georgia,serif;">
-    Enter a brand or topic above and click <em>Find Openings</em>
+    Type a hypothesis above and click <em>Find Evidence</em>
   </div>
   <div style="font-size:11px;margin-top:6px;font-family:monospace;
     letter-spacing:.06em;text-transform:uppercase;">
-    Claude will surface 3 strategic opportunities from your signals
+    Claude maps what confirms, challenges, and surprises — with a heat map
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -6257,16 +5972,53 @@ _hn_text_used  = st.session_state.get("tr_hunch_text", "")
 
 if _hn_board_data:
     _hn_total = sum(len(v) for v in _hn_board_data.values())
-    st.markdown("---")
     st.markdown(f"""
 <div style="padding:.6rem 0 .8rem;">
   <div style="font-family:monospace;font-size:10px;letter-spacing:.18em;
-    text-transform:uppercase;color:#7c3aed;margin-bottom:4px;">💡 Hunch Results</div>
-  <div style="font-size:13px;color:#274d68;font-style:italic;">
+    text-transform:uppercase;color:#7c3aed;margin-bottom:4px;">Evidence Map</div>
+  <div style="font-size:1.1rem;font-family:Georgia,serif;color:#071828;margin-bottom:2px;">
     "{e(_hn_text_used)}"
   </div>
-  <div style="font-size:11px;color:#9dc4d8;margin-top:3px;">{_hn_total} findings</div>
+  <div style="font-size:11px;color:#9dc4d8;margin-top:3px;">{_hn_total} findings mapped</div>
 </div>""", unsafe_allow_html=True)
+
+    # ── Heat Map ─────────────────────────────────────────────────────────────
+    _hm_confirms   = _hn_board_data.get("confirms", [])
+    _hm_unexpected = _hn_board_data.get("unexpected", [])
+    _hm_challenges = _hn_board_data.get("challenges", [])
+
+    # Tile class: 3 intensities per category (first = strongest)
+    _hm_hot_cls  = ["hm-hot-1",  "hm-hot-2",  "hm-hot-3"]
+    _hm_mid_cls  = ["hm-mid-1",  "hm-mid-2",  "hm-mid-3"]
+    _hm_cold_cls = ["hm-cold-1", "hm-cold-2", "hm-cold-3"]
+
+    def _hm_tile(finding, cat_label, icon, cls_list, idx):
+        cls = cls_list[min(idx, len(cls_list) - 1)]
+        return (
+            f'<div class="hm-tile {cls}">'
+            f'<div class="hm-tile-cat">{icon} {cat_label}</div>'
+            f'<div class="hm-tile-name">{e(finding.get("name","")[:42])}</div>'
+            f'</div>'
+        )
+
+    _hm_tiles = ""
+    for _i, _f in enumerate(_hm_confirms):
+        _hm_tiles += _hm_tile(_f, "Confirms", "✓", _hm_hot_cls, _i)
+    for _i, _f in enumerate(_hm_unexpected):
+        _hm_tiles += _hm_tile(_f, "Unexpected", "◎", _hm_mid_cls, _i)
+    for _i, _f in enumerate(_hm_challenges):
+        _hm_tiles += _hm_tile(_f, "Challenges", "✗", _hm_cold_cls, _i)
+
+    st.markdown(f"""
+<div class="hm-wrap">
+  <div class="hm-legend">
+    <span class="hm-legend-label">cold</span>
+    <div class="hm-legend-bar"></div>
+    <span class="hm-legend-label">hot</span>
+  </div>
+  <div class="hm-grid">{_hm_tiles}</div>
+</div>""", unsafe_allow_html=True)
+    st.markdown("---")
 
     def _hn_render_card(card: dict, col_key: str, idx: int):
         src = card.get("source","")
@@ -6389,6 +6141,154 @@ if _hn_board_data:
                 st.success(f"Hunch saved to **{_hn_sel_folder}**!")
             else:
                 st.warning("No project folders yet — create one in Projects first.")
+
+# ── Strategic Openings — rendered after Hunch board ───────────────────────────
+if _tr_openings_data is not None:
+    _tr_raw_count = st.session_state.get("tr_raw_count", None)
+    st.markdown("---")
+    if not _tr_openings_data:
+        if _tr_raw_count == 0:
+            st.warning(
+                "**No signals returned from selected sources.** "
+                "Possible causes: API rate limits reached, no posts found for this topic/hashtag, "
+                "or APIFY_API_TOKEN may be missing. Try adding RSS, Reddit, or YouTube as extra sources."
+            )
+            _tr_log_show = st.session_state.get("tr_log", [])
+            if _tr_log_show:
+                with st.expander("🔍 Debug log — what happened during the search", expanded=True):
+                    for _msg in _tr_log_show:
+                        st.caption(_msg)
+        else:
+            st.info("No openings found — try a broader topic or add more sources.")
+    else:
+        _terms_str = ", ".join(_tr_terms_label[:4]) if _tr_terms_label else _tr_topic_label
+        st.markdown(f"""
+<div style="padding:.4rem 0 1rem;">
+  <div style="font-family:monospace;font-size:10px;letter-spacing:.18em;
+    text-transform:uppercase;color:#0a7d8c;margin-bottom:4px;">Strategic Openings</div>
+  <div style="font-family:Georgia,serif;font-size:1.05rem;color:#071828;margin-bottom:2px;">
+    What can this brand do with these signals — right now?
+  </div>
+  <div style="font-size:11px;color:#9dc4d8;">{len(_tr_openings_data)} openings · {_tr_raw_count or 0} signals · topic: {e(_terms_str)}</div>
+</div>""", unsafe_allow_html=True)
+
+        # ── Overview: sentiment + themes + sources ────────────────────────────
+        if _tr_overview_data:
+            _ov_sent   = _tr_overview_data.get("sentiment", {})
+            _ov_themes = _tr_overview_data.get("themes", [])
+            _ov_srcs   = _tr_overview_data.get("source_counts", {})
+            _ov_pos = int(_ov_sent.get("positive", 0))
+            _ov_neg = int(_ov_sent.get("negative", 0))
+            _ov_neu = int(_ov_sent.get("neutral",  0))
+            _ov_total_sent = max(_ov_pos + _ov_neg + _ov_neu, 1)
+            _ov_pos_pct = round(_ov_pos / _ov_total_sent * 100)
+            _ov_neg_pct = round(_ov_neg / _ov_total_sent * 100)
+            _ov_neu_pct = 100 - _ov_pos_pct - _ov_neg_pct
+            _ov_bar_segs = ""
+            if _ov_pos_pct:
+                _ov_bar_segs += f'<div class="ov-sent-seg ov-sent-pos" style="width:{_ov_pos_pct}%">{_ov_pos_pct}%</div>'
+            if _ov_neg_pct:
+                _ov_bar_segs += f'<div class="ov-sent-seg ov-sent-neg" style="width:{_ov_neg_pct}%">{_ov_neg_pct}%</div>'
+            if _ov_neu_pct:
+                _ov_bar_segs += f'<div class="ov-sent-seg ov-sent-neu" style="width:{_ov_neu_pct}%">{_ov_neu_pct}%</div>'
+            _ov_theme_cls = {"positive": "ov-theme-pos", "negative": "ov-theme-neg", "neutral": "ov-theme-neu"}
+            _ov_themes_html = "".join(
+                f'<div class="ov-theme-chip {_ov_theme_cls.get(_th.get("dominant_sentiment","neutral"),"ov-theme-neu")}">'
+                f'{e(_th.get("label",""))}<span class="ov-theme-count">{_th.get("count","")}</span></div>'
+                for _th in _ov_themes[:8]
+            )
+            _ov_src_html = "".join(
+                f'<span class="ov-src-pill tr-src {_tr_src_cls.get(_src,"tr-src-rss")}">'
+                f'{e(_src.replace("_"," ").title())} · {_cnt}</span> '
+                for _src, _cnt in sorted(_ov_srcs.items(), key=lambda x: -x[1])
+            )
+            _ov_summary = e(_ov_sent.get("summary", ""))
+            st.markdown(f"""
+<div class="ov-wrap">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+    <div>
+      <div class="ov-section-label">Sentiment about "{e(_tr_topic_label)}"</div>
+      <div class="ov-sent-bar">{_ov_bar_segs}</div>
+      <div class="ov-sent-legend">
+        <div class="ov-sent-leg-item"><div class="ov-sent-dot" style="background:#16a34a"></div>Positive {_ov_pos_pct}%</div>
+        <div class="ov-sent-leg-item"><div class="ov-sent-dot" style="background:#dc2626"></div>Negative {_ov_neg_pct}%</div>
+        <div class="ov-sent-leg-item"><div class="ov-sent-dot" style="background:#94a3b8"></div>Neutral {_ov_neu_pct}%</div>
+      </div>
+      {"<div class='ov-sent-summary'>" + _ov_summary + "</div>" if _ov_summary else ""}
+    </div>
+    <div>
+      <div class="ov-section-label">Sources ({_tr_raw_count or 0} signals)</div>
+      <div class="ov-sources">{_ov_src_html}</div>
+    </div>
+  </div>
+  {"<div style='margin-top:16px;border-top:1px solid #f0f4f8;padding-top:14px;'><div class='ov-section-label'>Top themes</div><div class='ov-themes'>" + _ov_themes_html + "</div></div>" if _ov_themes else ""}
+</div>""", unsafe_allow_html=True)
+
+        # ── Opening cards ─────────────────────────────────────────────────────
+        _so_urgency_cfg = {
+            "now":      ("so-urgency-now",      "● Act now"),
+            "emerging": ("so-urgency-emerging",  "◑ Emerging"),
+            "building": ("so-urgency-building",  "○ Building"),
+        }
+        _so_hook_icons = {
+            "contrarian": "⚡", "validation": "✓", "humor": "😄",
+            "aspiration": "✦", "solidarity": "🤝", "education": "◎", "challenge": "→",
+        }
+        for _oi, _op in enumerate(_tr_openings_data):
+            _urgency_key = (_op.get("urgency") or "emerging").lower()
+            _urg_cls, _urg_lbl = _so_urgency_cfg.get(_urgency_key, ("so-urgency-emerging", "◑ Emerging"))
+            _hook = _op.get("hook", "")
+            _hook_icon = _so_hook_icons.get(_hook.lower(), "→")
+            _sig_html = ""
+            for _sig in (_op.get("signals") or [])[:4]:
+                _sig_url  = _sig.get("url", "")
+                _src_cls  = _tr_src_cls.get(_sig.get("source",""), "tr-src-rss")
+                _link_part = (
+                    f' <a href="{e(_sig_url)}" target="_blank" '
+                    f'style="color:#9dc4d8;font-size:10px;text-decoration:none;">→ source</a>'
+                ) if _sig_url else ""
+                _sig_html += (
+                    f'<div class="so-signal">'
+                    f'<div class="so-signal-quote">"{e(_sig.get("text",""))}"</div>'
+                    f'<div class="so-signal-meta">'
+                    f'<span class="tr-src {_src_cls}">{e(_sig.get("source","").replace("_"," "))}</span>'
+                    f'{_link_part}</div></div>'
+                )
+            st.markdown(f"""
+<div class="so-card so-card-{_urgency_key}">
+  <div class="so-header">
+    <div class="so-tension">{e(_op.get("tension",""))}</div>
+    <div class="so-urgency {_urg_cls}">{_urg_lbl}</div>
+  </div>
+  <div class="so-why-now">{e(_op.get("why_now",""))}</div>
+  <div class="so-signals-label">Evidence from signals</div>
+  {_sig_html}
+  <div class="so-angle-wrap">
+    <div class="so-angle-label">Brand angle</div>
+    <div class="so-angle-text">{e(_op.get("brand_angle",""))}</div>
+    {'<div class="so-hook">' + _hook_icon + ' ' + e(_hook) + '</div>' if _hook else ''}
+  </div>
+</div>""", unsafe_allow_html=True)
+            _pin_col2, _brief_col2, _sp2 = st.columns([1, 2, 3])
+            with _pin_col2:
+                if st.button("📌 Pin", key=f"so_pin2_{_oi}", use_container_width=True):
+                    _pu = st.session_state.get("logged_in_user", "internal")
+                    add_curadoria_item(_pu, "strategic_opening",
+                                       f"Opening: {_op.get('tension','')}",
+                                       f"**Why now:** {_op.get('why_now','')}\n\n**Angle:** {_op.get('brand_angle','')}")
+                    st.success("Saved!")
+            with _brief_col2:
+                if st.button("→ Build Brief", key=f"so_brief2_{_oi}",
+                             use_container_width=True, type="primary"):
+                    _bu = st.session_state.get("logged_in_user", "internal")
+                    _tb = _op.get("tension", "")
+                    _ab = _op.get("brand_angle", "")
+                    add_curadoria_item(_bu, "strategic_opening", f"Opening: {_tb}",
+                                       f"**Why now:** {_op.get('why_now','')}\n\n**Angle:** {_ab}")
+                    st.session_state["briefing_prefill"] = f"{_tb} — {_ab}"
+                    st.success("Saved! Go to **Dispatches → Briefing Builder**.")
+            st.markdown("<hr style='border:none;border-top:1px solid #f0f4f8;margin:0 0 4px;'>",
+                        unsafe_allow_html=True)
 
 tab_trends.__exit__(None, None, None)
 tab_search.__enter__()
