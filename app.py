@@ -1033,7 +1033,7 @@ with st.sidebar:
                     st.success(f"✅ {_result['total']} signals saved — " + " · ".join(f"{k}: {v}" for k, v in _result["by_source"].items()))
                     st.cache_data.clear()
                     # Clear cached gallery + board so Trends tab rebuilds with fresh data
-                    for _k in ("tr_gallery", "tr_board", "tr_openings",
+                    for _k in ("tr_gallery", "tr_board", "tr_openings", "tr_overview",
                                "tr_hunch_suggestions", "tr_topic_used", "tr_terms_used"):
                         st.session_state.pop(_k, None)
                     st.rerun()
@@ -5103,6 +5103,40 @@ st.markdown("""
 .tr-ph-instagram::before { content: "✦"; font-size: 2rem;
   color: rgba(255,255,255,.35); position: absolute; z-index: 1; }
 
+/* ── Quantitative Overview ── */
+.ov-wrap { background: #fff; border-radius: 14px; padding: 20px 22px;
+  margin-bottom: 20px; border: 1px solid rgba(0,0,0,.07);
+  box-shadow: 0 2px 10px rgba(0,0,0,.05); }
+.ov-section-label { font-size: 9.5px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; color: #9dc4d8; margin-bottom: 10px; }
+/* sentiment bar */
+.ov-sent-bar { display: flex; border-radius: 6px; overflow: hidden;
+  height: 20px; margin-bottom: 8px; gap: 2px; }
+.ov-sent-seg { display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; color: #fff; transition: width .3s;
+  min-width: 28px; }
+.ov-sent-pos { background: #16a34a; }
+.ov-sent-neg { background: #dc2626; }
+.ov-sent-neu { background: #94a3b8; }
+.ov-sent-legend { display: flex; gap: 14px; margin-bottom: 6px; }
+.ov-sent-leg-item { display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: #4a6d82; }
+.ov-sent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.ov-sent-summary { font-size: 12px; color: #6ea8c4; font-style: italic;
+  margin-top: 4px; }
+/* themes */
+.ov-themes { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 4px; }
+.ov-theme-chip { display: flex; align-items: center; gap: 5px;
+  border-radius: 20px; padding: 4px 10px; font-size: 11px; font-weight: 600; }
+.ov-theme-pos { background: #dcfce7; color: #15803d; }
+.ov-theme-neg { background: #fee2e2; color: #b91c1c; }
+.ov-theme-neu { background: #f1f5f9; color: #475569; }
+.ov-theme-count { font-size: 10px; font-weight: 700; opacity: .7; }
+/* source pills */
+.ov-sources { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.ov-src-pill { border-radius: 20px; padding: 3px 9px; font-size: 10px;
+  font-weight: 700; letter-spacing: .05em; }
+
 /* ── Strategic Opening cards ── */
 .so-card { background: #fff; border-radius: 14px; padding: 22px 22px 16px;
   margin-bottom: 18px; box-shadow: 0 2px 12px rgba(0,0,0,.07);
@@ -5400,6 +5434,65 @@ if _tr_fetch and _tr_topic.strip():
         for r in _tr_raw if r.get("url") and r.get("thumbnail")
     }
 
+    # ── Haiku: sentiment + themes overview (fast, cheap batch classification) ──
+    _tr_overview: dict = {}
+    if _tr_raw and _tr_ant_key:
+        try:
+            import anthropic as _ant_ov
+            _tr_status.caption(f"Classifying sentiment and themes across {len(_tr_raw)} signals…")
+            _ov_sig_txt = "\n".join(
+                f"[{i}] {(s.get('content') or s.get('title',''))[:130]}"
+                for i, s in enumerate(_tr_raw[:80])
+            )
+            _ov_prompt = f"""Topic / brand: "{_tr_topic}"
+
+Analyse these {min(len(_tr_raw), 80)} social media signals and return a quantitative overview.
+
+Return ONLY raw JSON, no explanation:
+{{
+  "sentiment": {{
+    "positive": <integer count>,
+    "negative": <integer count>,
+    "neutral":  <integer count>,
+    "summary":  "<10-12 words: dominant feeling and the main reason>"
+  }},
+  "themes": [
+    {{
+      "label":              "<2-4 word theme name>",
+      "count":              <integer — how many signals mention this theme>,
+      "dominant_sentiment": "positive" | "negative" | "neutral"
+    }}
+  ]
+}}
+
+Rules:
+- Sentiment is relative to the topic/brand (is this signal positive/negative ABOUT it?)
+- Identify 5 to 8 distinct themes that emerge from the signals (no fixed taxonomy)
+- Sort themes by count descending
+- Counts must add up reasonably (a signal can belong to 1-2 themes)
+
+SIGNALS:
+{_ov_sig_txt}"""
+            _ov_resp = _ant_ov.Anthropic(api_key=_tr_ant_key).messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=900,
+                messages=[{"role": "user", "content": _ov_prompt}],
+            )
+            _ov_txt = _ov_resp.content[0].text.strip()
+            _ov_start = _ov_txt.find("{")
+            _ov_end   = _ov_txt.rfind("}") + 1
+            if _ov_start != -1 and _ov_end > _ov_start:
+                _tr_overview = json.loads(_ov_txt[_ov_start:_ov_end])
+        except Exception:
+            _tr_overview = {}   # non-fatal — openings still render
+
+    # Source volume (deterministic, no AI needed)
+    _ov_src_counts: dict = {}
+    for _r in _tr_raw:
+        _ov_src_counts[_r.get("source", "other")] = _ov_src_counts.get(_r.get("source", "other"), 0) + 1
+
+    _tr_overview["source_counts"] = _ov_src_counts
+
     # ── Claude: identify 3 Strategic Openings ────────────────────────────────
     _tr_status.caption(f"Claude analysing {len(_tr_raw)} signals for strategic openings…")
     _tr_openings: list = []
@@ -5483,12 +5576,13 @@ SIGNALS:
             st.warning(f"Strategic analysis failed: {_tr_cls_err}")
             _tr_openings = []
 
-    st.session_state["tr_openings"]        = _tr_openings
+    st.session_state["tr_openings"]          = _tr_openings
     st.session_state["tr_hunch_suggestions"] = _tr_hunch_suggs
-    st.session_state["tr_topic_used"]      = _tr_topic
-    st.session_state["tr_terms_used"]      = _tr_expanded_terms
-    st.session_state["tr_raw_count"]       = len(_tr_raw)
-    st.session_state["tr_log"]             = _tr_log
+    st.session_state["tr_overview"]          = _tr_overview
+    st.session_state["tr_topic_used"]        = _tr_topic
+    st.session_state["tr_terms_used"]        = _tr_expanded_terms
+    st.session_state["tr_raw_count"]         = len(_tr_raw)
+    st.session_state["tr_log"]               = _tr_log
     _tr_status.empty()
 
 # ── Hunch: fetch & classify ───────────────────────────────────────────────────
@@ -5925,6 +6019,9 @@ if not _tr_any_result and _tr_gallery_data:
                             unsafe_allow_html=True,
                         )
 
+# ── Read overview from session state ──────────────────────────────────────────
+_tr_overview_data = st.session_state.get("tr_overview", {})
+
 # ── Strategic Openings — shown after "Find Openings" ──────────────────────────
 if _tr_openings_data is not None:
     _tr_raw_count = st.session_state.get("tr_raw_count", None)
@@ -5949,6 +6046,87 @@ if _tr_openings_data is not None:
             f"letter-spacing:.1em;text-transform:uppercase;color:#9dc4d8;"
             f"margin-bottom:1.2rem;'>{len(_tr_openings_data)} openings · "
             f"{_tr_raw_count or 0} signals analysed · topic: {e(_terms_str)}</p>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Overview: sentiment + themes + sources ────────────────────────────
+        if _tr_overview_data:
+            _ov_sent    = _tr_overview_data.get("sentiment", {})
+            _ov_themes  = _tr_overview_data.get("themes", [])
+            _ov_srcs    = _tr_overview_data.get("source_counts", {})
+            _ov_pos = int(_ov_sent.get("positive", 0))
+            _ov_neg = int(_ov_sent.get("negative", 0))
+            _ov_neu = int(_ov_sent.get("neutral",  0))
+            _ov_total_sent = max(_ov_pos + _ov_neg + _ov_neu, 1)
+            _ov_pos_pct = round(_ov_pos / _ov_total_sent * 100)
+            _ov_neg_pct = round(_ov_neg / _ov_total_sent * 100)
+            _ov_neu_pct = 100 - _ov_pos_pct - _ov_neg_pct
+
+            # Sentiment bar HTML
+            _ov_bar_segs = ""
+            if _ov_pos_pct:
+                _ov_bar_segs += f'<div class="ov-sent-seg ov-sent-pos" style="width:{_ov_pos_pct}%">{_ov_pos_pct}%</div>'
+            if _ov_neg_pct:
+                _ov_bar_segs += f'<div class="ov-sent-seg ov-sent-neg" style="width:{_ov_neg_pct}%">{_ov_neg_pct}%</div>'
+            if _ov_neu_pct:
+                _ov_bar_segs += f'<div class="ov-sent-seg ov-sent-neu" style="width:{_ov_neu_pct}%">{_ov_neu_pct}%</div>'
+
+            # Theme chips HTML
+            _ov_theme_cls = {"positive": "ov-theme-pos", "negative": "ov-theme-neg", "neutral": "ov-theme-neu"}
+            _ov_themes_html = ""
+            for _th in _ov_themes[:8]:
+                _th_cls = _ov_theme_cls.get(_th.get("dominant_sentiment","neutral"), "ov-theme-neu")
+                _ov_themes_html += (
+                    f'<div class="ov-theme-chip {_th_cls}">'
+                    f'{e(_th.get("label",""))}'
+                    f'<span class="ov-theme-count">{_th.get("count","")}</span>'
+                    f'</div>'
+                )
+
+            # Source pills HTML
+            _ov_src_label_map = {
+                "youtube": ("▶ YouTube", "#ff0033"), "tiktok": ("♪ TikTok", "#0fa3b5"),
+                "instagram": ("✦ Instagram", "#c13584"), "twitter": ("𝕏 Twitter", "#1d9bf0"),
+                "reddit": ("💬 Reddit", "#ff4500"), "google_trends": ("📈 Trends", "#4285f4"),
+                "hacker_news": ("🔸 HN", "#ff6600"), "rss": ("📡 RSS", "#f5a623"),
+                "exa": ("◎ Exa", "#8b5cf6"), "gdelt": ("🌐 GDELT", "#16a34a"),
+            }
+            _ov_src_html = ""
+            for _src, _cnt in sorted(_ov_srcs.items(), key=lambda x: -x[1]):
+                _slbl, _sclr = _ov_src_label_map.get(_src, (_src.replace("_"," ").title(), "#6ea8c4"))
+                _ov_src_html += (
+                    f'<span class="ov-src-pill tr-src {_tr_src_cls.get(_src,"tr-src-rss")}">'
+                    f'{e(_slbl)} · {_cnt}</span> '
+                )
+
+            _ov_summary = e(_ov_sent.get("summary", ""))
+
+            st.markdown(f"""
+<div class="ov-wrap">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+    <div>
+      <div class="ov-section-label">Sentiment about "{e(_tr_topic_label)}"</div>
+      <div class="ov-sent-bar">{_ov_bar_segs}</div>
+      <div class="ov-sent-legend">
+        <div class="ov-sent-leg-item"><div class="ov-sent-dot" style="background:#16a34a"></div>Positive {_ov_pos_pct}%</div>
+        <div class="ov-sent-leg-item"><div class="ov-sent-dot" style="background:#dc2626"></div>Negative {_ov_neg_pct}%</div>
+        <div class="ov-sent-leg-item"><div class="ov-sent-dot" style="background:#94a3b8"></div>Neutral {_ov_neu_pct}%</div>
+      </div>
+      {"<div class='ov-sent-summary'>" + _ov_summary + "</div>" if _ov_summary else ""}
+    </div>
+    <div>
+      <div class="ov-section-label">Sources ({_tr_raw_count or 0} signals)</div>
+      <div class="ov-sources">{_ov_src_html}</div>
+    </div>
+  </div>
+  {"<div style='margin-top:16px;border-top:1px solid #f0f4f8;padding-top:14px;'><div class='ov-section-label'>Top themes</div><div class='ov-themes'>" + _ov_themes_html + "</div></div>" if _ov_themes else ""}
+</div>""", unsafe_allow_html=True)
+
+        # ── Opening cards ─────────────────────────────────────────────────────
+        st.markdown(
+            "<div style='font-family:\"JetBrains Mono\",monospace;font-size:9.5px;"
+            "letter-spacing:.14em;text-transform:uppercase;color:#9dc4d8;"
+            "margin:4px 0 16px;'>Strategic openings</div>",
             unsafe_allow_html=True,
         )
 
