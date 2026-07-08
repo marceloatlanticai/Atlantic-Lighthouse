@@ -1033,7 +1033,8 @@ with st.sidebar:
                     st.success(f"✅ {_result['total']} signals saved — " + " · ".join(f"{k}: {v}" for k, v in _result["by_source"].items()))
                     st.cache_data.clear()
                     # Clear cached gallery + board so Trends tab rebuilds with fresh data
-                    for _k in ("tr_gallery", "tr_board", "tr_topic_used", "tr_terms_used"):
+                    for _k in ("tr_gallery", "tr_board", "tr_openings",
+                               "tr_hunch_suggestions", "tr_topic_used", "tr_terms_used"):
                         st.session_state.pop(_k, None)
                     st.rerun()
                 except Exception as _ing_exc:
@@ -5102,6 +5103,48 @@ st.markdown("""
 .tr-ph-instagram::before { content: "✦"; font-size: 2rem;
   color: rgba(255,255,255,.35); position: absolute; z-index: 1; }
 
+/* ── Strategic Opening cards ── */
+.so-card { background: #fff; border-radius: 14px; padding: 22px 22px 16px;
+  margin-bottom: 18px; box-shadow: 0 2px 12px rgba(0,0,0,.07);
+  border: 1px solid rgba(0,0,0,.07); border-left: 4px solid #0a7d8c; }
+.so-card-now      { border-left-color: #16a34a; }
+.so-card-emerging { border-left-color: #d97706; }
+.so-card-building { border-left-color: #2563eb; }
+.so-header { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 10px; margin-bottom: 8px; }
+.so-tension { font-family: Georgia, serif; font-size: 1.2rem; font-weight: 700;
+  color: #071828; line-height: 1.3; flex: 1; }
+.so-urgency { font-size: 10px; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; padding: 3px 9px; border-radius: 20px;
+  white-space: nowrap; flex-shrink: 0; margin-top: 4px; }
+.so-urgency-now      { background: #dcfce7; color: #15803d; }
+.so-urgency-emerging { background: #fef3c7; color: #b45309; }
+.so-urgency-building { background: #dbeafe; color: #1d4ed8; }
+.so-why-now { font-size: 13px; color: #4a6d82; line-height: 1.6;
+  margin-bottom: 14px; }
+.so-signals-label { font-size: 9.5px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; color: #9dc4d8; margin-bottom: 8px; }
+.so-signal { border-left: 2px solid #e2ecf0; padding: 5px 0 5px 10px;
+  margin-bottom: 8px; }
+.so-signal-quote { font-size: 12px; color: #274d68; line-height: 1.55;
+  font-style: italic; margin-bottom: 4px; }
+.so-signal-meta { display: flex; gap: 6px; align-items: center; }
+.so-angle-wrap { background: #f0f7fb; border-radius: 8px; padding: 10px 13px;
+  margin: 14px 0 4px; border: 1px dashed #9dc4d8; }
+.so-angle-label { font-size: 9.5px; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; color: #0a7d8c; margin-bottom: 4px; }
+.so-angle-text { font-size: 13px; color: #071828; line-height: 1.5; }
+.so-hook { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px;
+  background: #fef9c3; color: #713f12; display: inline-block; margin-top: 5px; }
+
+/* ── Hunch suggestions ── */
+.hn-sugg-wrap { margin-bottom: 10px; }
+.hn-sugg-label { font-size: 9.5px; font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; color: #7c3aed; margin-bottom: 6px; }
+.hn-sugg-chip { display: inline-block; background: #f5f3ff; color: #4c3494;
+  border: 1px solid #c4b5fd; border-radius: 20px; padding: 4px 11px;
+  font-size: 11px; margin: 0 5px 5px 0; cursor: pointer; }
+
 /* ── Hunch mode ── */
 .hn-col-wrap { border-radius: 12px; padding: 14px 12px; min-height: 120px; }
 .hn-col-confirms   { background: #f0fdf4; border-top: 3px solid #16a34a; }
@@ -5136,11 +5179,11 @@ st.markdown("""
 st.markdown("""
 <div style="padding:1.2rem 0 1rem;text-align:center;">
   <div style="font-family:monospace;font-size:10px;letter-spacing:.18em;
-    text-transform:uppercase;color:#6ea8c4;margin-bottom:6px;">Trends Board</div>
+    text-transform:uppercase;color:#6ea8c4;margin-bottom:6px;">Strategic Openings</div>
   <div style="font-family:Georgia,serif;font-size:1.4rem;font-weight:400;
-    color:#071828;margin-bottom:3px;">What's rising, stable, or cooling?</div>
+    color:#071828;margin-bottom:3px;">What can this brand do with this — right now?</div>
   <div style="font-size:12px;color:#6ea8c4;">
-    Fetch from your sources — Claude maps the themes into a visual board.
+    Claude reads your signals and surfaces 3 specific creative opportunities.
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -5154,7 +5197,7 @@ with _tr_c1:
         key="tr_topic", label_visibility="collapsed",
     )
 with _tr_c2:
-    _tr_fetch = st.button("Fetch Trends →", key="tr_fetch", type="primary",
+    _tr_fetch = st.button("Find Openings →", key="tr_fetch", type="primary",
                           use_container_width=True)
 
 _tr_sources = st.multiselect(
@@ -5174,12 +5217,26 @@ st.markdown(
     '— type a hypothesis and Claude finds evidence for & against it</span></div>',
     unsafe_allow_html=True,
 )
+# ── Auto-suggested hunches (populated after Find Openings) ────────────────────
+_tr_hunch_suggestions = st.session_state.get("tr_hunch_suggestions", [])
+if _tr_hunch_suggestions:
+    st.markdown('<div class="hn-sugg-wrap"><div class="hn-sugg-label">Suggested hypotheses — click to test</div>', unsafe_allow_html=True)
+    _sugg_cols = st.columns(len(_tr_hunch_suggestions))
+    for _si, _sugg in enumerate(_tr_hunch_suggestions):
+        with _sugg_cols[_si]:
+            if st.button(f"→ {_sugg[:70]}", key=f"hn_sugg_{_si}",
+                         use_container_width=True, help="Click to test this hypothesis"):
+                st.session_state["tr_hunch_prefill"] = _sugg
+                st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 _hn_col1, _hn_col2 = st.columns([4, 1])
 with _hn_col1:
+    _hunch_prefill = st.session_state.pop("tr_hunch_prefill", None)
     _tr_hunch = st.text_input(
         "hunch", label_visibility="collapsed",
         placeholder='e.g. "People avoid soup at their desk because they fear spilling on their laptop"',
         key="tr_hunch",
+        value=_hunch_prefill if _hunch_prefill else "",
     )
 with _hn_col2:
     _tr_hunch_fetch = st.button("Find Evidence →", key="tr_hunch_fetch",
@@ -5343,9 +5400,10 @@ if _tr_fetch and _tr_topic.strip():
         for r in _tr_raw if r.get("url") and r.get("thumbnail")
     }
 
-    # Claude extracts themes, classifies, and picks representative URLs
-    _tr_status.caption(f"Claude analysing {len(_tr_raw)} signals for trending themes…")
-    _tr_board = {"high": [], "stable": [], "decline": []}
+    # ── Claude: identify 3 Strategic Openings ────────────────────────────────
+    _tr_status.caption(f"Claude analysing {len(_tr_raw)} signals for strategic openings…")
+    _tr_openings: list = []
+    _tr_hunch_suggs: list = []
 
     if _tr_raw and _tr_ant_key:
         try:
@@ -5353,106 +5411,84 @@ if _tr_fetch and _tr_topic.strip():
             _tr_client = _ant_tr.Anthropic(api_key=_tr_ant_key)
             _tr_sig_txt = "\n".join(
                 f"[{i}] {s['source'].upper()} | {s['title'][:100]}"
+                f" | CONTENT:{s.get('content','')[:120]}"
                 f" | URL:{s.get('url','')[:120]}"
                 for i, s in enumerate(_tr_raw[:80])
             )
             _n_sigs = min(len(_tr_raw), 80)
-            _n_themes_min = max(5, min(12, _n_sigs // 4))   # scale: 5 min, 12 max at low signal count
-            _n_themes_max = max(12, min(30, _n_sigs // 2))  # up to 30 themes for rich datasets
-            _tr_prompt = f"""You are a cultural trends analyst. Research topic: "{_tr_topic}"
+            _tr_prompt = f"""You are a senior cultural strategist at an advertising agency.
+Brand / topic: "{_tr_topic}"
 
-Analyse these {_n_sigs} signals and identify {_n_themes_min}–{_n_themes_max} distinct trending themes.
-IMPORTANT: Always return at least {_n_themes_min} themes even if signals are sparse — use your knowledge of the topic to infer broader themes visible in the content.
-Never return an empty array.
+You have {_n_sigs} social signals below. Your job is NOT to catalog or classify them.
+Your job is to identify exactly 3 distinct, actionable creative opportunities — real tensions
+or behaviours from these signals that a brand could specifically act on RIGHT NOW.
 
-For each theme return:
-- "name": 2–5 words, title case
-- "velocity": "RISING", "STABLE", or "DECLINING"
-- "score_num": integer -100 to +100 (positive = rising, 0 = stable, negative = declining)
-- "score_label": e.g. "+52%", "→ steady", "-18%"
-- "sources": list of source names involved (e.g. ["tiktok"])
-- "note": one sentence, max 12 words, explaining the velocity
-- "urls": up to 2 representative URLs from the signals above (exact URLs from the URL: field, copy them exactly)
-- "emotion": the single dominant emotion (e.g. "nostalgia", "frustration", "excitement", "anxiety", "joy", "irony", "pride", "fear")
-- "hook": the dominant hook type (e.g. "contrarian claim", "comparison", "personal story", "data & stats", "transformation", "controversy", "question", "humor")
-- "tone": the dominant tone (e.g. "casual", "formal", "ironic", "vulnerable", "educational", "outraged", "playful", "aspirational")
+For each opportunity return:
+- "tension": 3-6 word name capturing the cultural conflict or behaviour pattern (e.g. "Desk Lunch Shame", "Soup Status Anxiety", "Office Return Grief")
+- "why_now": 2-3 sentences. Why is this happening? Why does it matter for THIS brand at THIS moment?
+- "brand_angle": One concrete, specific creative direction the brand could take. Start with a verb.
+- "hook": The content hook type that would work best. One of: "contrarian", "validation", "humor", "aspiration", "solidarity", "education", "challenge"
+- "urgency": One of: "now" (act this week — conversation is peaking), "emerging" (act this month — building fast), "building" (watch closely — 4-8 week window)
+- "signals": The 3-4 most relevant signal excerpts, each as:
+  - "text": key quote or close paraphrase, max 25 words
+  - "source": platform name (e.g. "reddit", "tiktok", "youtube")
+  - "url": exact URL from the signals if available, else empty string
 
-Respond ONLY with a valid JSON array — never empty. Example:
-[{{"name": "Ketchup Packet Redesign", "velocity": "RISING", "score_num": 58,
-   "score_label": "+58%", "sources": ["tiktok"],
-   "note": "Multiple creators showing new bottle ergonomics.",
-   "urls": ["https://www.tiktok.com/@user/video/123"], "emotion": "nostalgia",
-   "hook": "comparison", "tone": "playful"}}]
+Also return:
+- "suggested_hunches": 3 testable hypotheses derived from these signals. Each phrased as "People [verb]... because..." — max 18 words each.
+
+IMPORTANT: Return ONLY raw JSON, no explanation. Format:
+{{
+  "openings": [
+    {{
+      "tension": "...", "why_now": "...", "brand_angle": "...",
+      "hook": "...", "urgency": "now",
+      "signals": [{{"text": "...", "source": "...", "url": "..."}}]
+    }}
+  ],
+  "suggested_hunches": ["...", "...", "..."]
+}}
 
 SIGNALS:
 {_tr_sig_txt}"""
 
             _tr_resp = _tr_client.messages.create(
                 model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
-                max_tokens=4000,
+                max_tokens=3500,
                 messages=[{"role": "user", "content": _tr_prompt}],
             )
             _tr_txt = _tr_resp.content[0].text.strip()
-            _tr_js  = _tr_txt[_tr_txt.find("["):_tr_txt.rfind("]") + 1]
-            # Repair truncated JSON if needed
-            if _tr_js and not _tr_js.rstrip().endswith("]"):
-                _last = _tr_js.rfind("},")
-                if _last > 0:
-                    _tr_js = _tr_js[:_last+1] + "]"
-            _tr_themes = json.loads(_tr_js) if _tr_js else []
-            # Fallback: if Claude returned [] (valid but empty), build cards directly from signals
-            if not _tr_themes and _tr_raw:
-                _tr_themes = [
-                    {"name": _s["title"][:45], "velocity": "STABLE", "score_num": 0,
-                     "score_label": "—", "sources": [_s.get("source","rss")],
-                     "note": "", "urls": [_s.get("url","")] if _s.get("url") else [],
-                     "emotion": "", "hook": "", "tone": ""}
-                    for _s in _tr_raw[:12]
+            # Extract JSON object
+            _tr_js_start = _tr_txt.find("{")
+            _tr_js_end   = _tr_txt.rfind("}") + 1
+            if _tr_js_start != -1 and _tr_js_end > _tr_js_start:
+                _tr_parsed = json.loads(_tr_txt[_tr_js_start:_tr_js_end])
+                _tr_openings    = _tr_parsed.get("openings", [])
+                _tr_hunch_suggs = _tr_parsed.get("suggested_hunches", [])
+            # Fallback: if Claude returned empty openings, build minimal cards from signals
+            if not _tr_openings and _tr_raw:
+                _tr_openings = [
+                    {
+                        "tension": _s["title"][:50],
+                        "why_now": _s.get("content", "")[:180],
+                        "brand_angle": "Explore this conversation further.",
+                        "hook": "validation",
+                        "urgency": "emerging",
+                        "signals": [{"text": _s.get("content","")[:100],
+                                     "source": _s.get("source",""), "url": _s.get("url","")}],
+                    }
+                    for _s in _tr_raw[:3]
                 ]
-            for _th in _tr_themes:
-                _vel  = _th.get("velocity", "STABLE").upper()
-                _urls = [u for u in _th.get("urls", []) if u.startswith("http")][:2]
-                # Look up thumbnail from our map using URLs Claude picked — more reliable
-                # than asking Claude to reproduce long CDN URLs
-                _thumb = ""
-                for _u in _urls:
-                    if _u in _tr_url_thumb:
-                        _thumb = _tr_url_thumb[_u]
-                        break
-                _card = {
-                    "name":        _th.get("name", ""),
-                    "score_num":   int(_th.get("score_num", 0)),
-                    "score_label": _th.get("score_label", ""),
-                    "sources":     _th.get("sources", []),
-                    "note":        _th.get("note", ""),
-                    "urls":        _urls,
-                    "thumbnail":   _thumb,
-                    "velocity":    _vel,
-                    "emotion":     _th.get("emotion", ""),
-                    "hook":        _th.get("hook", ""),
-                    "tone":        _th.get("tone", ""),
-                }
-                if _vel == "RISING":
-                    _tr_board["high"].append(_card)
-                elif _vel == "DECLINING":
-                    _tr_board["decline"].append(_card)
-                else:
-                    _tr_board["stable"].append(_card)
         except Exception as _tr_cls_err:
-            st.warning(f"Claude classification failed: {_tr_cls_err}")
-            for _s in _tr_raw[:12]:
-                _tr_board["stable"].append({
-                    "name": _s["title"][:40], "score_num": 0,
-                    "score_label": "?", "sources": [_s["source"]],
-                    "note": "", "urls": [_s.get("url","")] if _s.get("url") else [],
-                    "velocity": "STABLE",
-                })
+            st.warning(f"Strategic analysis failed: {_tr_cls_err}")
+            _tr_openings = []
 
-    st.session_state["tr_board"]       = _tr_board
-    st.session_state["tr_topic_used"]  = _tr_topic
-    st.session_state["tr_terms_used"]  = _tr_expanded_terms
-    st.session_state["tr_raw_count"]   = len(_tr_raw)
-    st.session_state["tr_log"]         = _tr_log
+    st.session_state["tr_openings"]        = _tr_openings
+    st.session_state["tr_hunch_suggestions"] = _tr_hunch_suggs
+    st.session_state["tr_topic_used"]      = _tr_topic
+    st.session_state["tr_terms_used"]      = _tr_expanded_terms
+    st.session_state["tr_raw_count"]       = len(_tr_raw)
+    st.session_state["tr_log"]             = _tr_log
     _tr_status.empty()
 
 # ── Hunch: fetch & classify ───────────────────────────────────────────────────
@@ -5625,10 +5661,12 @@ if "tr_gallery" not in st.session_state:
         "total": len(_tr_auto_raw_sigs),
     }
 
-_tr_board_data   = st.session_state.get("tr_board", None)
-_tr_gallery_data = st.session_state.get("tr_gallery", None)
-_tr_topic_label  = st.session_state.get("tr_topic_used", "")
-_tr_terms_label  = st.session_state.get("tr_terms_used", [])
+_tr_openings_data = st.session_state.get("tr_openings", None)   # new Strategic Openings
+_tr_board_data    = st.session_state.get("tr_board", None)       # legacy kanban (kept for compat)
+_tr_gallery_data  = st.session_state.get("tr_gallery", None)
+_tr_topic_label   = st.session_state.get("tr_topic_used", "")
+_tr_terms_label   = st.session_state.get("tr_terms_used", [])
+_tr_any_result    = _tr_openings_data is not None or _tr_board_data is not None
 
 def _tr_thumb_from_url(url: str) -> str:
     """Derive a thumbnail URL from a content URL where possible."""
@@ -5770,7 +5808,7 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
                 st.rerun()
 
 # ── Source Gallery — shown on first open (before any manual search) ───────────
-if _tr_board_data is None and _tr_gallery_data:
+if not _tr_any_result and _tr_gallery_data:
     _gal_total = _tr_gallery_data.get("total", 0)
     if _gal_total == 0:
         st.info(
@@ -5887,12 +5925,10 @@ if _tr_board_data is None and _tr_gallery_data:
                             unsafe_allow_html=True,
                         )
 
-# ── Claude Themes Board — shown after a manual search ─────────────────────────
-if _tr_board_data is not None:
-    _tr_total = sum(len(v) for v in _tr_board_data.values())
-    if _tr_total == 0:
-        # Distinguish between "scrapers returned nothing" vs "Claude found no themes"
-        _tr_raw_count = st.session_state.get("tr_raw_count", None)
+# ── Strategic Openings — shown after "Find Openings" ──────────────────────────
+if _tr_openings_data is not None:
+    _tr_raw_count = st.session_state.get("tr_raw_count", None)
+    if not _tr_openings_data:
         if _tr_raw_count == 0:
             st.warning(
                 "**No signals returned from selected sources.** "
@@ -5901,138 +5937,139 @@ if _tr_board_data is not None:
             )
             _tr_log_show = st.session_state.get("tr_log", [])
             if _tr_log_show:
-                with st.expander("🔍 Debug log — what happened during the search",
-                                 expanded=True):
+                with st.expander("🔍 Debug log — what happened during the search", expanded=True):
                     for _msg in _tr_log_show:
                         st.caption(_msg)
         else:
-            st.info("No trends found — try a broader topic or add more sources.")
+            st.info("No openings found — try a broader topic or add more sources.")
     else:
         _terms_str = ", ".join(_tr_terms_label[:4]) if _tr_terms_label else _tr_topic_label
-        st.caption(f"{_tr_total} themes · searched: *{_terms_str}*")
-        st.markdown("---")
+        st.markdown(
+            f"<p style='font-family:\"JetBrains Mono\",monospace;font-size:10px;"
+            f"letter-spacing:.1em;text-transform:uppercase;color:#9dc4d8;"
+            f"margin-bottom:1.2rem;'>{len(_tr_openings_data)} openings · "
+            f"{_tr_raw_count or 0} signals analysed · topic: {e(_terms_str)}</p>",
+            unsafe_allow_html=True,
+        )
 
-        # ── 3 Kanban columns ──────────────────────────────────────────────────
-        _col_h, _col_s, _col_d = st.columns(3)
+        _urgency_cfg = {
+            "now":      ("so-urgency-now",      "● Act now"),
+            "emerging": ("so-urgency-emerging",  "◑ Emerging"),
+            "building": ("so-urgency-building",  "○ Building"),
+        }
+        _hook_icons = {
+            "contrarian": "⚡", "validation": "✓", "humor": "😄",
+            "aspiration": "✦", "solidarity": "🤝", "education": "◎", "challenge": "→",
+        }
 
-        with _col_h:
-            _h_count = len(_tr_board_data.get("high", []))
+        for _oi, _op in enumerate(_tr_openings_data):
+            _urgency_key = (_op.get("urgency") or "emerging").lower()
+            _urg_cls, _urg_lbl = _urgency_cfg.get(_urgency_key, ("so-urgency-emerging", "◑ Emerging"))
+            _hook = _op.get("hook", "")
+            _hook_icon = _hook_icons.get(_hook.lower(), "→")
+
+            # Build signal HTML
+            _sig_html = ""
+            for _sig in (_op.get("signals") or [])[:4]:
+                _sig_src  = e(_sig.get("source", "").replace("_", " "))
+                _sig_txt  = e(_sig.get("text", ""))
+                _sig_url  = _sig.get("url", "")
+                _src_cls  = _tr_src_cls.get(_sig.get("source",""), "tr-src-rss")
+                _link_part = (
+                    f' <a href="{e(_sig_url)}" target="_blank" '
+                    f'style="color:#9dc4d8;font-size:10px;text-decoration:none;">→ source</a>'
+                ) if _sig_url else ""
+                _sig_html += (
+                    f'<div class="so-signal">'
+                    f'<div class="so-signal-quote">"{_sig_txt}"</div>'
+                    f'<div class="so-signal-meta">'
+                    f'<span class="tr-src {_src_cls}">{_sig_src}</span>'
+                    f'{_link_part}</div></div>'
+                )
+
             st.markdown(f"""
-<div class="tr-col-wrap tr-col-high">
-  <div class="tr-col-header">🔺 Rising
-    <span style="font-weight:400;opacity:.55;margin-left:4px;">({_h_count})</span>
+<div class="so-card so-card-{_urgency_key}">
+  <div class="so-header">
+    <div class="so-tension">{e(_op.get("tension",""))}</div>
+    <div class="so-urgency {_urg_cls}">{_urg_lbl}</div>
+  </div>
+  <div class="so-why-now">{e(_op.get("why_now",""))}</div>
+  <div class="so-signals-label">Evidence from signals</div>
+  {_sig_html}
+  <div class="so-angle-wrap">
+    <div class="so-angle-label">Brand angle</div>
+    <div class="so-angle-text">{e(_op.get("brand_angle",""))}</div>
+    {'<div class="so-hook">' + _hook_icon + ' ' + e(_hook) + '</div>' if _hook else ''}
   </div>
 </div>""", unsafe_allow_html=True)
+
+            # Action row
+            _pin_col, _brief_col, _spacer = st.columns([1, 2, 3])
+            with _pin_col:
+                if st.button("📌 Pin", key=f"so_pin_{_oi}", use_container_width=True,
+                             help="Save this opening to your project board"):
+                    _pin_user = st.session_state.get("logged_in_user", "internal")
+                    _tension  = _op.get("tension", "")
+                    _angle    = _op.get("brand_angle", "")
+                    _content  = (
+                        f"**Topic:** {_tr_topic_label}\n\n"
+                        f"**Why now:** {_op.get('why_now','')}\n\n"
+                        f"**Brand angle:** {_angle}\n\n"
+                        f"**Urgency:** {_urg_lbl}"
+                    )
+                    add_curadoria_item(_pin_user, "strategic_opening", f"Opening: {_tension}", _content)
+                    st.success("Saved to board!")
+            with _brief_col:
+                if st.button("→ Build Brief", key=f"so_brief_{_oi}",
+                             use_container_width=True, type="primary",
+                             help="Save this opening and jump to Briefing Builder"):
+                    _brief_user = st.session_state.get("logged_in_user", "internal")
+                    _tension_b  = _op.get("tension", "")
+                    _angle_b    = _op.get("brand_angle", "")
+                    _brief_txt  = (
+                        f"**Strategic opening:** {_tension_b}\n\n"
+                        f"**Why now:** {_op.get('why_now','')}\n\n"
+                        f"**Brand angle:** {_angle_b}\n\n"
+                        f"**Urgency:** {_urg_lbl}\n\n"
+                        f"**Hook type:** {_hook}"
+                    )
+                    add_curadoria_item(_brief_user, "strategic_opening",
+                                       f"Opening: {_tension_b}", _brief_txt)
+                    # Pre-populate briefing builder topic
+                    st.session_state["briefing_prefill"] = (
+                        f"{_tension_b} — {_angle_b}"
+                    )
+                    st.success("Saved! Go to **Dispatches → Briefing Builder** to build the brief.")
+
+            st.markdown("<hr style='border:none;border-top:1px solid #f0f4f8;margin:0 0 4px;'>",
+                        unsafe_allow_html=True)
+
+# ── Legacy kanban render (backward-compat, only if old tr_board data exists) ───
+elif _tr_board_data is not None:
+    _tr_total = sum(len(v) for v in _tr_board_data.values())
+    if _tr_total > 0:
+        st.caption(f"{_tr_total} themes (legacy view)")
+        _col_h, _col_s, _col_d = st.columns(3)
+        with _col_h:
             for _i, _card in enumerate(_tr_board_data.get("high", [])):
                 _tr_render_card(_card, "high", _i)
-
         with _col_s:
-            _s_count = len(_tr_board_data.get("stable", []))
-            st.markdown(f"""
-<div class="tr-col-wrap tr-col-stable">
-  <div class="tr-col-header">→ Stable
-    <span style="font-weight:400;opacity:.55;margin-left:4px;">({_s_count})</span>
-  </div>
-</div>""", unsafe_allow_html=True)
             for _i, _card in enumerate(_tr_board_data.get("stable", [])):
                 _tr_render_card(_card, "stable", _i)
-
         with _col_d:
-            _d_count = len(_tr_board_data.get("decline", []))
-            st.markdown(f"""
-<div class="tr-col-wrap tr-col-decline">
-  <div class="tr-col-header">▼ Cooling
-    <span style="font-weight:400;opacity:.55;margin-left:4px;">({_d_count})</span>
-  </div>
-</div>""", unsafe_allow_html=True)
             for _i, _card in enumerate(_tr_board_data.get("decline", [])):
                 _tr_render_card(_card, "decline", _i)
 
-        # ── Velocity chart ────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("""
-<div style="font-family:monospace;font-size:10px;letter-spacing:.12em;
-  text-transform:uppercase;color:#6ea8c4;margin-bottom:10px;">
-  Velocity Overview
-</div>""", unsafe_allow_html=True)
-
-        # Collect all cards sorted by score_num descending
-        _all_cards = (
-            [(c, "high")    for c in _tr_board_data.get("high", [])] +
-            [(c, "stable")  for c in _tr_board_data.get("stable", [])] +
-            [(c, "decline") for c in _tr_board_data.get("decline", [])]
-        )
-        _all_cards.sort(key=lambda x: x[0].get("score_num", 0), reverse=True)
-
-        _bar_colors = {"high": "#16a34a", "stable": "#2563eb", "decline": "#ea580c"}
-        _chart_rows = ""
-        _max_abs = max((abs(c.get("score_num", 0)) for c, _ in _all_cards), default=1) or 1
-
-        for _c, _col_k in _all_cards:
-            _num   = _c.get("score_num", 0)
-            _lbl   = _c.get("score_label", "")
-            _pct   = abs(_num) / _max_abs * 100
-            _color = _bar_colors.get(_col_k, "#2563eb")
-            _name  = _c.get("name", "")[:30]
-            _chart_rows += f"""
-<div style="display:flex;align-items:center;margin-bottom:5px;gap:8px;">
-  <span style="width:160px;font-size:11px;color:#274d68;text-align:right;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{e(_name)}</span>
-  <div style="flex:1;background:#f1f5f9;border-radius:3px;overflow:hidden;height:14px;">
-    <div style="width:{_pct:.0f}%;background:{_color};height:14px;border-radius:3px;
-      transition:width .3s;"></div>
-  </div>
-  <span style="width:44px;font-size:11px;font-weight:600;color:{_color};">{e(_lbl)}</span>
-</div>"""
-
-        st.markdown(f"""
-<div style="background:#fff;border-radius:10px;padding:16px 20px;
-  border:0.5px solid #cde0ea;">{_chart_rows}</div>
-""", unsafe_allow_html=True)
-
-        # ── Save to Project ───────────────────────────────────────────────────
-        st.markdown("---")
-        _tr_sv_c1, _tr_sv_c2 = st.columns([3, 1])
-        with _tr_sv_c1:
-            _tr_folders = load_project_folders()
-            _tr_folder_opts = {f.get("name","?"): f.get("id","") for f in _tr_folders}
-            _tr_sel_folder = st.selectbox(
-                "Save to project", options=list(_tr_folder_opts.keys()),
-                key="tr_save_folder", label_visibility="collapsed",
-            ) if _tr_folder_opts else None
-        with _tr_sv_c2:
-            if st.button("Save Board →", key="tr_save", use_container_width=True,
-                         type="primary"):
-                if _tr_sel_folder and _tr_folder_opts:
-                    _tr_board_md = f"**Trends Board — {_tr_topic_label}**\n\n"
-                    for _col_name, _col_icon in [("high","🔺 Rising"),
-                                                  ("stable","➡️ Stable"),
-                                                  ("decline","📉 Cooling")]:
-                        _tr_board_md += f"\n### {_col_icon}\n"
-                        for _c in _tr_board_data.get(_col_name, []):
-                            _url_str = (" — " + _c["urls"][0]) if _c.get("urls") else ""
-                            _tr_board_md += (f"- **{_c['name']}** {_c.get('score_label','')}"
-                                             f" — {_c.get('note','')}{_url_str}\n")
-                    add_curadoria_item(
-                        st.session_state.get("logged_in_user","internal"),
-                        "trends_board",
-                        f"Trends Board: {_tr_topic_label}",
-                        _tr_board_md,
-                    )
-                    st.success(f"Board saved to **{_tr_sel_folder}**!")
-                else:
-                    st.warning("No project folders yet — create one in Projects first.")
-
-else:
+if not _tr_any_result:
     st.markdown("""
 <div style="text-align:center;padding:3rem 2rem;color:#9dc4d8;">
   <div style="font-size:1.8rem;margin-bottom:0.8rem;">◈</div>
   <div style="font-size:14px;font-family:Georgia,serif;">
-    Enter a brand or topic above and click <em>Fetch Trends</em>
+    Enter a brand or topic above and click <em>Find Openings</em>
   </div>
   <div style="font-size:11px;margin-top:6px;font-family:monospace;
     letter-spacing:.06em;text-transform:uppercase;">
-    Claude will map what's rising, stable, or cooling across all your sources
+    Claude will surface 3 strategic opportunities from your signals
   </div>
 </div>""", unsafe_allow_html=True)
 
