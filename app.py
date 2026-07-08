@@ -532,18 +532,18 @@ iframe { border: none !important; }
     color: #ffffff !important;
 }
 
-/* ── Top-level "loop" navigation (Dispatches / Projects / Search / Roadmap) ──
-   Scoped via the invisible #lh-toptabs-marker that sits right before this
-   st.tabs() — only THIS tab bar gets the bold beacon treatment; nested tabs
-   (My Board, Briefing Builder, Current Stack, etc.) keep the default look. */
+/* ── Top-level navigation (Trends / Dispatch / Projects / Road Map) ──────────
+   Editorial anchor-link style — clean white bar, underline indicator.
+   Scoped via #lh-toptabs-marker so nested tab bars keep default look. */
 div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] [data-baseweb="tab-list"] {
-    gap: 6px;
-    background: #071828;
-    border-radius: 12px;
-    padding: 6px;
-    margin: 4px 0 1.4rem;
-    box-shadow: 0 6px 24px rgba(7,24,40,.18);
+    gap: 0;
+    background: #ffffff;
+    border-radius: 0;
+    padding: 0 8px;
+    margin: 0 0 0;
+    border-bottom: 1px solid #e2e8ed;
+    box-shadow: none;
 }
 div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] [data-baseweb="tab-list"] [data-baseweb="tab-border"] {
@@ -555,46 +555,47 @@ div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
 }
 div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"] {
-    flex: 1 1 0;
-    height: 52px;
+    height: 44px;
+    padding: 0 22px;
     font-family: 'JetBrains Mono', monospace !important;
-    font-size: 11px !important;
-    font-weight: 700 !important;
+    font-size: 10px !important;
+    font-weight: 400 !important;
     letter-spacing: .18em;
     text-transform: uppercase;
-    color: rgba(208,234,240,.55) !important;
-    border-radius: 8px;
-    transition: color .15s, background .15s;
+    color: #8ba8bc !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    border-bottom: 2px solid transparent;
+    transition: color .15s, border-color .15s;
+    box-shadow: none !important;
 }
-/* The label text lives in a nested <p> — global `p { color: #071828 }` (light
-   theme default) otherwise wins over the inherited color above, since a
-   direct rule on the element beats inheritance regardless of !important on
-   the ancestor. Re-assert the tab text color here so it isn't dark-on-dark. */
 div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"] p {
-    font-size: 11px !important;
-    font-weight: 700 !important;
+    font-size: 10px !important;
+    font-weight: 400 !important;
     letter-spacing: .18em;
-    color: rgba(208,234,240,.55) !important;
+    color: #8ba8bc !important;
 }
 div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
-    color: #0fa3b5 !important;
-    background: rgba(10,125,140,.16);
+    color: #071828 !important;
+    background: transparent !important;
 }
 div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[data-baseweb="tab"]:hover p {
-    color: #0fa3b5 !important;
+    color: #071828 !important;
 }
 div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[aria-selected="true"] {
-    color: #ffffff !important;
-    background: #0a7d8c !important;
-    box-shadow: 0 2px 10px rgba(10,125,140,.45);
+    color: #071828 !important;
+    background: transparent !important;
+    border-bottom: 2px solid #071828 !important;
+    box-shadow: none !important;
 }
 div[data-testid="stElementContainer"]:has(#lh-toptabs-marker)
   + div[data-testid="stTabs"] button[aria-selected="true"] p {
-    color: #ffffff !important;
+    color: #071828 !important;
+    font-weight: 500 !important;
 }
 
 /* ── Popovers ("+ Add to project", folder picker, client access) ──────────
@@ -3593,72 +3594,62 @@ def render_footer():
 """, unsafe_allow_html=True)
 
 
-# ── Top-level navigation: Dispatches / Projects / Search / Roadmap ─────────────
-# Mirrors the wireframe's 3-tab loop (Dispatches → Projects → Search), plus a
-# Roadmap tab for the existing Vision Map. Clients only ever see the Dispatches
-# content, with no tab chrome — "Clients see only the dispatch" (wireframe).
-# We enter/exit tabs via the DeltaGenerator context-manager protocol directly
-# (__enter__/__exit__) so the existing render blocks below don't need to be
-# re-indented.
-if not IS_CLIENT:
-    # Invisible marker used by the CSS below (`:has(#lh-toptabs-marker)`) to
-    # target *this specific* st.tabs() — the top-level "loop" navigation —
-    # without restyling the many nested st.tabs() used elsewhere (My Board /
-    # Team Board / Briefing Builder, Current Stack / Unified Search, etc).
-    st.markdown('<div id="lh-toptabs-marker" style="display:none"></div>', unsafe_allow_html=True)
-    tab_dispatches, tab_projects, tab_evidence, tab_trends, tab_search, tab_roadmap = st.tabs([
-        "◉  Dispatches", "◈  Projects", "◎  Evidence", "◈  Trends", "◎  Search", "▲  Roadmap",
-    ])
-    tab_dispatches.__enter__()
+# ── Top-level navigation: Trends / Dispatch / Projects / Road Map ──────────
+# One-page layout: hero masthead always visible above the nav bar.
+# Clients see masthead + dispatch content only (no nav bar, no other sections).
+# Internal team sees the full 4-section one-page layout.
+# We enter/exit tabs via the DeltaGenerator __enter__/__exit__ protocol so
+# existing render blocks don't need to be re-indented.
 
-# ── Render ─────────────────────────────────────────────────────────────────────
-
+# ── Hero masthead — always visible, above all tabs ─────────────────────────
 if content:
-    current_user = st.session_state.logged_in_user
-
-    # 1. Static masthead iframe (agency bar + logo + sweep + controls)
+    current_user = st.session_state.get("logged_in_user", "internal")
     masthead_html = build_masthead_html(content, signals, client_name, brief_tagline)
     st.components.v1.html(masthead_html, height=390, scrolling=False)
+else:
+    current_user = st.session_state.get("logged_in_user", "internal")
 
-    # 2. Interactive content (lead, cards, voices, provocations) — native Streamlit
+# ── Clients: dispatch content only, then stop ──────────────────────────────
+if IS_CLIENT:
+    if content:
+        st.markdown('<div id="lh-sec-lead"></div>', unsafe_allow_html=True)
+        render_content_sections(content, current_user, show_competitive=_has_perm("competitive_pulse"))
+    else:
+        st.info("No dispatch available yet. Please check back soon.")
+    render_footer()
+    st.stop()
+
+# ── Internal nav bar (non-clients) ─────────────────────────────────────────
+# Invisible marker lets the CSS below target only THIS st.tabs() —
+# nested tab bars elsewhere (My Board, Briefing Builder, etc.) keep default look.
+st.markdown('<div id="lh-toptabs-marker" style="display:none"></div>', unsafe_allow_html=True)
+tab_trends, tab_dispatch, tab_projects, tab_roadmap = st.tabs([
+    "Trends", "Dispatch", "Projects", "Road Map",
+])
+
+# ── Dispatch tab content (editorial intelligence) ──────────────────────────
+tab_dispatch.__enter__()
+
+if content:
     st.markdown('<div id="lh-sec-lead"></div>', unsafe_allow_html=True)
     render_content_sections(content, current_user, show_competitive=_has_perm("competitive_pulse"))
-
-    # 3. Topic / signal map
     if _has_perm("topic_map"):
         st.markdown('<div id="lh-sec-topicmap"></div>', unsafe_allow_html=True)
         render_topic_map(content)
-
-    # 4. Momentum tracker — topic evolution across dispatches
     if _has_perm("momentum"):
         _all_disp = load_all_dispatches()
         st.markdown('<div id="lh-sec-momentum"></div>', unsafe_allow_html=True)
         render_momentum_tracker(_all_disp)
-
-    # 5. Signal Volume Analytics
     if _has_perm("signal_volume"):
         st.markdown('<div id="lh-sec-volume"></div>', unsafe_allow_html=True)
         render_signal_volume(signals)
-
-    # 6. Competitive Pulse
     if _has_perm("competitive_pulse"):
         st.markdown('<div id="lh-sec-competitive"></div>', unsafe_allow_html=True)
         render_competitive_pulse(signals, competitors_raw)
-
 else:
-    if IS_CLIENT:
-        st.info("No dispatch available yet. Please check back soon.")
-    else:
-        st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
+    st.info("No dispatch saved yet. Switch to **Live mode** in the sidebar and press **⚡ Sweep & Generate** to create the first briefing.")
 
-if not IS_CLIENT:
-    tab_dispatches.__exit__(None, None, None)
-
-# ── Clients only see the dispatch above — Project Board, Signal Lab and the
-#    Vision Map are internal-only tools and stop here.
-if IS_CLIENT:
-    render_footer()
-    st.stop()
+tab_dispatch.__exit__(None, None, None)
 
 tab_projects.__enter__()
 
@@ -4687,10 +4678,10 @@ Return ONLY valid JSON with this exact structure:
                     st.caption('Click "Explore tensions & angles" to get started.')
 
 tab_projects.__exit__(None, None, None)
-tab_evidence.__enter__()
+tab_trends.__enter__()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# EVIDENCE TAB — hunch-driven signal retrieval, Buzzabout-style
+# EVIDENCE — signal gallery (folded into Trends tab)
 # User types a hypothesis; Claude classifies signals as confirms/contradicts/
 # complicates. Clean minimal UI. Sources: DB signals + live TikTok/IG/YouTube.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5027,7 +5018,7 @@ else:
   </div>
 </div>""", unsafe_allow_html=True)
 
-tab_evidence.__exit__(None, None, None)
+tab_trends.__exit__(None, None, None)
 tab_trends.__enter__()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5590,11 +5581,21 @@ SIGNALS:
                 messages=[{"role": "user", "content": _tr_prompt}],
             )
             _tr_txt = _tr_resp.content[0].text.strip()
-            # Extract JSON object
+            # Strip markdown code fences
+            _tr_txt = re.sub(r'^```(?:json)?\s*', '', _tr_txt, flags=re.MULTILINE)
+            _tr_txt = re.sub(r'\s*```\s*$', '', _tr_txt, flags=re.MULTILINE)
+            # Extract outermost JSON object
             _tr_js_start = _tr_txt.find("{")
             _tr_js_end   = _tr_txt.rfind("}") + 1
             if _tr_js_start != -1 and _tr_js_end > _tr_js_start:
-                _tr_parsed = json.loads(_tr_txt[_tr_js_start:_tr_js_end])
+                _tr_raw_json = _tr_txt[_tr_js_start:_tr_js_end]
+                # Attempt 1 — direct parse
+                try:
+                    _tr_parsed = json.loads(_tr_raw_json)
+                except json.JSONDecodeError:
+                    # Attempt 2 — strip control chars and retry
+                    _tr_raw_json = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', _tr_raw_json)
+                    _tr_parsed = json.loads(_tr_raw_json)
                 _tr_openings    = _tr_parsed.get("openings", [])
                 _tr_hunch_suggs = _tr_parsed.get("suggested_hunches", [])
             # Fallback: if Claude returned empty openings, build minimal cards from signals
@@ -5752,8 +5753,35 @@ SIGNALS:
                 messages=[{"role": "user", "content": _hn_prompt}],
             )
             _hn_txt = _hn_resp.content[0].text.strip()
-            _hn_js  = _hn_txt[_hn_txt.find("["):_hn_txt.rfind("]")+1]
-            for _fnd in json.loads(_hn_js):
+
+            # ── Robust JSON extraction ────────────────────────────────────────
+            # Strip markdown code fences Claude sometimes adds
+            _hn_txt = re.sub(r'^```(?:json)?\s*', '', _hn_txt, flags=re.MULTILINE)
+            _hn_txt = re.sub(r'\s*```\s*$', '', _hn_txt, flags=re.MULTILINE)
+
+            _hn_a0 = _hn_txt.find("[")
+            _hn_a1 = _hn_txt.rfind("]")
+            _hn_js = _hn_txt[_hn_a0:_hn_a1 + 1] if _hn_a0 != -1 else "[]"
+
+            _hn_findings: list = []
+
+            # Attempt 1 — direct parse
+            try:
+                _hn_findings = json.loads(_hn_js)
+            except json.JSONDecodeError:
+                # Attempt 2 — strip ASCII control chars (except \t \n \r) and retry
+                _hn_js2 = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', _hn_js)
+                try:
+                    _hn_findings = json.loads(_hn_js2)
+                except json.JSONDecodeError:
+                    # Attempt 3 — extract individual objects with regex (graceful degradation)
+                    for _mo in re.finditer(r'\{[^{}]*\}', _hn_js2, re.DOTALL):
+                        try:
+                            _hn_findings.append(json.loads(_mo.group()))
+                        except json.JSONDecodeError:
+                            pass
+
+            for _fnd in _hn_findings:
                 _rel = _fnd.get("relation","UNEXPECTED").upper()
                 _hcard = {
                     "name":      _fnd.get("name",""),
@@ -6285,12 +6313,171 @@ if _tr_openings_data is not None:
             st.markdown("<hr style='border:none;border-top:1px solid #f0f4f8;margin:0 0 4px;'>",
                         unsafe_allow_html=True)
 
+# ── Signal Intelligence Map — visual heat map at bottom of Trends tab ─────────
+_viz_board    = st.session_state.get("tr_hunch_board")
+_viz_overview = st.session_state.get("tr_overview", {})
+_viz_hunch_text = st.session_state.get("tr_hunch_text", "")
+_viz_topic_text = st.session_state.get("tr_topic_used", "")
+
+if _viz_board or _viz_overview.get("themes"):
+    st.markdown("---")
+    st.markdown("""
+<div style="padding:.4rem 0 .6rem;">
+  <div style="font-family:monospace;font-size:10px;letter-spacing:.18em;
+    text-transform:uppercase;color:#0a7d8c;margin-bottom:4px;">Signal Intelligence Map</div>
+  <div style="font-family:Georgia,serif;font-size:1.05rem;color:#071828;">
+    Evidence distribution across platforms &amp; themes
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    try:
+        import plotly.graph_objects as go
+
+        # ── Chart 1: Source × Category heat map (from hunch board) ────────────
+        if _viz_board:
+            _col_keys  = ["confirms", "challenges", "unexpected"]
+            _col_names = ["✓ Confirms", "✗ Challenges", "◎ Unexpected"]
+
+            # Collect sources with at least 1 finding
+            _src_count: dict[str, list] = {}
+            for _ci, _ck in enumerate(_col_keys):
+                for _card in _viz_board.get(_ck, []):
+                    _src = _card.get("source", "other").replace("_", " ").title()
+                    if _src not in _src_count:
+                        _src_count[_src] = [0, 0, 0]
+                    _src_count[_src][_ci] += 1
+
+            # Sort sources by total signal count desc
+            _src_sorted = sorted(_src_count.keys(),
+                                 key=lambda s: sum(_src_count[s]), reverse=True)
+            _z = [_src_count[s] for s in _src_sorted]
+            _z_text = [[str(v) if v > 0 else "" for v in row] for row in _z]
+
+            _hm_fig = go.Figure(data=go.Heatmap(
+                z=_z,
+                x=_col_names,
+                y=_src_sorted,
+                colorscale=[
+                    [0.0,  "#0d2535"],
+                    [0.25, "#0a4a5c"],
+                    [0.55, "#0a7d8c"],
+                    [0.78, "#e07b20"],
+                    [1.0,  "#f59e0b"],
+                ],
+                showscale=True,
+                text=_z_text,
+                texttemplate="%{text}",
+                textfont={"size": 15, "color": "white", "family": "Georgia,serif"},
+                hoverongaps=False,
+                xgap=4,
+                ygap=4,
+                colorbar=dict(
+                    thickness=12,
+                    tickfont=dict(color="#6ea8c4", size=10, family="monospace"),
+                    title=dict(text="signals", font=dict(color="#6ea8c4", size=10,
+                                                          family="monospace"), side="right"),
+                    outlinewidth=0,
+                ),
+            ))
+            _hm_title = f'"{_viz_hunch_text[:55]}…"' if len(_viz_hunch_text) > 55 else f'"{_viz_hunch_text}"'
+            _hm_fig.update_layout(
+                title=dict(
+                    text=f"Evidence map — hunch: {_hm_title}",
+                    font=dict(size=11, color="#6ea8c4", family="monospace"),
+                    x=0, xanchor="left", pad=dict(l=0, b=4),
+                ),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="#071828",
+                font=dict(family="monospace", color="#9dc4d8", size=11),
+                xaxis=dict(
+                    title=None,
+                    tickfont=dict(size=12, color="#9dc4d8", family="Georgia,serif"),
+                    side="top",
+                    tickangle=0,
+                    showgrid=False,
+                    fixedrange=True,
+                ),
+                yaxis=dict(
+                    title=None,
+                    tickfont=dict(size=11, color="#9dc4d8"),
+                    autorange="reversed",
+                    showgrid=False,
+                    fixedrange=True,
+                ),
+                margin=dict(l=90, r=20, t=56, b=10),
+                height=max(200, len(_src_sorted) * 50 + 80),
+            )
+            st.plotly_chart(_hm_fig, use_container_width=True,
+                            config={"displayModeBar": False, "staticPlot": False})
+
+        # ── Chart 2: Theme frequency bar (from Strategic Openings overview) ────
+        if _viz_overview.get("themes"):
+            _themes = _viz_overview["themes"][:10]
+            _th_labels = [t.get("label", "") for t in _themes]
+            _th_counts = [int(t.get("count", 1)) for t in _themes]
+            _th_sent   = [t.get("dominant_sentiment", "neutral") for t in _themes]
+            _sent_color = {"positive": "#16a34a", "negative": "#dc2626", "neutral": "#0a7d8c"}
+            _th_colors = [_sent_color.get(s, "#0a7d8c") for s in _th_sent]
+
+            _bar_fig = go.Figure(data=go.Bar(
+                x=_th_counts,
+                y=_th_labels,
+                orientation="h",
+                marker=dict(color=_th_colors, line=dict(width=0)),
+                text=[str(c) for c in _th_counts],
+                textposition="outside",
+                textfont=dict(color="#6ea8c4", size=10, family="monospace"),
+                hovertemplate="%{y}: %{x} signals<extra></extra>",
+            ))
+            _bar_topic = f" — {_viz_topic_text[:40]}" if _viz_topic_text else ""
+            _bar_fig.update_layout(
+                title=dict(
+                    text=f"Theme frequency{_bar_topic}",
+                    font=dict(size=11, color="#6ea8c4", family="monospace"),
+                    x=0, xanchor="left", pad=dict(l=0, b=4),
+                ),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(family="monospace", color="#9dc4d8", size=11),
+                xaxis=dict(
+                    showgrid=True,
+                    gridcolor="#0d2535",
+                    zeroline=False,
+                    showticklabels=False,
+                    fixedrange=True,
+                ),
+                yaxis=dict(
+                    tickfont=dict(size=11, color="#9dc4d8"),
+                    autorange="reversed",
+                    showgrid=False,
+                    fixedrange=True,
+                ),
+                bargap=0.25,
+                margin=dict(l=120, r=50, t=44, b=10),
+                height=max(200, len(_themes) * 38 + 60),
+                showlegend=False,
+            )
+            # Sentiment legend
+            st.markdown("""
+<div style="display:flex;gap:14px;margin-top:4px;margin-bottom:2px;">
+  <span style="font-size:10px;color:#16a34a;font-family:monospace;">● positive</span>
+  <span style="font-size:10px;color:#dc2626;font-family:monospace;">● negative</span>
+  <span style="font-size:10px;color:#0a7d8c;font-family:monospace;">● neutral</span>
+</div>""", unsafe_allow_html=True)
+            st.plotly_chart(_bar_fig, use_container_width=True,
+                            config={"displayModeBar": False, "staticPlot": False})
+
+    except ImportError:
+        st.caption("Install `plotly` to enable the Signal Intelligence Map.")
+    except Exception as _viz_err:
+        pass   # non-fatal — charts are optional
+
 tab_trends.__exit__(None, None, None)
-tab_search.__enter__()
+tab_trends.__enter__()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIGNAL LAB — search backend functions (GDELT / Exa / Tavily)
+# SIGNAL LAB — advanced search (folded into Trends tab)
 # UI is now the wireframe Search tab above; these functions remain as the
 # backend called by the new Run button.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6991,7 +7178,7 @@ border-radius:8px;overflow:hidden;margin-bottom:14px;">
 **Pipeline integration:** add transcripts via `youtube-transcript-api`, chunk into ~500-word segments, and embed alongside the other sources for the deepest searchable signal base.
 """)
 
-tab_search.__exit__(None, None, None)
+tab_trends.__exit__(None, None, None)
 tab_roadmap.__enter__()
 
 
