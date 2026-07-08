@@ -4678,7 +4678,18 @@ Return ONLY valid JSON with this exact structure:
                     st.caption('Click "Explore tensions & angles" to get started.')
 
 tab_projects.__exit__(None, None, None)
+
+# ── Trends tab: pre-create containers in display order ─────────────────────
+# Research Lab first → Evidence second → Signal Lab last
+# Streamlit containers can be filled out-of-order; the display order
+# is determined by when the containers were created, not when filled.
 tab_trends.__enter__()
+_tr_ctr_research = st.container()   # 01 Research Lab  ← fills from line ~5022
+_tr_ctr_evidence = st.container()   # 02 Evidence      ← fills from line ~4689
+_tr_ctr_signals  = st.container()   # 03 Signal Lab    ← fills from line ~6476
+tab_trends.__exit__(None, None, None)
+
+_tr_ctr_evidence.__enter__()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # EVIDENCE — signal gallery (folded into Trends tab)
@@ -5018,8 +5029,8 @@ else:
   </div>
 </div>""", unsafe_allow_html=True)
 
-tab_trends.__exit__(None, None, None)
-tab_trends.__enter__()
+_tr_ctr_evidence.__exit__(None, None, None)
+_tr_ctr_research.__enter__()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TRENDS BOARD — visual kanban of trending topics by velocity
@@ -5582,8 +5593,8 @@ SIGNALS:
             )
             _tr_txt = _tr_resp.content[0].text.strip()
             # Strip markdown code fences
-            _tr_txt = re.sub(r'^```(?:json)?\s*', '', _tr_txt, flags=re.MULTILINE)
-            _tr_txt = re.sub(r'\s*```\s*$', '', _tr_txt, flags=re.MULTILINE)
+            _tr_txt = _re_global.sub(r'^```(?:json)?\s*', '', _tr_txt, flags=_re_global.MULTILINE)
+            _tr_txt = _re_global.sub(r'\s*```\s*$', '', _tr_txt, flags=_re_global.MULTILINE)
             # Extract outermost JSON object
             _tr_js_start = _tr_txt.find("{")
             _tr_js_end   = _tr_txt.rfind("}") + 1
@@ -5594,7 +5605,7 @@ SIGNALS:
                     _tr_parsed = json.loads(_tr_raw_json)
                 except json.JSONDecodeError:
                     # Attempt 2 — strip control chars and retry
-                    _tr_raw_json = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', _tr_raw_json)
+                    _tr_raw_json = _re_global.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', _tr_raw_json)
                     _tr_parsed = json.loads(_tr_raw_json)
                 _tr_openings    = _tr_parsed.get("openings", [])
                 _tr_hunch_suggs = _tr_parsed.get("suggested_hunches", [])
@@ -5756,8 +5767,8 @@ SIGNALS:
 
             # ── Robust JSON extraction ────────────────────────────────────────
             # Strip markdown code fences Claude sometimes adds
-            _hn_txt = re.sub(r'^```(?:json)?\s*', '', _hn_txt, flags=re.MULTILINE)
-            _hn_txt = re.sub(r'\s*```\s*$', '', _hn_txt, flags=re.MULTILINE)
+            _hn_txt = _re_global.sub(r'^```(?:json)?\s*', '', _hn_txt, flags=_re_global.MULTILINE)
+            _hn_txt = _re_global.sub(r'\s*```\s*$', '', _hn_txt, flags=_re_global.MULTILINE)
 
             _hn_a0 = _hn_txt.find("[")
             _hn_a1 = _hn_txt.rfind("]")
@@ -5770,12 +5781,12 @@ SIGNALS:
                 _hn_findings = json.loads(_hn_js)
             except json.JSONDecodeError:
                 # Attempt 2 — strip ASCII control chars (except \t \n \r) and retry
-                _hn_js2 = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', _hn_js)
+                _hn_js2 = _re_global.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', _hn_js)
                 try:
                     _hn_findings = json.loads(_hn_js2)
                 except json.JSONDecodeError:
                     # Attempt 3 — extract individual objects with regex (graceful degradation)
-                    for _mo in re.finditer(r'\{[^{}]*\}', _hn_js2, re.DOTALL):
+                    for _mo in _re_global.finditer(r'\{[^{}]*\}', _hn_js2, _re_global.DOTALL):
                         try:
                             _hn_findings.append(json.loads(_mo.group()))
                         except json.JSONDecodeError:
@@ -6472,8 +6483,8 @@ if _viz_board or _viz_overview.get("themes"):
     except Exception as _viz_err:
         pass   # non-fatal — charts are optional
 
-tab_trends.__exit__(None, None, None)
-tab_trends.__enter__()
+_tr_ctr_research.__exit__(None, None, None)
+_tr_ctr_signals.__enter__()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -7178,7 +7189,7 @@ border-radius:8px;overflow:hidden;margin-bottom:14px;">
 **Pipeline integration:** add transcripts via `youtube-transcript-api`, chunk into ~500-word segments, and embed alongside the other sources for the deepest searchable signal base.
 """)
 
-tab_trends.__exit__(None, None, None)
+_tr_ctr_signals.__exit__(None, None, None)
 tab_roadmap.__enter__()
 
 
