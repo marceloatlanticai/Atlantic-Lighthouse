@@ -1584,12 +1584,28 @@ def render_prov(p: dict) -> str:
         f'</div>'
     )
 
+_ALL_KNOWN_SOURCES = [
+    ("tiktok",   "TikTok"),
+    ("instagram","Instagram"),
+    ("twitter",  "X/Twitter"),
+    ("youtube",  "YouTube"),
+    ("reddit",   "Reddit"),
+    ("rss",      "RSS"),
+    ("gdelt",    "GDELT"),
+    ("hn",       "HN"),
+    ("web",      "Web"),
+    ("trends",   "Trends"),
+]
+
 def sources_pills(signals: list) -> str:
-    srcs = sorted({s.get("source", "?") for s in signals})
-    return "".join(
-        f'<span class="src on"><span class="d"></span>{e(s)}</span>'
-        for s in srcs[:8]
-    )
+    active = {s.get("source", "").lower() for s in signals}
+    html = ""
+    for key, label in _ALL_KNOWN_SOURCES:
+        if key in active:
+            html += f'<span class="src on"><span class="d"></span>{e(label)}</span>'
+        else:
+            html += f'<span class="src">{e(label)}</span>'
+    return html
 
 def chip_buttons(lead: dict) -> str:
     return "".join(
@@ -3605,7 +3621,7 @@ def render_footer():
 if content:
     current_user = st.session_state.get("logged_in_user", "internal")
     masthead_html = build_masthead_html(content, signals, client_name, brief_tagline)
-    st.components.v1.html(masthead_html, height=390, scrolling=False)
+    st.components.v1.html(masthead_html, height=460, scrolling=False)
 else:
     current_user = st.session_state.get("logged_in_user", "internal")
 
@@ -5328,11 +5344,22 @@ if _tr_fetch and _tr_topic.strip():
     _tr_raw: list[dict] = []   # {"title","content","source","url"}
     _tr_status = st.empty()
 
+    def _tr_set_status(msg: str) -> None:
+        """Render a styled loading bar in the status placeholder."""
+        _tr_status.markdown(
+            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:11.5px;'
+            f'color:#0a5560;background:#e4f4f5;border-left:3px solid #0fa3b5;'
+            f'border-radius:0 6px 6px 0;padding:7px 12px;margin:4px 0;">'
+            f'⏳ {msg}</div>',
+            unsafe_allow_html=True,
+        )
+
     # Step 0 — Brand expansion: use Claude to derive related search terms
     _tr_expanded_terms = [_tr_topic]
     if _tr_ant_key:
         try:
             import anthropic as _ant_tr0
+            _tr_set_status(f"Claude expanding search terms for '{_tr_topic}'…")
             _tr_exp_resp = _ant_tr0.Anthropic(api_key=_tr_ant_key).messages.create(
                 model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
                 max_tokens=200,
@@ -5346,7 +5373,7 @@ if _tr_fetch and _tr_topic.strip():
             _tr_expanded_terms += json.loads(_tr_exp_js)
         except Exception:
             pass
-    _tr_status.caption(f"Searching for: {', '.join(_tr_expanded_terms[:5])}")
+    _tr_set_status(f"Searching for: {', '.join(_tr_expanded_terms[:5])}")
 
     try:
         from ingestion import (
@@ -5356,12 +5383,12 @@ if _tr_fetch and _tr_topic.strip():
         )
         _tr_log: list[str] = []  # collect all status messages for debug
         def _tr_cb(msg):
-            _tr_status.caption(msg)
+            _tr_set_status(msg)
             _tr_log.append(msg)
 
         # Saved signals — keyword search across DB
         if "Saved signals" in _tr_sources:
-            _tr_status.caption("Searching saved signals…")
+            _tr_set_status("Searching saved signals…")
             _all_db = load_signals(limit=500)
             _q_words = set(_tr_topic.lower().split())
             for _s in _all_db:
@@ -5400,6 +5427,7 @@ if _tr_fetch and _tr_topic.strip():
 
         if "YouTube" in _tr_sources and _tr_youtube_key:
             for _term in _tr_expanded_terms[:2]:
+                _tr_set_status(f"[YouTube] Searching '{_term}'…")
                 for s in scrape_youtube(_term, api_key=_tr_youtube_key, n=15, callback=_tr_cb):
                     _tr_raw.append({"title": s.title, "content": s.content[:300],
                                     "source": s.source, "url": s.url or "",
@@ -5407,6 +5435,7 @@ if _tr_fetch and _tr_topic.strip():
 
         if "TikTok" in _tr_sources and _tr_apify_key:
             _tt_before = len(_tr_raw)
+            _tr_set_status(f"[TikTok] Searching '{_tr_topic}' via Apify…")
             for s in scrape_tiktok(_tr_topic, api_token=_tr_apify_key,
                                    n=30, fetch_comments=False, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
@@ -5414,12 +5443,13 @@ if _tr_fetch and _tr_topic.strip():
                                 "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
             _tt_count = len(_tr_raw) - _tt_before
             if _tt_count == 0:
-                _tr_status.caption("⚠️ TikTok returned 0 results — trying without comments…")
+                _tr_set_status("⚠️ TikTok returned 0 results — trying without comments…")
         elif "TikTok" in _tr_sources and not _tr_apify_key:
             st.warning("TikTok selected but APIFY_API_TOKEN is not set.")
 
         if "Instagram" in _tr_sources and _tr_apify_key:
             _ig_before = len(_tr_raw)
+            _tr_set_status(f"[Instagram] Searching '{_tr_topic}' via Apify…")
             for s in scrape_instagram(_tr_topic, api_token=_tr_apify_key,
                                       n=30, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
@@ -5427,11 +5457,12 @@ if _tr_fetch and _tr_topic.strip():
                                 "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
             _ig_count = len(_tr_raw) - _ig_before
             if _ig_count == 0:
-                _tr_status.caption("⚠️ Instagram returned 0 results — hashtag may be too specific.")
+                _tr_set_status("⚠️ Instagram returned 0 results — hashtag may be too specific.")
         elif "Instagram" in _tr_sources and not _tr_apify_key:
             st.warning("Instagram selected but APIFY_API_TOKEN is not set.")
 
         if "X/Twitter" in _tr_sources and _tr_apify_key:
+            _tr_set_status(f"[X/Twitter] Searching '{_tr_topic}' via Apify…")
             for s in scrape_twitter(_tr_topic, api_token=_tr_apify_key,
                                     n=20, callback=_tr_cb):
                 _tr_raw.append({"title": s.title, "content": s.content[:300],
@@ -5480,7 +5511,7 @@ if _tr_fetch and _tr_topic.strip():
     if _tr_raw and _tr_ant_key:
         try:
             import anthropic as _ant_ov
-            _tr_status.caption(f"Classifying sentiment and themes across {len(_tr_raw)} signals…")
+            _tr_set_status(f"Claude classifying sentiment and themes across {len(_tr_raw)} signals…")
             _ov_sig_txt = "\n".join(
                 f"[{i}] {(s.get('content') or s.get('title',''))[:130]}"
                 for i, s in enumerate(_tr_raw[:80])
@@ -5535,7 +5566,7 @@ SIGNALS:
     _tr_overview["source_counts"] = _ov_src_counts
 
     # ── Claude: identify 3 Strategic Openings ────────────────────────────────
-    _tr_status.caption(f"Claude analysing {len(_tr_raw)} signals for strategic openings…")
+    _tr_set_status(f"Claude analysing {len(_tr_raw)} signals for strategic openings…")
     _tr_openings: list = []
     _tr_hunch_suggs: list = []
 
