@@ -5262,14 +5262,9 @@ st.markdown("""
 
 # ── PRIMARY: Hunch input ──────────────────────────────────────────────────────
 st.markdown(
-    '<div style="background:#f8fbfd;border:2px solid #9dc4d8;border-radius:14px;'
-    'padding:18px 20px 14px;margin-bottom:12px;">',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<div style="font-size:13px;font-weight:700;color:#071828;margin-bottom:2px;">'
-    '💡 Test a hypothesis</div>'
-    '<div style="font-size:11px;color:#6ea8c4;margin-bottom:12px;">'
+    '<div style="font-size:1.15rem;font-weight:700;color:#071828;margin:6px 0 2px;">'
+    '💡 Test a Hypothesis</div>'
+    '<div style="font-size:12px;color:#6ea8c4;margin-bottom:10px;">'
     'Type a hunch — Claude searches your sources and maps what confirms, challenges, and surprises.</div>',
     unsafe_allow_html=True,
 )
@@ -5287,16 +5282,16 @@ if _tr_hunch_suggestions:
 _hn_col1, _hn_col2 = st.columns([4, 1])
 with _hn_col1:
     _hunch_prefill = st.session_state.pop("tr_hunch_prefill", None)
+    if _hunch_prefill:
+        st.session_state["tr_hunch"] = _hunch_prefill
     _tr_hunch = st.text_input(
         "hunch", label_visibility="collapsed",
         placeholder='e.g. "People avoid soup at their desk because they fear spilling on their laptop"',
         key="tr_hunch",
-        value=_hunch_prefill if _hunch_prefill else "",
     )
 with _hn_col2:
     _tr_hunch_fetch = st.button("Find Evidence →", key="tr_hunch_fetch",
                                 type="primary", use_container_width=True)
-st.markdown('</div>', unsafe_allow_html=True)
 
 # Sources multiselect (shared)
 _tr_sources = st.multiselect(
@@ -5724,7 +5719,7 @@ if _tr_hunch_fetch and _tr_hunch.strip():
             _hn_sig_txt = "\n".join(
                 f"[{i}] {s['source'].upper()} | {s['title'][:100]} | {s['content'][:200]}"
                 f" | URL:{s.get('url','')[:80]}"
-                f"{' | THUMB:' + s.get('thumbnail','')[:80] if s.get('thumbnail') else ''}"
+                f"{' | THUMB:' + s.get('thumbnail','')[:300] if s.get('thumbnail') else ''}"
                 for i, s in enumerate(_hn_raw[:60])
             )
             _hn_prompt = f"""You are a cultural intelligence analyst testing a hypothesis.
