@@ -1613,6 +1613,17 @@ def chip_buttons(lead: dict) -> str:
         for t in lead.get("topic_tags", [])[:4]
     )
 
+def _tr_proxy_thumb(url: str) -> str:
+    """Route TikTok/Instagram CDN URLs through wsrv.nl to bypass hotlink protection.
+    YouTube and other open CDNs are returned as-is."""
+    if not url:
+        return ""
+    _protected = ("tiktokcdn.com", "tiktok.com", "cdninstagram.com",
+                  "fbcdn.net", "instagram.com", "scontent")
+    if any(d in url for d in _protected):
+        return f"https://wsrv.nl/?url={urllib.parse.quote(url, safe='')}&n=-1&w=480"
+    return url
+
 
 # ── Full HTML renderer ─────────────────────────────────────────────────────────
 # NOTE: All CSS curly braces are doubled ({{ }}) because this is an f-string.
@@ -5954,17 +5965,6 @@ def _tr_thumb_from_url(url: str) -> str:
     if _yt:
         return f"https://i.ytimg.com/vi/{_yt.group(1)}/mqdefault.jpg"
     return ""
-
-def _tr_proxy_thumb(url: str) -> str:
-    """Route TikTok/Instagram CDN URLs through wsrv.nl to bypass hotlink protection.
-    YouTube and other open CDNs are returned as-is."""
-    if not url:
-        return ""
-    _protected = ("tiktokcdn.com", "tiktok.com", "cdninstagram.com",
-                  "fbcdn.net", "instagram.com")
-    if any(d in url for d in _protected):
-        return f"https://wsrv.nl/?url={urllib.parse.quote(url, safe='')}&n=-1&w=480"
-    return url
 
 _tr_src_cls = {
     "reddit": "tr-src-reddit", "google_trends": "tr-src-google_trends",
