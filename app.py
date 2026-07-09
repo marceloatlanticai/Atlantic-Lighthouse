@@ -1741,7 +1741,7 @@ div[data-testid="stButton"] > button:hover {{
 # ── Masthead iframe (static — no interaction needed) ──────────────────────────
 
 def build_masthead_html(content: dict, signals: list, client: str, tagline: str) -> str:
-    """Top section: agency bar + logo + sweep + controls. Static, no save buttons."""
+    """Top section: agency bar + logo + sweep + strongest current strip."""
     sw        = content.get("sweep", {})
     lead      = content.get("lead", {})
     today_str = datetime.utcnow().strftime("%A, %d %B %Y")
@@ -1749,11 +1749,18 @@ def build_masthead_html(content: dict, signals: list, client: str, tagline: str)
     sig_n     = len(signals)
     sig_display = f"{sig_n/1000:.1f}K" if sig_n < 1_000_000 else f"{sig_n/1_000_000:.2f}M"
     src_pills   = sources_pills(signals)
-    chips_html  = chip_buttons(lead)
     beacon      = CLIENT_BEACON_COLOR
     beacon_2    = CLIENT_BEACON_2
     pill_color  = CLIENT_PILL_COLOR
     agency      = e(AGENCY_NAME)
+    # Strongest current: prefer the strategic directive; fall back to first current headline
+    _currents = content.get("currents", [])
+    _strongest = (
+        lead.get("countercurrent_title", "").strip() or
+        (_currents[0].get("headline", "") if _currents else "") or
+        "Sweeping currents — check back after the next ingestion run."
+    )
+    _strongest_esc = e(_strongest)
 
     return f"""<!DOCTYPE html><html lang="en-GB"><head>
 <meta charset="UTF-8"/>
@@ -1791,12 +1798,10 @@ h1.logo .the{{display:block;font-size:13px;letter-spacing:.5em;font-weight:400;m
 .src{{font-family:'JetBrains Mono',monospace;font-size:9.5px;padding:2px 6px;border:1px solid var(--line-strong);border-radius:20px;color:var(--ink-soft);background:var(--paper-2);}}
 .src.on{{color:var(--beacon);border-color:var(--beacon);}}
 .src .d{{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--beacon);margin-right:4px;vertical-align:middle;}}
-.controls{{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:22px 0 18px;flex-wrap:wrap;}}
-.chips{{display:flex;gap:8px;flex-wrap:wrap;}}
-.chip{{font-size:12.5px;font-weight:500;padding:7px 14px;border:1px solid var(--line-strong);background:transparent;border-radius:30px;cursor:pointer;color:var(--ink-soft);transition:.15s;font-family:'Inter';}}
-.chip:hover{{border-color:var(--beacon);color:var(--beacon);}}
-.chip.active{{background:var(--ink);color:var(--paper);border-color:var(--ink);}}
-.section-eyebrow{{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--beacon);font-weight:700;}}
+.current-strip{{display:flex;align-items:baseline;gap:20px;padding:15px 0 20px;border-top:1px solid var(--line);margin-top:0;}}
+.current-label{{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--beacon);font-weight:700;white-space:nowrap;flex:none;padding-top:2px;}}
+.current-text{{font-family:'Fraunces',serif;font-style:italic;font-size:17px;color:var(--ink);line-height:1.4;flex:1;}}
+.current-arrow{{color:var(--beacon);font-style:normal;margin-right:6px;}}
 </style></head>
 <body>
 <div class="agency-bar">
@@ -1826,15 +1831,14 @@ h1.logo .the{{display:block;font-size:13px;letter-spacing:.5em;font-weight:400;m
     <div class="cell"><div class="k">Needs a human</div><div class="v" style="color:var(--beacon)">{sw.get("needs_human","—")}</div></div>
     <div class="cell"><div class="k">Sources active</div><div class="sources-line">{src_pills}</div></div>
   </section>
-  <div class="controls">
-    <div class="chips"><button class="chip active">All currents</button>{chips_html}</div>
-    <div class="section-eyebrow">▲ Today's strongest current</div>
+  <div class="current-strip">
+    <div class="current-label">▲ Today's strongest current</div>
+    <div class="current-text"><span class="current-arrow">&#x201C;</span>{_strongest_esc}&#x201D;</div>
   </div>
 </div>
 <script>
 var el=document.getElementById('sc');var n={sig_n};
 if(el&&n>0){{setInterval(function(){{n+=Math.floor(Math.random()*4+1);el.textContent=n>=1000000?(n/1000000).toFixed(2)+'M':(n/1000).toFixed(1)+'K';}},1800);}}
-document.querySelectorAll('.chip').forEach(function(c){{c.addEventListener('click',function(){{document.querySelectorAll('.chip').forEach(function(x){{x.classList.remove('active');}});c.classList.add('active');}});}});
 </script>
 </body></html>"""
 
@@ -4795,18 +4799,35 @@ if _ev_run and _ev_hunch.strip():
     _ev_raw: list[dict] = []
     _ev_status = st.empty()
 
-    # 1. Saved signals from DB
+    # ── Extract 3-4 key search words from the hunch (stop-word stripped)
+    # Full natural-language phrases choke Reddit/GDELT/HN APIs; short keywords work.
+    _ev_stops = {
+        "the","and","but","for","at","their","to","of","in","a","an","is","are",
+        "was","were","be","been","have","has","had","do","does","did","will",
+        "would","could","should","may","might","i","you","he","she","it","we",
+        "they","what","which","who","when","where","why","how","all","so","than",
+        "too","very","just","as","if","by","or","also","with","from","on","off",
+        "over","under","again","then","here","there","not","no","only","same",
+        "such","even","into","about","than","people","avoid","fear","this","that",
+    }
+    _ev_kws = [
+        w for w in _re_global.sub(r"[^\w\s]", "", _ev_hunch.lower()).split()
+        if len(w) > 3 and w not in _ev_stops
+    ][:4]
+    _ev_search = " ".join(_ev_kws) if _ev_kws else _ev_hunch[:60]
+
+    # 1. Saved signals from DB — lenient: match ANY 1 keyword
     if "Saved signals" in _ev_sources:
         _ev_status.caption("Searching signal database…")
         _all_sigs = load_signals(limit=500)
-        _q_words = set(_ev_hunch.lower().split())
+        _ev_kw_set = set(_ev_kws) if _ev_kws else {w for w in _ev_hunch.lower().split() if len(w) > 3}
         for _s in _all_sigs:
             _text = f"{_s.get('title','')} {_s.get('content','')}".lower()
-            if sum(1 for w in _q_words if len(w) > 3 and w in _text) >= 2:
+            if any(w in _text for w in _ev_kw_set):
                 _ev_raw.append(_s)
         _ev_raw = _ev_raw[:40]
 
-    # 2. Live scrapes
+    # 2. Live scrapes — use short keyword query for all text-search APIs
     try:
         from ingestion import (scrape_reddit, scrape_rss, scrape_gdelt,
                                scrape_google_trends, scrape_hacker_news,
@@ -4816,64 +4837,71 @@ if _ev_run and _ev_hunch.strip():
         def _ev_cb(msg): _ev_status.caption(msg)
 
         if "Reddit (live)" in _ev_sources:
-            _ev_status.caption("Scraping Reddit…")
-            for s in scrape_reddit(_ev_hunch, max_items=15, callback=_ev_cb):
-                _ev_raw.append({"title": s.title, "content": s.content,
+            _ev_status.caption(f"[Reddit] Searching '{_ev_search}'…")
+            for s in scrape_reddit(_ev_search, max_items=15, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
         if "RSS (live)" in _ev_sources:
             _ev_status.caption("Reading RSS feeds…")
-            for s in scrape_rss(max_items_per_feed=3, callback=_ev_cb):
-                _ev_raw.append({"title": s.title, "content": s.content,
+            for s in scrape_rss(max_items_per_feed=4, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
         if "GDELT (live)" in _ev_sources:
-            _ev_status.caption("Querying GDELT…")
-            for s in scrape_gdelt(_ev_hunch, n=15, callback=_ev_cb):
-                _ev_raw.append({"title": s.title, "content": s.content,
+            _ev_status.caption(f"[GDELT] Searching '{_ev_search}'…")
+            for s in scrape_gdelt(_ev_search, n=15, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
         if "Google Trends (live)" in _ev_sources:
-            _ev_status.caption("Checking Google Trends…")
-            for s in scrape_google_trends(_ev_hunch, callback=_ev_cb):
-                _ev_raw.append({"title": s.title, "content": s.content,
+            _ev_status.caption(f"[Google Trends] Searching '{_ev_search}'…")
+            for s in scrape_google_trends(_ev_search, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
         if "Hacker News (live)" in _ev_sources:
-            _ev_status.caption("Searching Hacker News…")
-            for s in scrape_hacker_news(_ev_hunch, n=10, callback=_ev_cb):
-                _ev_raw.append({"title": s.title, "content": s.content,
+            _ev_status.caption(f"[Hacker News] Searching '{_ev_search}'…")
+            for s in scrape_hacker_news(_ev_search, n=10, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
         if "YouTube (live)" in _ev_sources and _ev_youtube_key:
-            _ev_status.caption("Searching YouTube…")
-            for s in scrape_youtube(_ev_hunch, api_key=_ev_youtube_key, n=10, callback=_ev_cb):
+            _ev_status.caption(f"[YouTube] Searching '{_ev_search}'…")
+            for s in scrape_youtube(_ev_search, api_key=_ev_youtube_key, n=10, callback=_ev_cb):
                 _ev_raw.append({"title": s.title, "content": s.content,
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
         if "TikTok (live)" in _ev_sources and _ev_apify_key:
-            _ev_status.caption("Scraping TikTok via Apify…")
-            for s in scrape_tiktok(_ev_hunch, api_token=_ev_apify_key, n=15, callback=_ev_cb):
+            _ev_status.caption(f"[TikTok] Searching '{_ev_search}' via Apify…")
+            for s in scrape_tiktok(_ev_search, api_token=_ev_apify_key, n=15,
+                                   fetch_comments=False, callback=_ev_cb):
                 _ev_raw.append({"title": s.title, "content": s.content,
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
         if "Instagram (live)" in _ev_sources and _ev_apify_key:
-            _ev_status.caption("Scraping Instagram via Apify…")
-            for s in scrape_instagram(_ev_hunch, api_token=_ev_apify_key, n=15, callback=_ev_cb):
+            _ev_status.caption(f"[Instagram] Searching '{_ev_search}' via Apify…")
+            for s in scrape_instagram(_ev_search, api_token=_ev_apify_key, n=15, callback=_ev_cb):
                 _ev_raw.append({"title": s.title, "content": s.content,
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
         if "X/Twitter (live)" in _ev_sources and _ev_apify_key:
-            _ev_status.caption("Scraping X/Twitter via Apify…")
-            for s in scrape_twitter(_ev_hunch, api_token=_ev_apify_key, n=15, callback=_ev_cb):
-                _ev_raw.append({"title": s.title, "content": s.content,
+            _ev_status.caption(f"[X/Twitter] Searching '{_ev_search}' via Apify…")
+            for s in scrape_twitter(_ev_search, api_token=_ev_apify_key, n=15, callback=_ev_cb):
+                _ev_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
     except Exception as _ev_scrape_exc:
         st.warning(f"Some live sources failed: {_ev_scrape_exc}")
 
+    # Show what was actually searched so user can see the term extraction
+    st.caption(f"🔎 Searching as: **{_ev_search}** · {len(_ev_raw)} signals collected")
+
     # 3. Claude classifies signals
-    _ev_status.caption(f"Classifying {len(_ev_raw)} signals with Claude…")
+    _ev_status.caption(f"Claude classifying {len(_ev_raw)} signals…")
     _ev_results: list[dict] = []
 
     if _ev_raw and _ev_api_key:
@@ -5005,9 +5033,22 @@ if _ev_results_stored:
         _vrd_cls  = _ev_verdict_class.get(_verdict, "ev-complicates")
         _vrd_lbl  = f"{_ev_verdict_emoji.get(_verdict,'')} {_verdict.capitalize()}"
         _domain   = urllib.parse.urlparse(_url).netloc if _url else _src
+        # Thumbnail: use proxy for CDN images (TikTok/Instagram URLs are long CDN paths)
+        _raw_thumb = _ev_r.get("thumbnail", "") or ""
+        _thumb_html = ""
+        if _raw_thumb:
+            _prx = _tr_proxy_thumb(_raw_thumb)
+            _thumb_html = (
+                f'<div style="margin-bottom:10px;border-radius:8px;overflow:hidden;'
+                f'height:140px;background:#f0f4f8;">'
+                f'<img src="{_prx}" style="width:100%;height:100%;object-fit:cover;" '
+                f'onerror="this.parentElement.style.display=\'none\'" loading="lazy"/>'
+                f'</div>'
+            )
 
         st.markdown(f"""
 <div class="ev-card">
+  {_thumb_html}
   <div class="ev-card-top">
     <span class="ev-src {_src_cls}">{e(_src.replace('_',' '))}</span>
     <span class="ev-verdict {_vrd_cls}">{_vrd_lbl}</span>
