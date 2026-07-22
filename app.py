@@ -3882,19 +3882,28 @@ def _fd_render_results(_fd_stored: list, _fd_hi: int) -> None:
                 _fd_thumb = _fd_r.get("thumbnail", "") or ""
                 _fd_src_lbl = _fd_src_labels.get(_fd_src, _fd_src.title())
 
-                # Thumbnail — plain img over gradient (Streamlit strips JS
-                # handlers from st.markdown; unreliable sources return "")
+                # Thumbnail — always show the branded gradient; overlay the real
+                # image on top when we have one. Text-only sources (Reddit, RSS,
+                # GDELT, HN, Web, X/Twitter) skip the thumb wrap entirely.
+                _fd_visual_src = _fd_src in ("instagram", "tiktok", "youtube")
+                _fd_is_social = _fd_src in ("instagram", "tiktok")
+                _fd_grad = ("linear-gradient(135deg,#6a1f6e,#c94f35,#e8a020)"
+                            if _fd_is_social else "linear-gradient(135deg,#1a3d52,#0fa3b5)")
                 if _fd_thumb:
                     _fd_prx = _tr_proxy_thumb(_fd_thumb)
-                    _fd_is_social = _fd_src in ("instagram", "tiktok")
-                    _fd_grad = ("linear-gradient(135deg,#6a1f6e,#c94f35,#e8a020)"
-                                if _fd_is_social else "linear-gradient(135deg,#1a3d52,#0fa3b5)")
                     _fd_thumb_html = (
                         f'<div class="fd-thumb-wrap" style="background:{_fd_grad};">'
                         f'<div class="fd-thumb-icon">✦</div>'
                         f'<img src="{_fd_prx}" loading="lazy" alt="" '
                         f'style="position:absolute;inset:0;width:100%;height:100%;'
                         f'object-fit:cover;opacity:1;z-index:2;"/>'
+                        f'</div>'
+                    )
+                elif _fd_visual_src:
+                    # Visual platform but no thumbnail URL — show branded gradient
+                    _fd_thumb_html = (
+                        f'<div class="fd-thumb-wrap" style="background:{_fd_grad};">'
+                        f'<div class="fd-thumb-icon">✦</div>'
                         f'</div>'
                     )
                 else:

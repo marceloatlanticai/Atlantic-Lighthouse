@@ -443,12 +443,18 @@ def scrape_instagram(
                     "likes": likes,
                     "comments": comments,
                     "hashtags": item.get("hashtags", []),
-                    # Instagram CDN URLs (displayUrl, thumbnailUrl) are signed and
-                    # expire within 1-24h. They also block hotlinking from external
-                    # domains (including proxies like wsrv.nl). Returning empty string
-                    # here causes the UI to show the Instagram-branded gradient
-                    # placeholder, which is more reliable than a broken image.
-                    "thumbnail": "",
+                    # Instagram CDN URLs are signed and expire within hours, but
+                    # for FRESH scrapes they're still valid and load fine when
+                    # routed through the wsrv.nl proxy (_tr_proxy_thumb). The UI
+                    # falls back to the Instagram-branded gradient if the image
+                    # fails, so returning the URL is the best of both worlds.
+                    "thumbnail": (
+                        item.get("displayUrl")
+                        or item.get("thumbnailUrl")
+                        or item.get("previewUrl")
+                        or item.get("imageUrl")
+                        or ""
+                    ),
                 },
             ))
         return result
