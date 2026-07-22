@@ -1618,9 +1618,14 @@ def _tr_proxy_thumb(url: str) -> str:
     YouTube and other open CDNs are returned as-is."""
     if not url:
         return ""
-    _protected = ("tiktokcdn.com", "tiktok.com", "cdninstagram.com",
-                  "fbcdn.net", "instagram.com", "scontent")
+    # Match on domain STEMS so CDN variants are all caught:
+    #   "tiktokcdn"  → tiktokcdn.com, tiktokcdn-us.com, p16-sign.tiktokcdn-us.com …
+    #   "cdninstagram" / "fbcdn" / "scontent" → Instagram/Facebook CDN variants
+    _protected = ("tiktokcdn", "tiktok.com", "cdninstagram",
+                  "fbcdn", "instagram.com", "scontent", "musical.ly")
     if any(d in url for d in _protected):
+        # &default=... keeps a failed fetch from erroring; background-image just
+        # falls back to the gradient, so a 1x1 transparent default is fine.
         return f"https://wsrv.nl/?url={urllib.parse.quote(url, safe='')}&n=-1&w=480"
     return url
 
