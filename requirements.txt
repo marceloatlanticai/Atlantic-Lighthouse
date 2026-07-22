@@ -13,3 +13,4 @@ youtube-transcript-api>=0.6.0
 supabase>=2.3.0
 pytrends>=4.9.0
 plotly>=5.18.0
+firecrawl-py>=1.0.0

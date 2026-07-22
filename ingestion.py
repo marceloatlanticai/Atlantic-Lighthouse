@@ -876,6 +876,68 @@ def scrape_youtube(
     return signals
 
 
+# ── Web (Firecrawl) — general web search + full page extraction ───────────────
+
+def scrape_web(
+    query: str,
+    api_key: str,
+    n: int = 10,
+    client_tag: Optional[str] = None,
+    callback: Optional[Callable] = None,
+) -> list[Signal]:
+    """General web search via Firecrawl.
+    Returns titles, URLs and full page markdown — ideal for competitive
+    research and topics not covered by platform-specific scrapers.
+    Requires FIRECRAWL_API_KEY (free tier available at firecrawl.dev).
+    """
+    if not api_key:
+        return []
+    if callback:
+        callback(f"[Web] Searching '{query[:50]}' via Firecrawl…")
+    signals: list[Signal] = []
+    try:
+        from firecrawl import Firecrawl
+        fc = Firecrawl(api_key=api_key)
+        results = fc.search(query, limit=n)
+        # results is a dict with a "data" list of page objects
+        pages = results.get("data", []) if isinstance(results, dict) else (results or [])
+        for page in pages:
+            url = page.get("url") or page.get("sourceURL") or ""
+            if not url:
+                continue
+            title   = page.get("title") or page.get("metadata", {}).get("title") or ""
+            content = (
+                page.get("markdown") or
+                page.get("content") or
+                page.get("description") or
+                page.get("metadata", {}).get("description") or ""
+            )
+            # Prefer og:image for thumbnail, fall back to screenshot
+            thumbnail = (
+                page.get("metadata", {}).get("og_image") or
+                page.get("metadata", {}).get("ogImage") or
+                page.get("screenshot") or ""
+            )
+            ts = (
+                page.get("metadata", {}).get("publishedTime") or
+                page.get("metadata", {}).get("modifiedTime") or
+                datetime.now(tz=timezone.utc).isoformat()
+            )
+            signals.append(Signal(
+                id=_make_id(url, str(ts)),
+                title=_clean_title(title, content),
+                content=content[:4000], source="web",
+                url=url, timestamp=str(ts), client_tag=client_tag,
+                raw_meta={"thumbnail": thumbnail},
+            ))
+    except Exception as exc:
+        if callback:
+            callback(f"[Web] Error: {exc}")
+    if callback:
+        callback(f"[Web] ✓ {len(signals)} signals")
+    return signals
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DEDUPLICATION
 # ══════════════════════════════════════════════════════════════════════════════

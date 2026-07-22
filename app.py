@@ -2278,71 +2278,21 @@ def render_content_sections(content: dict, user: str, show_competitive: bool = T
 {"".join(f'<div class="lh-signal"><span class="lh-signal-plat">{e(s.get("platform",""))}</span><span class="lh-signal-txt">{e(s.get("text",""))}</span><span class="lh-signal-num">{e(s.get("num",""))}</span></div>' for s in lead.get("signal_stack",[]))}
 </div>""", unsafe_allow_html=True)
 
-        # Countercurrent box — AI draft is a starting point, team can edit/own it
-        st.markdown('<div id="lh-sec-cc"></div>', unsafe_allow_html=True)
-
-        cc_overrides = load_countercurrent_overrides()
-        cc_override  = cc_overrides.get(dispatch_id)
-        cc_ai_title  = lead.get("countercurrent_title", "")
-        cc_ai_body   = lead.get("countercurrent_body", "")
-        cc_title     = cc_override["title"] if cc_override else cc_ai_title
-        cc_body      = cc_override["body"]  if cc_override else cc_ai_body
-
-        cc_edit_key = f"cc_editing_{dispatch_id}"
-        if cc_edit_key not in st.session_state:
-            st.session_state[cc_edit_key] = False
-
-        if st.session_state[cc_edit_key]:
-            # ── Edit mode — AI draft pre-fills the fields the first time ──
-            st.markdown('<div class="lh-cc-edit-lbl">◐ The Countercurrent — editing</div>', unsafe_allow_html=True)
-            new_title = st.text_input(
-                "Title", value=cc_title, key=f"cc_title_in_{dispatch_id}", label_visibility="collapsed",
-            )
-            new_body = st.text_area(
-                "Body", value=cc_body, key=f"cc_body_in_{dispatch_id}", height=140, label_visibility="collapsed",
-            )
-            bcol1, bcol2, bcol3, _ = st.columns([1, 1, 1.6, 6])
-            with bcol1:
-                if st.button("💾 Save", key=f"cc_save_{dispatch_id}", use_container_width=True):
-                    save_countercurrent_override(dispatch_id, new_title, new_body, user)
-                    st.session_state[cc_edit_key] = False
-                    st.toast(f"✓ Countercurrent updated by {user}")
-                    st.rerun()
-            with bcol2:
-                if st.button("Cancel", key=f"cc_cancel_{dispatch_id}", use_container_width=True):
-                    st.session_state[cc_edit_key] = False
-                    st.rerun()
-            if cc_override:
-                with bcol3:
-                    if st.button("↺ Revert to AI draft", key=f"cc_revert_{dispatch_id}", use_container_width=True):
-                        clear_countercurrent_override(dispatch_id)
-                        st.session_state[cc_edit_key] = False
-                        st.rerun()
-        else:
-            # ── Display mode ──
-            if cc_override:
-                badge = (
-                    f'<span class="lh-cc-badge lh-cc-edited">✎ Edited by {e(cc_override.get("edited_by",""))} '
-                    f'· {e(cc_override.get("edited_at",""))}</span>'
-                )
-            else:
-                badge = '<span class="lh-cc-badge lh-cc-draft">◐ AI draft — edit to make it yours</span>'
-
-            col_cc, col_cc_save = st.columns([20, 1])
-            with col_cc:
-                st.markdown(f"""
-<div class="lh-counter" style="margin-top:20px">
-  <div class="lh-counter-lbl">◐ The Countercurrent</div>
-  <div class="lh-counter-title">{e(cc_title)}</div>
-  <div class="lh-counter-body">{e(cc_body)}</div>
-  <div style="margin-top:12px">{badge}</div>
-</div>""", unsafe_allow_html=True)
-            with col_cc_save:
-                st.markdown("<div style='margin-top:20px'></div>", unsafe_allow_html=True)
-                if st.button("✎", key=f"cc_edit_btn_{dispatch_id}", help="Edit the countercurrent"):
-                    st.session_state[cc_edit_key] = True
-                    st.rerun()
-                _save_button("🔖", "Countercurrent", cc_title, cc_body, "save_cc_main", user)
+        # ── Countercurrent box — hidden per Jul 2026 meeting feedback ──────────
+        # Patrick: "we just want it pulling signals and giving a brief synopsis —
+        # we don't want it solving the thing for us."
+        # Re-enable when the team is ready to own the editorial synthesis step.
+        #
+        # cc_overrides = load_countercurrent_overrides()
+        # cc_override  = cc_overrides.get(dispatch_id)
+        # cc_ai_title  = lead.get("countercurrent_title", "")
+        # cc_ai_body   = lead.get("countercurrent_body", "")
+        # cc_title     = cc_override["title"] if cc_override else cc_ai_title
+        # cc_body      = cc_override["body"]  if cc_override else cc_ai_body
+        # cc_edit_key  = f"cc_editing_{dispatch_id}"
+        # ... (full block preserved below for when we re-enable)
+        #
+        # ─────────────────────────────────────────────────────────────────────
 
         # Section divider
         st.markdown('<div id="lh-sec-currents"></div>', unsafe_allow_html=True)
@@ -3654,9 +3604,333 @@ if IS_CLIENT:
 # Invisible marker lets the CSS below target only THIS st.tabs() —
 # nested tab bars elsewhere (My Board, Briefing Builder, etc.) keep default look.
 st.markdown('<div id="lh-toptabs-marker" style="display:none"></div>', unsafe_allow_html=True)
-tab_trends, tab_dispatch, tab_projects, tab_roadmap = st.tabs([
-    "Trends", "Dispatch", "Projects", "Road Map",
+tab_feed, tab_trends, tab_dispatch, tab_projects, tab_roadmap = st.tabs([
+    "⚡ Feed", "Trends", "Dispatch", "Projects", "Road Map",
 ])
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FEED TAB — simplified signal scanner (first tab, MVP view)
+# One prompt → live search across all sources → raw signal cards + save.
+# No AI synthesis, no verdicts — just the currents, surfaced fast.
+# ══════════════════════════════════════════════════════════════════════════════
+tab_feed.__enter__()
+
+st.markdown("""
+<style>
+/* ── Feed tab shell ── */
+.fd-header {padding: 2rem 0 1.2rem; border-top: 3px double #071828; margin-top: 0.5rem;}
+.fd-eyebrow {font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.18em;
+  text-transform:uppercase; color:#0a7d8c; font-weight:700; margin-bottom:6px;}
+.fd-title {font-family:Georgia,serif; font-size:1.6rem; font-weight:400; color:#071828; margin-bottom:4px;}
+.fd-sub {font-size:13px; color:#6ea8c4;}
+/* signal cards */
+.fd-card {border:1px solid #d0e4ed; border-radius:10px; padding:0; overflow:hidden;
+  background:#fff; transition:.2s; margin-bottom:0;}
+.fd-card:hover {border-color:#0fa3b5; box-shadow:0 2px 12px rgba(15,163,181,.12);}
+.fd-thumb-wrap {height:130px; background:linear-gradient(135deg,#1a3d52,#0fa3b5);
+  position:relative; overflow:hidden;}
+.fd-thumb-icon {position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;color:rgba(255,255,255,.3);font-size:28px;}
+.fd-card-body {padding:10px 12px 12px;}
+.fd-src-badge {display:inline-block;font-family:'JetBrains Mono',monospace;font-size:8.5px;
+  letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:20px;
+  background:#e4f4f5;color:#0a7d8c;border:1px solid #b0dde4;margin-bottom:7px;}
+.fd-card-title {font-family:Georgia,serif;font-size:13.5px;font-weight:600;
+  color:#071828;line-height:1.4;margin-bottom:6px;}
+.fd-excerpt {font-size:11.5px;color:#476a7a;line-height:1.5;margin-bottom:8px;}
+.fd-foot {font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#9dc4d8;}
+/* synopsis box */
+.fd-synopsis {background:#e4f4f5;border-left:3px solid #0fa3b5;border-radius:0 8px 8px 0;
+  padding:12px 16px;margin:1rem 0;font-size:13px;color:#071828;line-height:1.6;}
+.fd-synopsis b {font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:#0a7d8c;display:block;margin-bottom:4px;}
+/* empty state */
+.fd-empty {text-align:center;padding:4rem 2rem;color:#9dc4d8;}
+.fd-empty-icon {font-size:2rem;margin-bottom:1rem;}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="fd-header">
+  <div class="fd-eyebrow">◎ Signal Feed</div>
+  <div class="fd-title">What are you monitoring?</div>
+  <div class="fd-sub">Enter a brand, competitor, topic or question — the feed scans the internet and returns raw signals.</div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Feed: input row ─────────────────────────────────────────────────────────
+_fd_col_in, _fd_col_btn = st.columns([5, 1])
+with _fd_col_in:
+    _fd_query = st.text_input(
+        "Feed query",
+        placeholder="e.g. Heinz, desk lunch culture, Adidas football boots…",
+        label_visibility="collapsed",
+        key="fd_query",
+    )
+with _fd_col_btn:
+    _fd_run = st.button("Search →", key="fd_run", use_container_width=True, type="primary")
+
+# ── Feed: source selector ───────────────────────────────────────────────────
+_fd_src_options = ["Reddit", "YouTube", "RSS", "GDELT", "Hacker News", "TikTok", "Instagram", "X/Twitter", "Web (Firecrawl)"]
+with st.expander("Sources", expanded=False):
+    _fd_src_cols = st.columns(4)
+    _fd_sources_sel = []
+    for _i, _s in enumerate(_fd_src_options):
+        with _fd_src_cols[_i % 4]:
+            if st.checkbox(_s, value=True, key=f"fd_src_{_s}"):
+                _fd_sources_sel.append(_s)
+
+# ── Feed: run search ────────────────────────────────────────────────────────
+if _fd_run and _fd_query.strip():
+    _fd_api_key        = os.environ.get("ANTHROPIC_API_KEY", "")
+    _fd_apify_key      = os.environ.get("APIFY_API_TOKEN", "")
+    _fd_youtube_key    = os.environ.get("YOUTUBE_API_KEY", "")
+    _fd_firecrawl_key  = os.environ.get("FIRECRAWL_API_KEY", "")
+
+    # Keyword extraction (same logic as Evidence block)
+    _fd_stops = {
+        "the","and","but","for","at","their","to","of","in","a","an","is","are",
+        "was","were","be","been","have","has","had","do","does","did","will","would",
+        "could","should","may","might","i","you","he","she","it","we","they","what",
+        "which","who","when","where","why","how","all","so","than","too","very","just",
+        "as","if","by","or","also","with","from","on","off","over","under","again",
+        "then","here","there","not","no","only","same","such","even","into","about",
+        "than","people","avoid","fear","this","that",
+    }
+    _fd_kws = [
+        w for w in _re_global.sub(r"[^\w\s]", "", _fd_query.lower()).split()
+        if len(w) > 2 and w not in _fd_stops
+    ][:4]
+    _fd_search = " ".join(_fd_kws) if _fd_kws else _fd_query[:60]
+
+    _fd_status = st.empty()
+
+    def _fd_set_status(msg: str) -> None:
+        _fd_status.markdown(
+            f'<style>'
+            f'@keyframes _fdblink{{0%,100%{{opacity:.15;}}50%{{opacity:1;}}}}'
+            f'._fdd1{{display:inline-block;animation:_fdblink 1.2s 0s infinite;}}'
+            f'._fdd2{{display:inline-block;animation:_fdblink 1.2s .4s infinite;}}'
+            f'._fdd3{{display:inline-block;animation:_fdblink 1.2s .8s infinite;}}'
+            f'</style>'
+            f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:11.5px;'
+            f'color:#0a5560;background:#e4f4f5;border-left:3px solid #0fa3b5;'
+            f'border-radius:0 6px 6px 0;padding:7px 12px;margin:4px 0;">'
+            f'{msg}'
+            f'<span class="_fdd1">.</span><span class="_fdd2">.</span><span class="_fdd3">.</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    _fd_raw: list[dict] = []
+
+    try:
+        from ingestion import (scrape_reddit, scrape_rss, scrape_gdelt,
+                               scrape_hacker_news, scrape_youtube,
+                               scrape_tiktok, scrape_instagram, scrape_twitter)
+
+        def _fd_cb(msg): _fd_set_status(msg)
+
+        if "Reddit" in _fd_sources_sel:
+            _fd_set_status(f"[Reddit] Searching '{_fd_search}'")
+            for s in scrape_reddit(_fd_search, max_items=12, callback=_fd_cb):
+                _fd_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
+                                "source": "reddit", "url": s.url, "timestamp": s.timestamp})
+
+        if "RSS" in _fd_sources_sel:
+            _fd_set_status("Scanning RSS feeds")
+            for s in scrape_rss(max_items_per_feed=3, callback=_fd_cb):
+                _fd_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
+                                "source": "rss", "url": s.url, "timestamp": s.timestamp})
+
+        if "GDELT" in _fd_sources_sel:
+            _fd_set_status(f"[GDELT] Searching '{_fd_search}'")
+            for s in scrape_gdelt(_fd_search, n=12, callback=_fd_cb):
+                _fd_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
+                                "source": "gdelt", "url": s.url, "timestamp": s.timestamp})
+
+        if "Hacker News" in _fd_sources_sel:
+            _fd_set_status(f"[Hacker News] Searching '{_fd_search}'")
+            for s in scrape_hacker_news(_fd_search, n=8, callback=_fd_cb):
+                _fd_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
+                                "source": "hacker_news", "url": s.url, "timestamp": s.timestamp})
+
+        if "YouTube" in _fd_sources_sel and _fd_youtube_key:
+            _fd_yt_terms = _fd_kws[:3] if len(_fd_kws) > 1 else [_fd_search]
+            _fd_yt_seen: set = set()
+            for _fd_yt_kw in _fd_yt_terms:
+                _fd_set_status(f"[YouTube] Searching '{_fd_yt_kw}'")
+                for s in scrape_youtube(_fd_yt_kw, api_key=_fd_youtube_key,
+                                        n=5, region_code="GB", callback=_fd_cb):
+                    if s.url not in _fd_yt_seen:
+                        _fd_yt_seen.add(s.url)
+                        _fd_raw.append({"title": s.title, "content": s.content,
+                                        "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
+                                        "source": "youtube", "url": s.url, "timestamp": s.timestamp})
+
+        if "TikTok" in _fd_sources_sel and _fd_apify_key:
+            _fd_set_status(f"[TikTok] Searching '{_fd_search}' via Apify")
+            for s in scrape_tiktok(_fd_search, api_token=_fd_apify_key, n=12,
+                                   fetch_comments=False, callback=_fd_cb):
+                _fd_raw.append({"title": s.title, "content": s.content,
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
+                                "source": "tiktok", "url": s.url, "timestamp": s.timestamp})
+
+        if "Instagram" in _fd_sources_sel and _fd_apify_key:
+            _fd_set_status(f"[Instagram] Searching '{_fd_search}' via Apify")
+            for s in scrape_instagram(_fd_search, api_token=_fd_apify_key, n=12, callback=_fd_cb):
+                _fd_raw.append({"title": s.title, "content": s.content,
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
+                                "source": "instagram", "url": s.url, "timestamp": s.timestamp})
+
+        if "X/Twitter" in _fd_sources_sel and _fd_apify_key:
+            _fd_set_status(f"[X/Twitter] Searching '{_fd_search}' via Apify")
+            for s in scrape_twitter(_fd_search, api_token=_fd_apify_key, n=12, callback=_fd_cb):
+                _fd_raw.append({"title": s.title, "content": s.content, "thumbnail": "",
+                                "source": "twitter", "url": s.url, "timestamp": s.timestamp})
+
+        if "Web (Firecrawl)" in _fd_sources_sel and _fd_firecrawl_key:
+            from ingestion import scrape_web as _scrape_web_fd
+            _fd_set_status(f"[Web] Searching '{_fd_search}' via Firecrawl")
+            for s in _scrape_web_fd(_fd_search, api_key=_fd_firecrawl_key, n=10, callback=_fd_cb):
+                _fd_raw.append({"title": s.title, "content": s.content,
+                                "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
+                                "source": "web", "url": s.url, "timestamp": s.timestamp})
+        elif "Web (Firecrawl)" in _fd_sources_sel and not _fd_firecrawl_key:
+            st.caption("⚠️ FIRECRAWL_API_KEY not set — add it to Streamlit secrets to enable Web search.")
+
+    except Exception as _fd_scrape_err:
+        st.warning(f"Some sources failed: {_fd_scrape_err}")
+
+    # ── Optional: brief synopsis from Claude ──────────────────────────────
+    _fd_synopsis = ""
+    if _fd_raw and _fd_api_key:
+        try:
+            _fd_set_status(f"Claude reading {len(_fd_raw)} signals")
+            import anthropic as _ant_fd
+            _fd_client = _ant_fd.Anthropic(api_key=_fd_api_key)
+            _fd_titles = "\n".join(f"- {s.get('title','')[:100]}" for s in _fd_raw[:20])
+            _fd_synopsis_resp = _fd_client.messages.create(
+                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                max_tokens=120,
+                messages=[{"role": "user", "content":
+                    f"You are a concise cultural analyst. In 1-2 sentences (max 40 words total), "
+                    f"describe what these signals collectively suggest about '{_fd_query}'. "
+                    f"Be factual and sharp. No recommendations.\n\nSignals:\n{_fd_titles}"}],
+            )
+            _fd_synopsis = _fd_synopsis_resp.content[0].text.strip()
+        except Exception:
+            pass
+
+    _fd_status.empty()
+    st.session_state["fd_results"] = _fd_raw
+    st.session_state["fd_query_used"] = _fd_query
+    st.session_state["fd_synopsis"] = _fd_synopsis
+    st.rerun()
+
+elif _fd_run and not _fd_query.strip():
+    st.warning("Enter a search query first.")
+
+# ── Feed: display results ────────────────────────────────────────────────────
+_fd_stored = st.session_state.get("fd_results", [])
+_fd_q_stored = st.session_state.get("fd_query_used", "")
+_fd_syn_stored = st.session_state.get("fd_synopsis", "")
+
+if _fd_stored:
+    st.caption(f"**{len(_fd_stored)} signals** · query: *{_fd_q_stored}*")
+
+    if _fd_syn_stored:
+        st.markdown(
+            f'<div class="fd-synopsis"><b>Synopsis</b>{e(_fd_syn_stored)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Source filter ─────────────────────────────────────────────────────
+    _fd_src_present = sorted({r.get("source","?") for r in _fd_stored})
+    _fd_src_labels = {"reddit":"Reddit","rss":"RSS","gdelt":"GDELT","hacker_news":"HN",
+                      "youtube":"YouTube","tiktok":"TikTok","instagram":"Instagram",
+                      "twitter":"X/Twitter","web":"Web"}
+    _fd_filter_opts = ["All"] + [_fd_src_labels.get(s, s.title()) for s in _fd_src_present]
+    _fd_filter = st.radio("Filter by source", _fd_filter_opts, horizontal=True,
+                          label_visibility="collapsed", key="fd_filter")
+    _fd_filter_key = {v: k for k, v in _fd_src_labels.items()}.get(_fd_filter, "")
+    _fd_show = _fd_stored if _fd_filter == "All" else [r for r in _fd_stored if r.get("source") == _fd_filter_key]
+
+    st.markdown("---")
+
+    # ── 3-column card grid ────────────────────────────────────────────────
+    _fd_cols_per_row = 3
+    for _fd_row_start in range(0, len(_fd_show), _fd_cols_per_row):
+        _fd_row_items = _fd_show[_fd_row_start:_fd_row_start + _fd_cols_per_row]
+        _fd_row_cols = st.columns(_fd_cols_per_row)
+        for _fd_ci, _fd_r in enumerate(_fd_row_items):
+            with _fd_row_cols[_fd_ci]:
+                _fd_src   = _fd_r.get("source", "?")
+                _fd_title = _fd_r.get("title", "")[:100]
+                _fd_body  = _fd_r.get("content", "")[:200]
+                _fd_url   = _fd_r.get("url", "")
+                _fd_ts    = (_fd_r.get("timestamp") or "")[:10]
+                _fd_thumb = _fd_r.get("thumbnail", "") or ""
+                _fd_src_lbl = _fd_src_labels.get(_fd_src, _fd_src.title())
+
+                # Thumbnail
+                if _fd_thumb:
+                    _fd_prx = _tr_proxy_thumb(_fd_thumb)
+                    _fd_is_social = _fd_src in ("instagram", "tiktok")
+                    _fd_grad = ("linear-gradient(135deg,#6a1f6e,#c94f35,#e8a020)"
+                                if _fd_is_social else "linear-gradient(135deg,#1a3d52,#0fa3b5)")
+                    _fd_thumb_html = (
+                        f'<div class="fd-thumb-wrap" style="background:{_fd_grad};">'
+                        f'<div class="fd-thumb-icon">✦</div>'
+                        f'<img src="{_fd_prx}" loading="lazy" '
+                        f'style="position:absolute;inset:0;width:100%;height:100%;'
+                        f'object-fit:cover;opacity:0;transition:opacity .4s;" '
+                        f'onload="this.style.opacity=1" '
+                        f'onerror="this.style.display=\'none\'"/>'
+                        f'</div>'
+                    )
+                else:
+                    _fd_thumb_html = ""
+
+                st.markdown(f"""
+<div class="fd-card">
+  {_fd_thumb_html}
+  <div class="fd-card-body">
+    <span class="fd-src-badge">{e(_fd_src_lbl)}</span>
+    <div class="fd-card-title">{e(_fd_title)}</div>
+    <div class="fd-excerpt">{e(_fd_body)}{"…" if len(_fd_r.get("content","")) > 200 else ""}</div>
+    <div class="fd-foot">{e(_fd_ts)}</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+                _fd_btn_cols = st.columns([3, 1])
+                with _fd_btn_cols[0]:
+                    if _fd_url:
+                        st.markdown(f'<a href="{_fd_url}" target="_blank" style="font-size:11px;color:#0fa3b5;">Open ↗</a>',
+                                    unsafe_allow_html=True)
+                with _fd_btn_cols[1]:
+                    if st.button("+ Save", key=f"fd_save_{_fd_row_start}_{_fd_ci}",
+                                 use_container_width=True):
+                        _fd_u = st.session_state.get("logged_in_user", "internal")
+                        add_curadoria_item(
+                            _fd_u, _fd_src, _fd_title,
+                            _fd_r.get("content", "")[:1000],
+                        )
+                        st.success("Saved!")
+
+else:
+    st.markdown("""
+<div class="fd-empty">
+  <div class="fd-empty-icon">⚡</div>
+  <div style="font-size:14px;font-family:Georgia,serif;margin-bottom:8px;">
+    Type a topic above and press <em>Search →</em>
+  </div>
+  <div style="font-size:12px;font-family:monospace;letter-spacing:.06em;text-transform:uppercase;">
+    Scans Reddit · YouTube · RSS · GDELT · TikTok · Instagram · X/Twitter
+  </div>
+</div>""", unsafe_allow_html=True)
+
+tab_feed.__exit__(None, None, None)
 
 # ── Dispatch tab content (editorial intelligence) ──────────────────────────
 tab_dispatch.__enter__()
@@ -4878,11 +5152,19 @@ if _ev_run and _ev_hunch.strip():
                                 "source": s.source, "url": s.url, "timestamp": s.timestamp})
 
         if "YouTube (live)" in _ev_sources and _ev_youtube_key:
-            _ev_status.caption(f"[YouTube] Searching '{_ev_search}'…")
-            for s in scrape_youtube(_ev_search, api_key=_ev_youtube_key, n=10, callback=_ev_cb):
-                _ev_raw.append({"title": s.title, "content": s.content,
-                                "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
-                                "source": s.source, "url": s.url, "timestamp": s.timestamp})
+            # Search each keyword individually — YouTube API ignores multi-word phrases
+            _yt_terms = _ev_kws[:3] if len(_ev_kws) > 1 else [_ev_search]
+            _yt_seen_urls: set = set()
+            for _yt_kw in _yt_terms:
+                _ev_status.caption(f"[YouTube] Searching '{_yt_kw}' (GB)…")
+                for s in scrape_youtube(_yt_kw, api_key=_ev_youtube_key,
+                                        n=6, region_code="GB", callback=_ev_cb):
+                    if s.url not in _yt_seen_urls:
+                        _yt_seen_urls.add(s.url)
+                        _ev_raw.append({"title": s.title, "content": s.content,
+                                        "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
+                                        "source": s.source, "url": s.url,
+                                        "timestamp": s.timestamp})
 
         if "TikTok (live)" in _ev_sources and _ev_apify_key:
             _ev_status.caption(f"[TikTok] Searching '{_ev_search}' via Apify…")
@@ -5044,16 +5326,26 @@ if _ev_results_stored:
         _vrd_cls  = _ev_verdict_class.get(_verdict, "ev-complicates")
         _vrd_lbl  = f"{_ev_verdict_emoji.get(_verdict,'')} {_verdict.capitalize()}"
         _domain   = urllib.parse.urlparse(_url).netloc if _url else _src
-        # Thumbnail: use proxy for CDN images (TikTok/Instagram URLs are long CDN paths)
+        # Thumbnail — start invisible, fade in only on successful load, stay hidden on error
         _raw_thumb = _ev_r.get("thumbnail", "") or ""
         _thumb_html = ""
         if _raw_thumb:
             _prx = _tr_proxy_thumb(_raw_thumb)
+            _is_social = _src in ("instagram", "tiktok")
+            _grad = ("linear-gradient(135deg,#6a1f6e,#c94f35,#e8a020)"
+                     if _is_social else "linear-gradient(135deg,#1a3d52,#0fa3b5)")
             _thumb_html = (
                 f'<div style="margin-bottom:10px;border-radius:8px;overflow:hidden;'
-                f'height:140px;background:#f0f4f8;">'
-                f'<img src="{_prx}" style="width:100%;height:100%;object-fit:cover;" '
-                f'onerror="this.parentElement.style.display=\'none\'" loading="lazy"/>'
+                f'height:140px;background:{_grad};position:relative;">'
+                # Fallback star shown when image fails (same aesthetic as Research Lab cards)
+                f'<div style="position:absolute;inset:0;display:flex;align-items:center;'
+                f'justify-content:center;color:rgba(255,255,255,.3);font-size:28px;">✦</div>'
+                # Image: invisible until loaded, hides itself on error
+                f'<img src="{_prx}" loading="lazy" '
+                f'style="position:absolute;inset:0;width:100%;height:100%;'
+                f'object-fit:cover;opacity:0;transition:opacity .4s;" '
+                f'onload="this.style.opacity=1" '
+                f'onerror="this.style.display=\'none\'"/>'
                 f'</div>'
             )
 
@@ -5486,12 +5778,16 @@ if _tr_fetch and _tr_topic.strip():
                                 "source": s.source, "url": s.url or ""})
 
         if "YouTube" in _tr_sources and _tr_youtube_key:
-            for _term in _tr_expanded_terms[:2]:
-                _tr_set_status(f"[YouTube] Searching '{_term}'…")
-                for s in scrape_youtube(_term, api_key=_tr_youtube_key, n=15, callback=_tr_cb):
-                    _tr_raw.append({"title": s.title, "content": s.content[:300],
-                                    "source": s.source, "url": s.url or "",
-                                    "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
+            _tr_yt_seen: set = set()
+            for _term in _tr_expanded_terms[:3]:
+                _tr_set_status(f"[YouTube] Searching '{_term}' (GB)…")
+                for s in scrape_youtube(_term, api_key=_tr_youtube_key,
+                                        n=8, region_code="GB", callback=_tr_cb):
+                    if s.url not in _tr_yt_seen:
+                        _tr_yt_seen.add(s.url)
+                        _tr_raw.append({"title": s.title, "content": s.content[:300],
+                                        "source": s.source, "url": s.url or "",
+                                        "thumbnail": (s.raw_meta or {}).get("thumbnail", "")})
 
         if "TikTok" in _tr_sources and _tr_apify_key:
             _tt_before = len(_tr_raw)
@@ -5791,11 +6087,19 @@ if _tr_hunch_fetch and _tr_hunch.strip():
                                 "source": s.source, "url": s.url or "", "thumbnail": ""})
 
         if "YouTube" in _tr_sources and _hn_youtube_key:
-            _hn_set_status(f"[YouTube] Searching '{_hn_topic[:30]}'…")
-            for s in scrape_youtube(_hn_topic, api_key=_hn_youtube_key, n=12, callback=_hn_cb):
-                _hn_raw.append({"title": s.title, "content": s.content[:300],
-                                "source": s.source, "url": s.url or "",
-                                "thumbnail": (s.raw_meta or {}).get("thumbnail","")})
+            # Search each keyword individually — multi-word phrases return 0 on YouTube API
+            _hn_yt_kws = [w for w in _re_global.sub(r"[^\w\s]","",_hn_topic.lower()).split()
+                          if len(w) > 3][:3] or [_hn_topic[:30]]
+            _hn_yt_seen: set = set()
+            for _hn_yt_kw in _hn_yt_kws:
+                _hn_set_status(f"[YouTube] Searching '{_hn_yt_kw}' (GB)…")
+                for s in scrape_youtube(_hn_yt_kw, api_key=_hn_youtube_key,
+                                        n=5, region_code="GB", callback=_hn_cb):
+                    if s.url not in _hn_yt_seen:
+                        _hn_yt_seen.add(s.url)
+                        _hn_raw.append({"title": s.title, "content": s.content[:300],
+                                        "source": s.source, "url": s.url or "",
+                                        "thumbnail": (s.raw_meta or {}).get("thumbnail","")})
 
         if "TikTok" in _tr_sources and _hn_apify_key:
             _hn_set_status(f"[TikTok] Searching '{_hn_topic[:30]}' via Apify…")
@@ -6003,10 +6307,11 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
     _ph_cls = {"tiktok": "tr-ph-tiktok", "instagram": "tr-ph-instagram"}.get(_card_source, "")
 
     if thumb_src:
-        # Overlay img on top of placeholder bg; if img fails, opacity→0 reveals gradient
+        # Overlay img on top of placeholder bg; if img fails, hide it (gradient shows)
         thumb_html = (
             f'<div class="tr-thumb-wrap {_ph_cls}">'
-            f'<img src="{thumb_src}" onerror="this.style.opacity=0;" />'
+            f'<img src="{thumb_src}" style="opacity:0;transition:opacity .4s;" '
+            f'onload="this.style.opacity=1" onerror="this.style.display=\'none\'" />'
             f'</div>'
         )
     elif _ph_cls:
@@ -6173,7 +6478,8 @@ if _hn_board_data:
         if thumb_src:
             thumb_html = (
                 f'<div class="tr-thumb-wrap {_hn_ph_cls}" style="height:100px;">'
-                f'<img src="{thumb_src}" onerror="this.style.opacity=0;" />'
+                f'<img src="{thumb_src}" style="opacity:0;transition:opacity .4s;" '
+                f'onload="this.style.opacity=1" onerror="this.style.display=\'none\'" />'
                 f'</div>'
             )
         elif _hn_ph_cls:
