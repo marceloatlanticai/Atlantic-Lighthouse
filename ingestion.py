@@ -443,13 +443,12 @@ def scrape_instagram(
                     "likes": likes,
                     "comments": comments,
                     "hashtags": item.get("hashtags", []),
-                    "thumbnail": (
-                        item.get("displayUrl")
-                        or item.get("thumbnailUrl")
-                        or item.get("previewUrl")
-                        or item.get("imageUrl")
-                        or ""
-                    ),
+                    # Instagram CDN URLs (displayUrl, thumbnailUrl) are signed and
+                    # expire within 1-24h. They also block hotlinking from external
+                    # domains (including proxies like wsrv.nl). Returning empty string
+                    # here causes the UI to show the Instagram-branded gradient
+                    # placeholder, which is more reliable than a broken image.
+                    "thumbnail": "",
                 },
             ))
         return result
@@ -484,6 +483,80 @@ def scrape_instagram(
 
 # ── X / Twitter (Apify actor — needs APIFY_API_TOKEN) ────────────────────────
 
+def _run_dataset_id(run) -> Optional[str]:
+    """Extract the default dataset id from an Apify actor run result.
+    apify-client returns a dict in some versions and a typed object in others —
+    support both so version upgrades never silently break retrieval.
+    """
+    if run is None:
+        return None
+    if isinstance(run, dict):
+        return run.get("defaultDatasetId") or run.get("default_dataset_id")
+    return (getattr(run, "default_dataset_id", None)
+            or getattr(run, "defaultDatasetId", None))
+
+
+def _parse_twitter_items(items: list, client_tag: Optional[str] = None) -> list["Signal"]:
+    """Parse tweet items from any Apify Twitter actor into Signal objects.
+    Handles field names from both danek/twitter-scraper and apidojo/tweet-scraper.
+    """
+    signals: list[Signal] = []
+    for item in items:
+        # ── Text ── (covers both actors' field names)
+        text = (
+            item.get("text") or item.get("rawContent") or item.get("full_text")
+            or item.get("fullText") or item.get("content") or item.get("body") or ""
+        )
+        # ── URL ──
+        tweet_url = (
+            item.get("url") or item.get("twitterUrl") or item.get("tweetUrl")
+            or item.get("tweet_url") or item.get("permanentUrl") or ""
+        )
+        if not tweet_url:
+            _tid = (item.get("id") or item.get("tweet_id") or item.get("id_str") or "")
+            if _tid:
+                tweet_url = f"https://x.com/i/web/status/{_tid}"
+        # ── Timestamp ──
+        ts = (
+            item.get("date") or item.get("createdAt") or item.get("created_at")
+            or item.get("timestamp") or datetime.now(tz=timezone.utc).isoformat()
+        )
+        # ── Author ── (string in danek, object in apidojo)
+        author_raw = item.get("author") or item.get("user") or {}
+        if isinstance(author_raw, dict):
+            handle = (
+                author_raw.get("userName") or author_raw.get("username")
+                or author_raw.get("screen_name") or author_raw.get("login") or ""
+            )
+        else:
+            handle = str(author_raw)
+        # ── Engagement ──
+        likes    = item.get("likes")    or item.get("likeCount")    or item.get("favorite_count") or 0
+        retweets = item.get("reposts")  or item.get("retweetCount") or item.get("retweet_count")  or 0
+        replies  = item.get("replies")  or item.get("replyCount")   or item.get("reply_count")    or 0
+        # Skip items with no content AND no URL
+        if not text and not tweet_url:
+            continue
+        if not text:
+            text = f"[Tweet] {tweet_url}"
+        content = (
+            f"{text}\n\n"
+            f"@{handle} · Likes: {likes:,} · Retweets: {retweets:,} · Replies: {replies:,}"
+        ).strip()
+        signals.append(Signal(
+            id=_make_id(tweet_url or text[:40], str(ts)),
+            title=_clean_title(text[:100], content),
+            content=content[:4000],
+            source="twitter",
+            url=tweet_url,
+            timestamp=str(ts),
+            client_tag=client_tag,
+            raw_meta={"handle": handle, "likes": likes,
+                      "retweets": retweets, "replies": replies},
+        ))
+    return signals
+
+
 def scrape_twitter(
     topic: str,
     api_token: str,
@@ -492,8 +565,9 @@ def scrape_twitter(
     callback: Optional[Callable] = None,
 ) -> list[Signal]:
     """
-    Search X/Twitter for posts related to the topic via Apify.
-    Actor: apidojo/tweet-scraper (confirmed working in user's Apify account).
+    Search X/Twitter for posts via Apify.
+    Primary:  danek/twitter-scraper  (fast, no credentials needed)
+    Fallback: apidojo/tweet-scraper  (if primary returns 0 items)
     Requires: APIFY_API_TOKEN secret.
     """
     if not api_token:
@@ -503,67 +577,53 @@ def scrape_twitter(
     signals: list[Signal] = []
     try:
         from apify_client import ApifyClient
-        client = ApifyClient(api_token)
-        # danek/twitter-scraper — uses max_posts (not maxItems)
-        run_input = {
-            "searchTerms": [topic],
-            "max_posts": n,
-        }
-        run = client.actor("danek/twitter-scraper").call(run_input=run_input)
-        items_list = list(client.dataset(run.default_dataset_id).iterate_items())
-        if callback:
-            callback(f"[X/Twitter] Dataset returned {len(items_list)} raw items")
-        if items_list and callback:
-            _s0 = items_list[0]
-            callback(f"[X/Twitter] Keys: {list(_s0.keys())[:15]}")
-        for item in items_list:
-            # danek/twitter-scraper output: text, url, date, author (string), likes, reposts, replies
-            text = (
-                item.get("text") or item.get("rawContent") or item.get("fullText")
-                or item.get("full_text") or item.get("content") or ""
-            )
-            tweet_url = item.get("url") or item.get("tweetUrl") or item.get("tweet_url") or ""
-            if not tweet_url:
-                _tid = item.get("id") or item.get("tweet_id") or ""
-                if _tid:
-                    tweet_url = f"https://twitter.com/i/web/status/{_tid}"
-            ts = (
-                item.get("date") or item.get("createdAt") or item.get("created_at")
-                or datetime.now(tz=timezone.utc).isoformat()
-            )
-            # author is a plain string in danek/twitter-scraper
-            author_raw = item.get("author") or item.get("user") or {}
-            if isinstance(author_raw, dict):
-                handle = (author_raw.get("userName") or author_raw.get("username")
-                          or author_raw.get("screen_name") or "")
-            else:
-                handle = str(author_raw)
-            likes    = item.get("likes")    or item.get("likeCount")    or item.get("favorite_count") or 0
-            retweets = item.get("reposts")  or item.get("retweetCount") or item.get("retweet_count")  or 0
-            replies  = item.get("replies")  or item.get("replyCount")   or item.get("reply_count")    or 0
-            if not text and not tweet_url:
-                continue
-            if not text:
-                text = f"[Tweet] {tweet_url}"
-            content = (
-                f"{text}\n\n"
-                f"@{handle} · Likes: {likes:,} · Retweets: {retweets:,} · Replies: {replies:,}"
-            ).strip()
-            signals.append(Signal(
-                id=_make_id(tweet_url, str(ts)),
-                title=_clean_title(text[:100], content),
-                content=content[:4000],
-                source="twitter",
-                url=tweet_url,
-                timestamp=str(ts),
-                client_tag=client_tag,
-                raw_meta={
-                    "handle": handle,
-                    "likes": likes,
-                    "retweets": retweets,
-                    "replies": replies,
-                },
-            ))
+        ac = ApifyClient(api_token)
+
+        # ── Primary: danek/twitter-scraper ────────────────────────────────
+        # Verified input schema (build 1.4.28): the search field is "query"
+        # (a string), the sort is "search_type", and "max_posts" is required.
+        # (searchTerms / search / maxItems are silently ignored by this actor.)
+        try:
+            run = ac.actor("danek/twitter-scraper").call(run_input={
+                "query": topic,
+                "search_type": "Top",   # Top | Latest | Media | People | Lists
+                "max_posts": n,
+            })
+            _ds_id = _run_dataset_id(run)
+            if not _ds_id:
+                raise RuntimeError(f"No dataset id in run result (type={type(run).__name__})")
+            items_list = list(ac.dataset(_ds_id).iterate_items())
+            if callback:
+                callback(f"[X/Twitter] danek actor → {len(items_list)} raw items")
+            if items_list and callback:
+                callback(f"[X/Twitter] Sample keys: {list(items_list[0].keys())[:12]}")
+            signals = _parse_twitter_items(items_list, client_tag)
+        except Exception as _primary_err:
+            if callback:
+                callback(f"[X/Twitter] Primary actor error: {_primary_err}")
+            items_list = []
+
+        # ── Fallback: apidojo/tweet-scraper ───────────────────────────────
+        if not signals:
+            if callback:
+                callback("[X/Twitter] Trying apidojo/tweet-scraper as fallback…")
+            try:
+                run2 = ac.actor("apidojo/tweet-scraper").call(run_input={
+                    "searchTerms": [topic],
+                    "maxItems": n,          # correct param (not maxTweets)
+                    "sort": "Top",          # correct param (not queryType)
+                })
+                _ds_id2 = _run_dataset_id(run2)
+                if not _ds_id2:
+                    raise RuntimeError("No dataset id in fallback run result")
+                items2 = list(ac.dataset(_ds_id2).iterate_items())
+                if callback:
+                    callback(f"[X/Twitter] apidojo actor → {len(items2)} raw items")
+                signals = _parse_twitter_items(items2, client_tag)
+            except Exception as _fallback_err:
+                if callback:
+                    callback(f"[X/Twitter] Fallback actor error: {_fallback_err}")
+
     except Exception as exc:
         if callback:
             callback(f"[X/Twitter] Error: {exc}")
