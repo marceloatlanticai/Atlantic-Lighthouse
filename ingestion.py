@@ -338,6 +338,7 @@ def scrape_tiktok(
         client = ApifyClient(api_token)
         run_input = {
             "searchQueries": [topic],
+            "resultsPerPage": n,            # REQUIRED for keyword search — without it the actor returns ~1 result
             "maxItems": n,
             "shouldDownloadVideos": False,
             "shouldDownloadCovers": True,   # download to Apify storage → stable URL, bypasses TikTok CDN hotlink block

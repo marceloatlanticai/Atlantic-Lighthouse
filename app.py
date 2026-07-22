@@ -3891,12 +3891,14 @@ def _fd_render_results(_fd_stored: list, _fd_hi: int) -> None:
                             if _fd_is_social else "linear-gradient(135deg,#1a3d52,#0fa3b5)")
                 if _fd_thumb:
                     _fd_prx = _tr_proxy_thumb(_fd_thumb)
+                    # background-image (not <img>) so a failed load shows the
+                    # gradient underneath instead of a broken-image glyph.
                     _fd_thumb_html = (
                         f'<div class="fd-thumb-wrap" style="background:{_fd_grad};">'
                         f'<div class="fd-thumb-icon">✦</div>'
-                        f'<img src="{_fd_prx}" loading="lazy" alt="" '
-                        f'style="position:absolute;inset:0;width:100%;height:100%;'
-                        f'object-fit:cover;opacity:1;z-index:2;"/>'
+                        f'<div style="position:absolute;inset:0;z-index:2;'
+                        f'background-image:url(\'{_fd_prx}\');background-size:cover;'
+                        f'background-position:center;"></div>'
                         f'</div>'
                     )
                 elif _fd_visual_src:
@@ -5389,9 +5391,9 @@ if _ev_results_stored:
                 f'height:140px;background:{_grad};position:relative;">'
                 f'<div style="position:absolute;inset:0;display:flex;align-items:center;'
                 f'justify-content:center;color:rgba(255,255,255,.3);font-size:28px;">✦</div>'
-                f'<img src="{_prx}" loading="lazy" alt="" '
-                f'style="position:absolute;inset:0;width:100%;height:100%;'
-                f'object-fit:cover;opacity:1;z-index:2;"/>'
+                f'<div style="position:absolute;inset:0;z-index:2;'
+                f'background-image:url(\'{_prx}\');background-size:cover;'
+                f'background-position:center;"></div>'
                 f'</div>'
             )
 
@@ -6353,13 +6355,13 @@ def _tr_render_card(card: dict, col_key: str, idx: int):
     _ph_cls = {"tiktok": "tr-ph-tiktok", "instagram": "tr-ph-instagram"}.get(_card_source, "")
 
     if thumb_src:
-        # Plain img over branded placeholder bg. Explicit inline styles (incl.
-        # opacity:1) so a stale cached CSS rule with opacity:0 can't hide it.
+        # background-image (not <img>) so a failed load shows the branded
+        # placeholder gradient underneath instead of a broken-image glyph.
         thumb_html = (
             f'<div class="tr-thumb-wrap {_ph_cls}">'
-            f'<img src="{thumb_src}" loading="lazy" alt="" '
-            f'style="position:absolute;inset:0;width:100%;height:100%;'
-            f'object-fit:cover;opacity:1;z-index:2;" />'
+            f'<div style="position:absolute;inset:0;z-index:2;'
+            f'background-image:url(\'{thumb_src}\');background-size:cover;'
+            f'background-position:center;"></div>'
             f'</div>'
         )
     elif _ph_cls:
@@ -6526,9 +6528,9 @@ if _hn_board_data:
         if thumb_src:
             thumb_html = (
                 f'<div class="tr-thumb-wrap {_hn_ph_cls}" style="height:100px;">'
-                f'<img src="{thumb_src}" loading="lazy" alt="" '
-                f'style="position:absolute;inset:0;width:100%;height:100%;'
-                f'object-fit:cover;opacity:1;z-index:2;" />'
+                f'<div style="position:absolute;inset:0;z-index:2;'
+                f'background-image:url(\'{thumb_src}\');background-size:cover;'
+                f'background-position:center;"></div>'
                 f'</div>'
             )
         elif _hn_ph_cls:
