@@ -840,24 +840,6 @@ AGENCY_NAME         = os.environ.get("AGENCY_NAME",         "Atlantic · New Yor
 #   sov          → Share-of-Voice rows: (avatar_letter, avatar_hex, brand_name,
 #                  is_ours, descriptor, pct_label, direction, sub_label)
 CLIENTS = {
-    "Heinz": {
-        "label":       "Heinz Soup · United Kingdom",
-        "tagline":     "Reading Britain's lunch currents so Heinz can build the countercurrent.",
-        "focus":       "desk lunch, comfort food, cost of living, office return-to-work culture, UK workers",
-        "beacon":      "#cf2b29",   # Heinz red
-        "beacon2":     "#e0502f",
-        "pill":        "#0a4a6e",
-        "client_tag":  "Heinz",
-        "competitors": "Cully & Sully, New Covent Garden, Batchelors, Cup-a-Soup",
-        "sov_label":   "Soup",
-        "sov": [
-            ("H", "#0a7d8c", "Heinz Cream of Tomato", True,  "Can · flagship",      "▲ 41%", "up",   "Conversation"),
-            ("H", "#0a4a6e", "Heinz Soup of the Day", True,  "Pouch · convenience", "▲ 63%", "up",   "Conversation"),
-            ("C", "#3a6e3a", "Cully & Sully",         False, "Pot · competitor",    "▲ 28%", "up",   "Gaining"),
-            ("G", "#6b4e8c", "New Covent Garden",     False, "Carton · competitor", "● 2%",  "flat", "Flat"),
-            ("B", "#8a6a3a", "Batchelors Cup-a-Soup", False, "Sachet · declining",  "▼ 19%", "down", "Fading"),
-        ],
-    },
     "Rambler": {
         "label":       "Rambler Sparkling Water · United States",
         "tagline":     "Reading America's beverage currents so Rambler can build the countercurrent.",
@@ -877,12 +859,33 @@ CLIENTS = {
             ("W", "#3a6e5a", "Waterloo",            False, "Can · competitor",   "▼ 14%", "down", "Fading"),
         ],
     },
+    "Heinz": {
+        "label":       "Heinz Soup · United Kingdom",
+        "tagline":     "Reading Britain's lunch currents so Heinz can build the countercurrent.",
+        "focus":       "desk lunch, comfort food, cost of living, office return-to-work culture, UK workers",
+        "beacon":      "#cf2b29",   # Heinz red
+        "beacon2":     "#e0502f",
+        "pill":        "#0a4a6e",
+        "client_tag":  "Heinz",
+        "competitors": "Cully & Sully, New Covent Garden, Batchelors, Cup-a-Soup",
+        "sov_label":   "Soup",
+        "sov": [
+            ("H", "#0a7d8c", "Heinz Cream of Tomato", True,  "Can · flagship",      "▲ 41%", "up",   "Conversation"),
+            ("H", "#0a4a6e", "Heinz Soup of the Day", True,  "Pouch · convenience", "▲ 63%", "up",   "Conversation"),
+            ("C", "#3a6e3a", "Cully & Sully",         False, "Pot · competitor",    "▲ 28%", "up",   "Gaining"),
+            ("G", "#6b4e8c", "New Covent Garden",     False, "Carton · competitor", "● 2%",  "flat", "Flat"),
+            ("B", "#8a6a3a", "Batchelors Cup-a-Soup", False, "Sachet · declining",  "▼ 19%", "down", "Fading"),
+        ],
+    },
 }
 
+# First client in the dict is the default shown on load.
+DEFAULT_CLIENT = next(iter(CLIENTS))   # → "Rambler"
+
 def get_active_client() -> dict:
-    """Return the config dict for the currently-selected client (default Heinz)."""
-    key = st.session_state.get("active_client", "Heinz")
-    return CLIENTS.get(key, CLIENTS["Heinz"])
+    """Return the config dict for the currently-selected client (default = first)."""
+    key = st.session_state.get("active_client", DEFAULT_CLIENT)
+    return CLIENTS.get(key, CLIENTS[DEFAULT_CLIENT])
 
 
 def _sov_pct_class_lh(direction: str) -> str:
@@ -988,8 +991,8 @@ with st.sidebar:
         _active_key = st.selectbox(
             "◎ Active client",
             _client_keys,
-            index=_client_keys.index(st.session_state.get("active_client", "Heinz"))
-                  if st.session_state.get("active_client", "Heinz") in _client_keys else 0,
+            index=_client_keys.index(st.session_state.get("active_client", DEFAULT_CLIENT))
+                  if st.session_state.get("active_client", DEFAULT_CLIENT) in _client_keys else 0,
             key="active_client",
             help="Switch the whole dashboard to another client — name, brand colour, "
                  "competitors and Share of Voice all update.",
@@ -1089,10 +1092,15 @@ with st.sidebar:
                 height=68,
                 key="ing_topic",
             )
+            # Use the active client's clean tag ("Heinz" / "Rambler") as default.
+            # The key is client-specific so switching clients refreshes the field
+            # instead of keeping the previous client's cached value.
+            _ing_active_key = st.session_state.get("active_client", DEFAULT_CLIENT)
             _ing_client = st.text_input(
                 "Client tag",
-                value=client_name.replace(" ", "_")[:20] if client_name else "",
-                key="ing_client_tag",
+                value=get_active_client().get("client_tag", _ing_active_key),
+                key=f"ing_client_tag_{_ing_active_key}",
+                help="Signals are saved under this tag. Keep it consistent per client.",
             )
             _ing_limit = st.slider("Max signals", 20, 200, 100, key="ing_limit")
             _ing_sources = st.multiselect(
@@ -1366,9 +1374,33 @@ st.components.v1.html(f"""
 # ── Data loaders ───────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=60)
-def load_signals(path: str = "data/signals.jsonl", limit: int = 200) -> list:
-    """Load signals — from Supabase when configured, else from file."""
+def _load_signals_raw(limit: int = 200) -> list:
+    """Raw signal load (all clients) — cached. Filtering happens in load_signals."""
     return _db.load_signals(limit=limit)
+
+
+def _signal_matches_client(signal: dict, client_key: str) -> bool:
+    """Smart per-client match:
+      • A signal belongs to a client if its client_tag CONTAINS the client key
+        (case-insensitive) — so legacy tags like "Heinz_Soup_·_United_" still
+        count as "Heinz".
+      • Signals with no tag (legacy/untagged) are treated as belonging to the
+        default client ("Heinz") so old data never disappears.
+    """
+    tag = str(signal.get("client_tag") or "").strip().lower()
+    key = str(client_key or "Heinz").strip().lower()
+    if not tag:
+        return key == "heinz"          # untagged legacy data = Heinz
+    return key in tag
+
+
+def load_signals(path: str = "data/signals.jsonl", limit: int = 200) -> list:
+    """Load signals for the ACTIVE client only (smart-tag filtered).
+    Raw DB load is cached; the per-client filter runs each rerun so switching
+    clients immediately shows the right pool without a stale cache."""
+    active = st.session_state.get("active_client", DEFAULT_CLIENT)
+    return [s for s in _load_signals_raw(limit=limit)
+            if _signal_matches_client(s, active)]
 
 
 def semantic_search(query: str, top_k: int = 15, client_filter: Optional[str] = None) -> list:
@@ -3594,7 +3626,7 @@ def load_last_dispatch_for_client(client_key: str):
 
 # ── Mode: saved (free) vs live (calls Claude) ──────────────────────────────────
 
-_active_client_key = st.session_state.get("active_client", "Heinz")
+_active_client_key = st.session_state.get("active_client", DEFAULT_CLIENT)
 
 if not live_mode:
     # SAVED MODE — load last dispatch FOR THE ACTIVE CLIENT, zero API cost.
