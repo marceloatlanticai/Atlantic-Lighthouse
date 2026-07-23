@@ -4238,7 +4238,7 @@ if st.query_params.get("view") == "overview":
     st.markdown("""
 <style>
   [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"] { display:none !important; }
-  .stApp { background:#f6f2e9 !important; }
+  .stApp { background:#f4f4f3 !important; }
   .block-container { max-width:1120px !important; padding-top:1.4rem !important; }
 </style>
 """, unsafe_allow_html=True)
