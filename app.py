@@ -3895,79 +3895,88 @@ def render_simple_view():
         "tagline":  _cc.get("tagline", ""),
         "search":   " ".join(_cc.get("focus", "").split()[:3]) or _active,
     })
-    _beacon = _cc.get("beacon", "#0f5c9e")
     _competitors = [c.strip() for c in _cc.get("competitors", "").split(",") if c.strip()]
     _now = datetime.utcnow()
     _brief_date = f"Q{(_now.month - 1)//3 + 1} {_now.year}"
 
+    # ── Lovable palette: warm cream paper · ink · gold accent · Helvetica ──
+    _sans  = '"Helvetica Neue", Helvetica, Arial, sans-serif'
+    _ink   = "#211c15"   # warm near-black
+    _gold  = "#c2953a"   # amber / gold accent
+    _card  = "#fbf8f0"   # warm card
+    _muted = "#6b6154"   # warm grey text
+    _faint = "#a99f8d"   # faint warm grey (meta)
+    _line  = "#211c15"   # editorial black rules
+    _red   = "#b64a2e"   # warm red for clichés
+    _beacon = _gold      # back-compat alias
+
     st.markdown(f"""
 <style>
-.sv-eyebrow {{ text-align:center; font-family:'JetBrains Mono',monospace; font-size:10px;
-  letter-spacing:.22em; text-transform:uppercase; color:{_beacon}; margin-bottom:6px; }}
-.sv-vol {{ text-align:center; font-family:'JetBrains Mono',monospace; font-size:10px;
-  letter-spacing:.16em; text-transform:uppercase; color:#9dc4d8; margin-bottom:18px; }}
-.sv-bigtitle {{ text-align:center; font-family:Georgia,serif; font-size:46px; font-weight:700;
-  color:#071828; line-height:1.05; margin: 2px 0 14px; }}
-.sv-tagline {{ font-family:Georgia,serif; font-style:italic; font-size:16px; color:#274d68;
+.sv-eyebrow {{ text-align:center; font-family:{_sans}; font-size:11px;
+  letter-spacing:.24em; text-transform:uppercase; color:{_gold}; font-weight:600; margin-bottom:10px; }}
+.sv-vol {{ text-align:center; font-family:{_sans}; font-size:10.5px;
+  letter-spacing:.18em; text-transform:uppercase; color:{_faint}; margin-bottom:18px; }}
+.sv-bigtitle {{ text-align:center; font-family:{_sans}; font-size:52px; font-weight:700;
+  letter-spacing:-.01em; color:{_ink}; line-height:1.0; margin: 2px 0 16px; }}
+.sv-tagline {{ font-family:{_sans}; font-size:16px; color:{_muted};
   max-width: 640px; margin: 0 auto 8px; line-height:1.55; text-align:center; }}
-.sv-section {{ border-top: 2.5px solid #071828; margin-top: 2.8rem; padding-top: 1.2rem; }}
-.sv-num {{ font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700;
-  color:{_beacon}; line-height:1; opacity:.85; }}
-.sv-seclabel {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.2em;
-  text-transform:uppercase; color:#6ea8c4; margin: 6px 0 2px; }}
-.sv-q {{ font-family:Georgia,serif; font-size: 25px; font-weight:600; color:#071828;
-  line-height:1.3; margin-bottom: 14px; }}
-.sv-sub {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.14em;
-  text-transform:uppercase; color:{_beacon}; margin-bottom: 14px; }}
-.sv-card {{ background:#fff; border:1.5px solid #071828; border-radius:8px; padding: 16px 18px; height:100%; }}
-.sv-cur-label {{ font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.16em;
-  text-transform:uppercase; color:{_beacon}; margin-bottom:8px; }}
-.sv-card-title {{ font-family:Georgia,serif; font-size:17px; font-weight:700; color:#071828;
-  margin-bottom:8px; line-height:1.3; }}
-.sv-card-body {{ font-size:13px; color:#33566b; line-height:1.6; }}
-.sv-stat {{ margin-top:12px; padding-top:10px; border-top:1px dashed #cde0e8;
-  font-family:'JetBrains Mono',monospace; font-size:11px; color:{_beacon}; line-height:1.5; }}
-.sv-lead {{ font-family:Georgia,serif; font-size:16px; color:#274d68; line-height:1.6;
-  max-width:760px; margin-bottom: 18px; }}
-.sv-quote {{ background:#f4f9fb; border-left:3px solid {_beacon}; border-radius:0 8px 8px 0; padding:13px 16px; margin-bottom:11px; }}
-.sv-quote-src {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.08em;
-  text-transform:uppercase; color:{_beacon}; font-weight:700; margin-bottom:6px; }}
-.sv-quote-text {{ font-family:Georgia,serif; font-style:italic; font-size:14.5px; color:#071828; line-height:1.55; }}
-.sv-quote-meta {{ font-family:'JetBrains Mono',monospace; font-size:10px; color:#6ea8c4; margin-top:8px; letter-spacing:.04em; }}
-.sv-quote-meta a {{ color:{_beacon}; text-decoration:none; }}
-.sv-comp {{ border-bottom:1px solid #d0e4ed; padding:14px 0; }}
-.sv-comp-name {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.14em;
-  text-transform:uppercase; color:#071828; font-weight:700; margin-bottom:4px; }}
-.sv-comp-move {{ font-family:Georgia,serif; font-size:15.5px; font-weight:600; color:#071828; line-height:1.35; }}
-.sv-comp-detail {{ font-size:12.5px; color:#33566b; line-height:1.55; margin-top:3px; }}
-.sv-comp-cliche {{ margin-top:7px; font-size:12px; color:#c94f35; }}
-.sv-comp-cliche b {{ font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.1em;
-  text-transform:uppercase; color:#c94f35; }}
-.sv-map {{ background:#fdf1ee; border:1px solid #eac6bc; border-radius:10px; padding:16px 18px; margin-top:20px; }}
-.sv-map-title {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.14em;
-  text-transform:uppercase; color:#c94f35; font-weight:700; margin-bottom:10px; }}
-.sv-map-item {{ font-size:13px; color:#8a3a2a; line-height:1.9; }}
+.sv-section {{ border-top: 2.5px solid {_line}; margin-top: 3rem; padding-top: 1.2rem; }}
+.sv-num {{ font-family:{_sans}; font-size:32px; font-weight:800; color:{_gold}; line-height:1; }}
+.sv-seclabel {{ font-family:{_sans}; font-size:11px; letter-spacing:.22em;
+  text-transform:uppercase; color:{_faint}; font-weight:600; margin: 8px 0 2px; }}
+.sv-q {{ font-family:{_sans}; font-size: 27px; font-weight:700; letter-spacing:-.01em; color:{_ink};
+  line-height:1.25; margin-bottom: 14px; }}
+.sv-sub {{ font-family:{_sans}; font-size:11px; letter-spacing:.16em;
+  text-transform:uppercase; color:{_gold}; font-weight:600; margin-bottom: 14px; }}
+.sv-card {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding: 18px 20px; height:100%; }}
+.sv-cur-label {{ font-family:{_sans}; font-size:10px; letter-spacing:.18em;
+  text-transform:uppercase; color:{_gold}; font-weight:600; margin-bottom:10px; }}
+.sv-card-title {{ font-family:{_sans}; font-size:18px; font-weight:700; color:{_ink};
+  margin-bottom:9px; line-height:1.28; }}
+.sv-card-body {{ font-family:{_sans}; font-size:13.5px; color:{_muted}; line-height:1.6; }}
+.sv-stat {{ margin-top:13px; padding-top:11px; border-top:1px solid #e3dccb;
+  font-family:{_sans}; font-size:11.5px; font-weight:600; color:{_gold}; line-height:1.5; }}
+.sv-lead {{ font-family:{_sans}; font-size:16px; color:{_muted}; line-height:1.6;
+  max-width:760px; margin-bottom: 20px; }}
+.sv-quote {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:15px 18px; margin-bottom:12px; }}
+.sv-quote-src {{ font-family:{_sans}; font-size:10.5px; letter-spacing:.12em;
+  text-transform:uppercase; color:{_gold}; font-weight:700; margin-bottom:8px; }}
+.sv-quote-text {{ font-family:{_sans}; font-size:15px; color:{_ink}; line-height:1.55; }}
+.sv-quote-meta {{ font-family:{_sans}; font-size:11px; color:{_faint}; margin-top:9px; letter-spacing:.02em; }}
+.sv-quote-meta a {{ color:{_gold}; text-decoration:none; }}
+.sv-comp {{ border-bottom:1px solid #e3dccb; padding:15px 0; }}
+.sv-comp-name {{ font-family:{_sans}; font-size:11px; letter-spacing:.16em;
+  text-transform:uppercase; color:{_gold}; font-weight:700; margin-bottom:5px; }}
+.sv-comp-move {{ font-family:{_sans}; font-size:16px; font-weight:700; color:{_ink}; line-height:1.32; }}
+.sv-comp-detail {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.55; margin-top:4px; }}
+.sv-comp-cliche {{ margin-top:8px; font-family:{_sans}; font-size:12.5px; color:{_red}; }}
+.sv-comp-cliche b {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.12em;
+  text-transform:uppercase; color:{_red}; font-weight:700; }}
+.sv-map {{ background:#f3e7d5; border:1.5px solid {_line}; border-radius:4px; padding:18px 20px; margin-top:22px; }}
+.sv-map-title {{ font-family:{_sans}; font-size:11px; letter-spacing:.16em;
+  text-transform:uppercase; color:{_red}; font-weight:700; margin-bottom:12px; }}
+.sv-map-item {{ font-family:{_sans}; font-size:13.5px; color:{_ink}; line-height:2.0; }}
 /* Tensions */
-.sv-tension {{ background:#fff; border:1.5px solid #071828; border-radius:8px; padding:16px 18px; height:100%; }}
-.sv-tension-title {{ font-family:Georgia,serif; font-size:16px; font-weight:700; color:#071828; margin-bottom:10px; line-height:1.3; }}
-.sv-tension-side {{ font-size:12.5px; color:#33566b; line-height:1.5; padding-left:14px; position:relative; margin-bottom:6px; }}
-.sv-tension-side::before {{ content:"◆"; position:absolute; left:0; color:{_beacon}; font-size:8px; top:4px; }}
-.sv-tension-open {{ margin-top:11px; padding-top:10px; border-top:1px dashed #cde0e8; }}
-.sv-tension-open b {{ display:block; font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.1em;
-  text-transform:uppercase; color:{_beacon}; margin-bottom:4px; }}
-.sv-tension-open span {{ font-size:12.5px; color:#071828; line-height:1.55; }}
+.sv-tension {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:18px 20px; height:100%; }}
+.sv-tension-title {{ font-family:{_sans}; font-size:17px; font-weight:700; color:{_ink}; margin-bottom:12px; line-height:1.28; }}
+.sv-tension-side {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; padding-left:16px; position:relative; margin-bottom:7px; }}
+.sv-tension-side::before {{ content:"◆"; position:absolute; left:0; color:{_gold}; font-size:8px; top:4px; }}
+.sv-tension-open {{ margin-top:12px; padding-top:11px; border-top:1px solid #e3dccb; }}
+.sv-tension-open b {{ display:block; font-family:{_sans}; font-size:9.5px; letter-spacing:.12em;
+  text-transform:uppercase; color:{_gold}; font-weight:700; margin-bottom:5px; }}
+.sv-tension-open span {{ font-family:{_sans}; font-size:13px; color:{_ink}; line-height:1.55; }}
 /* Cliché language */
-.sv-lang {{ border-bottom:1px solid #d0e4ed; padding:13px 0; display:grid; grid-template-columns:1fr 1.4fr 1.4fr; gap:14px; align-items:start; }}
-.sv-lang-avoid {{ font-family:Georgia,serif; font-size:15px; font-weight:700; color:#c94f35; text-decoration:line-through; }}
-.sv-lang-lbl {{ font-family:'JetBrains Mono',monospace; font-size:8.5px; letter-spacing:.1em; text-transform:uppercase; color:#9dc4d8; display:block; margin-bottom:3px; }}
-.sv-lang-why {{ font-size:12.5px; color:#33566b; line-height:1.5; }}
-.sv-lang-instead {{ font-size:12.5px; color:#1a8a5a; line-height:1.5; }}
+.sv-lang {{ border-bottom:1px solid #e3dccb; padding:14px 0; display:grid; grid-template-columns:1fr 1.4fr 1.4fr; gap:16px; align-items:start; }}
+.sv-lang-avoid {{ font-family:{_sans}; font-size:15.5px; font-weight:700; color:{_red}; text-decoration:line-through; }}
+.sv-lang-lbl {{ font-family:{_sans}; font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:{_faint}; font-weight:600; display:block; margin-bottom:4px; }}
+.sv-lang-why {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; }}
+.sv-lang-instead {{ font-family:{_sans}; font-size:13px; color:#3f7d4a; line-height:1.5; }}
 /* Cliché images */
-.sv-img {{ background:#fff; border:1.5px solid #071828; border-radius:8px; padding:15px 17px; height:100%; }}
-.sv-img-lbl {{ font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:#c94f35; font-weight:700; margin-bottom:7px; }}
-.sv-img-title {{ font-family:Georgia,serif; font-size:15px; font-weight:700; color:#071828; margin-bottom:6px; line-height:1.3; }}
-.sv-img-why {{ font-size:12px; color:#33566b; line-height:1.5; }}
-.sv-empty {{ text-align:center; padding:2.2rem; color:#9dc4d8; font-family:Georgia,serif; font-style:italic; font-size:14px; }}
+.sv-img {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:16px 18px; height:100%; }}
+.sv-img-lbl {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:{_red}; font-weight:700; margin-bottom:8px; }}
+.sv-img-title {{ font-family:{_sans}; font-size:15.5px; font-weight:700; color:{_ink}; margin-bottom:7px; line-height:1.28; }}
+.sv-img-why {{ font-family:{_sans}; font-size:12.5px; color:{_muted}; line-height:1.5; }}
+.sv-empty {{ text-align:center; padding:2.2rem; color:{_faint}; font-family:{_sans}; font-size:14px; }}
 </style>
 <div style="text-align:center; padding: 0.8rem 0 0.4rem;">
   <div class="sv-eyebrow">Lighthouse • {e(_active)} Intelligence Brief</div>
@@ -4221,6 +4230,21 @@ def render_simple_view():
 # Internal team sees the full 4-section one-page layout.
 # We enter/exit tabs via the DeltaGenerator __enter__/__exit__ protocol so
 # existing render blocks don't need to be re-indented.
+
+# ── Standalone full-page Overview (shareable link: add ?view=overview) ─────
+# Renders ONLY the Lovable-styled brief — no tabs, no hero masthead, no second
+# header. Warm cream background + hidden app chrome for a clean share link.
+if st.query_params.get("view") == "overview":
+    st.markdown("""
+<style>
+  [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"] { display:none !important; }
+  .stApp { background:#f6f2e9 !important; }
+  .block-container { max-width:1120px !important; padding-top:1.4rem !important; }
+</style>
+""", unsafe_allow_html=True)
+    render_simple_view()
+    render_footer()
+    st.stop()
 
 # ── Hero masthead — always visible, above all tabs ─────────────────────────
 if content:
