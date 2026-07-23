@@ -466,10 +466,10 @@ def scrape_instagram(
 
         # COST CONTROL: apify/instagram-scraper bills per result, and resultsLimit
         # applies PER hashtag URL — so N results × M hashtags = N×M billed posts.
-        # We use a SINGLE hashtag (the full topic) and cap the limit at 10 to keep
-        # each Instagram search to ≤10 billed posts. This also stops Instagram from
-        # dominating the multi-source feed.
-        _ig_cap = min(n, 10)
+        # We use a SINGLE hashtag (the full topic) and cap the limit at 5 to keep
+        # each Instagram search cheap during testing. This also stops Instagram
+        # from dominating the multi-source feed. Bump this if you need more depth.
+        _ig_cap = min(n, 5)
         full_tag = topic.lower().replace(" ", "")
         direct_urls = [f"https://www.instagram.com/explore/tags/{full_tag}/"]
 

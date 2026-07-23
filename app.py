@@ -3574,20 +3574,47 @@ def load_last_dispatch(path: str = "data/dispatches.jsonl"):
     return full
 
 
+def load_last_dispatch_for_client(client_key: str):
+    """Return the newest saved dispatch belonging to `client_key`, or None.
+    Dispatches are stamped with content["_client"] when generated. Legacy
+    dispatches without that stamp are treated as belonging to "Heinz" so the
+    original single-client history still shows up under Heinz."""
+    try:
+        for rec in _db.load_all_dispatches():   # newest first
+            full = rec.get("full") or {}
+            if full.get("_client", "Heinz") == client_key:
+                full["_dispatch_id"] = rec.get("dispatch_id") or rec.get("timestamp", "fallback")
+                return full
+    except Exception as _exc:
+        print(f"[dispatch] per-client load error: {_exc}")
+    return None
+
+
 
 
 # ── Mode: saved (free) vs live (calls Claude) ──────────────────────────────────
 
+_active_client_key = st.session_state.get("active_client", "Heinz")
+
 if not live_mode:
-    # SAVED MODE — load last dispatch, zero API cost
-    if st.session_state.lh_content is None:
-        saved = load_last_dispatch()
+    # SAVED MODE — load last dispatch FOR THE ACTIVE CLIENT, zero API cost.
+    # Reload whenever the cached dispatch belongs to a different client so
+    # switching from Heinz to Rambler never shows the other client's content.
+    _need_reload = (
+        st.session_state.lh_content is None
+        or st.session_state.get("_dispatch_client") != _active_client_key
+    )
+    if _need_reload:
+        saved = load_last_dispatch_for_client(_active_client_key)
         if saved:
             st.session_state.lh_content = saved
-            st.sidebar.caption("Showing last saved dispatch.")
+            st.sidebar.caption(f"Showing last saved dispatch · {_active_client_key}.")
         else:
             st.session_state.lh_content = _fallback()
-            st.sidebar.caption("No dispatch saved yet — switch to Live to generate.")
+            st.sidebar.caption(
+                f"No dispatch for {_active_client_key} yet — switch to Live and Sweep & Generate."
+            )
+        st.session_state["_dispatch_client"] = _active_client_key
 
 elif regenerate:
     # LIVE MODE — call Claude
@@ -3610,7 +3637,9 @@ elif regenerate:
                         client_filter=client_filter or None,
                     )
                 content = generate(signals, rag, client_name, brief_tagline, focus_topic)
+                content["_client"] = _active_client_key   # stamp so it's scoped to this client
                 st.session_state.lh_content = content
+                st.session_state["_dispatch_client"] = _active_client_key
                 save_dispatch(content, focus_topic)
                 # Record sweep run for velocity tracking
                 _db.record_sweep_run(
