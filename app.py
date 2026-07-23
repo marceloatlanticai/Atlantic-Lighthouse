@@ -3825,9 +3825,9 @@ def _sv_synthesize(signals: list, category: str, competitors: list) -> dict:
         for i, s in enumerate(batch)
     )
     comp = ", ".join(competitors)
-    prompt = f"""You are a sharp cultural strategist analysing the {category} category.
+    prompt = f"""You are the editor of "The Lighthouse", a cultural-intelligence brief written for a strategy team working in the {category} category. Write with a confident editorial voice and a clear point of view. Headlines should make an ARGUMENT (e.g. "Functional water eats flavored water", "Mineral provenance is the new luxury") — never flat descriptions.
 
-Below are {len(batch)} signals from social media, news, communities and the web.
+Below are {len(batch)} REAL signals scraped from social media, communities, news and the web.
 
 SIGNALS:
 {sig_text}
@@ -3835,21 +3835,48 @@ SIGNALS:
 Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
 {{
   "trends": [
-    {{"title": "short punchy trend name", "summary": "2-3 plain-language sentences", "signal_indexes": [0,5,12]}}
+    {{"title": "argumentative headline", "summary": "2-3 sharp sentences with a point of view",
+      "stat": "one momentum line — use a REAL figure or handle from the signals when present; if you have no real number, write a qualitative momentum phrase like 'rising across TikTok & Reddit'. NEVER invent a percentage.",
+      "signal_indexes": [0,5,12]}}
   ],
-  "insights_summary": "3-4 sentences: what are consumers really saying about {category}? Complaints, love, tensions, surprises.",
-  "insight_quotes": [{{"signal_index": 3, "why": "one short line on why this matters"}}],
-  "competitors_summary": "3-4 sentences: what are competitors ({comp}) doing right now?",
-  "cliches": ["cliché 1", "cliché 2", "cliché 3", "cliché 4"],
-  "competitor_headlines": [{{"headline": "short headline of a competitor move", "signal_index": 7}}]
+  "insights_summary": "3-4 sentences: what are people really asking of {category}? The tension, the recurring complaint, the surprise.",
+  "insight_quotes": [
+    {{"signal_index": 3,
+      "platform_label": "real source/handle from the signal, e.g. 'Reddit r/Hydrohomies' or 'TikTok @handle'",
+      "context": "one line of context on the post",
+      "engagement": "real engagement from the signal (likes/views/comments) if present, else empty string"}}
+  ],
+  "competitors_summary": "3-4 sentences: what are competitors ({comp}) doing right now, and what's the predictable pattern everyone follows?",
+  "competitors": [
+    {{"name": "competitor name", "move": "short headline of what they're doing",
+      "detail": "one supporting detail", "cliche": "the cliché this represents — the thing to counter"}}
+  ],
+  "cliche_map": ["category cliché 1", "cliché 2", "cliché 3", "cliché 4", "cliché 5"],
+  "tensions": [
+    {{"title": "short name for the contradiction, e.g. 'Wants ritual, distrusts marketing'",
+      "side_a": "one side of the contradiction the consumer lives inside",
+      "side_b": "the opposing side they hold at the same time",
+      "opening": "the countercurrent opening this tension creates for the brand"}}
+  ],
+  "cliche_language": [
+    {{"avoid": "an overused word/phrase in the category's marketing",
+      "why": "why it's dead / puts you back in the current",
+      "instead": "what to do instead"}}
+  ],
+  "cliche_images": [
+    {{"title": "an overused visual/photography trope in the category",
+      "why": "why it makes the brand look like everyone else"}}
+  ]
 }}
 
 Rules:
-- Exactly 3 trends; 4-6 insight_quotes (pick posts with authentic human voice); exactly 3 competitor_headlines.
-- signal_indexes/signal_index must reference real indexes above.
-- "cliches" = tropes EVERY brand in the category follows (to counter later).
-- Plain, punchy language. No jargon."""
-    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=2000,
+- EXACTLY 3 trends. 5-6 insight_quotes chosen for authentic human voice. 4-5 competitors (the named ones plus any real player you spot in the signals). 4-6 cliche_map entries.
+- 4 tensions (real contradictions consumers hold), 5-6 cliche_language entries, 5-6 cliche_images entries.
+- signal_index / signal_indexes must reference real indexes from the list above.
+- NEVER invent statistics — use real figures from the signals or qualitative phrasing.
+- Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
+- Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly." """
+    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=4000,
                                   messages=[{"role": "user", "content": prompt}])
     raw = resp.content[0].text.strip()
     s, en = raw.find("{"), raw.rfind("}") + 1
@@ -3870,33 +3897,83 @@ def render_simple_view():
     })
     _beacon = _cc.get("beacon", "#0f5c9e")
     _competitors = [c.strip() for c in _cc.get("competitors", "").split(",") if c.strip()]
+    _now = datetime.utcnow()
+    _brief_date = f"Q{(_now.month - 1)//3 + 1} {_now.year}"
 
     st.markdown(f"""
 <style>
-.sv-masthead {{ text-align:center; padding: 1.2rem 0 0.6rem; }}
-.sv-logo {{ display:inline-block; font-family:Georgia,serif; font-size: 28px; font-weight:700;
-  letter-spacing:.14em; color:#071828; border:2.5px solid #071828; border-radius:6px; padding: 6px 22px; }}
-.sv-tagline {{ font-family:Georgia,serif; font-style:italic; font-size:15px; color:#274d68;
-  max-width: 620px; margin: 14px auto 0; line-height:1.55; }}
-.sv-section {{ border-top: 2.5px solid #071828; margin-top: 2.4rem; padding-top: 1.1rem; }}
-.sv-q {{ font-family:Georgia,serif; font-size: 20px; font-weight:600; color:#071828; line-height:1.35; margin-bottom: 4px; }}
+.sv-eyebrow {{ text-align:center; font-family:'JetBrains Mono',monospace; font-size:10px;
+  letter-spacing:.22em; text-transform:uppercase; color:{_beacon}; margin-bottom:6px; }}
+.sv-vol {{ text-align:center; font-family:'JetBrains Mono',monospace; font-size:10px;
+  letter-spacing:.16em; text-transform:uppercase; color:#9dc4d8; margin-bottom:18px; }}
+.sv-bigtitle {{ text-align:center; font-family:Georgia,serif; font-size:46px; font-weight:700;
+  color:#071828; line-height:1.05; margin: 2px 0 14px; }}
+.sv-tagline {{ font-family:Georgia,serif; font-style:italic; font-size:16px; color:#274d68;
+  max-width: 640px; margin: 0 auto 8px; line-height:1.55; text-align:center; }}
+.sv-section {{ border-top: 2.5px solid #071828; margin-top: 2.8rem; padding-top: 1.2rem; }}
+.sv-num {{ font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700;
+  color:{_beacon}; line-height:1; opacity:.85; }}
+.sv-seclabel {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.2em;
+  text-transform:uppercase; color:#6ea8c4; margin: 6px 0 2px; }}
+.sv-q {{ font-family:Georgia,serif; font-size: 25px; font-weight:600; color:#071828;
+  line-height:1.3; margin-bottom: 14px; }}
 .sv-sub {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.14em;
   text-transform:uppercase; color:{_beacon}; margin-bottom: 14px; }}
 .sv-card {{ background:#fff; border:1.5px solid #071828; border-radius:8px; padding: 16px 18px; height:100%; }}
-.sv-card-title {{ font-family:Georgia,serif; font-size:15px; font-weight:700; color:#071828; margin-bottom:8px; line-height:1.35; }}
+.sv-cur-label {{ font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.16em;
+  text-transform:uppercase; color:{_beacon}; margin-bottom:8px; }}
+.sv-card-title {{ font-family:Georgia,serif; font-size:17px; font-weight:700; color:#071828;
+  margin-bottom:8px; line-height:1.3; }}
 .sv-card-body {{ font-size:13px; color:#33566b; line-height:1.6; }}
-.sv-quote {{ background:#f4f9fb; border-left:3px solid {_beacon}; border-radius:0 8px 8px 0; padding:12px 16px; margin-bottom:10px; }}
-.sv-quote-text {{ font-family:Georgia,serif; font-style:italic; font-size:14px; color:#071828; line-height:1.55; }}
-.sv-quote-meta {{ font-family:'JetBrains Mono',monospace; font-size:10px; color:#6ea8c4; margin-top:6px; text-transform:uppercase; letter-spacing:.06em; }}
+.sv-stat {{ margin-top:12px; padding-top:10px; border-top:1px dashed #cde0e8;
+  font-family:'JetBrains Mono',monospace; font-size:11px; color:{_beacon}; line-height:1.5; }}
+.sv-lead {{ font-family:Georgia,serif; font-size:16px; color:#274d68; line-height:1.6;
+  max-width:760px; margin-bottom: 18px; }}
+.sv-quote {{ background:#f4f9fb; border-left:3px solid {_beacon}; border-radius:0 8px 8px 0; padding:13px 16px; margin-bottom:11px; }}
+.sv-quote-src {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.08em;
+  text-transform:uppercase; color:{_beacon}; font-weight:700; margin-bottom:6px; }}
+.sv-quote-text {{ font-family:Georgia,serif; font-style:italic; font-size:14.5px; color:#071828; line-height:1.55; }}
+.sv-quote-meta {{ font-family:'JetBrains Mono',monospace; font-size:10px; color:#6ea8c4; margin-top:8px; letter-spacing:.04em; }}
 .sv-quote-meta a {{ color:{_beacon}; text-decoration:none; }}
-.sv-headline {{ font-family:Georgia,serif; font-size:15px; font-weight:600; color:#071828; padding:10px 0; border-bottom:1px solid #d0e4ed; line-height:1.4; }}
-.sv-headline small {{ display:block; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:400; color:#6ea8c4; margin-top:3px; text-transform:uppercase; }}
-.sv-cliche {{ display:inline-block; background:#fdf1ee; color:#c94f35; border:1px solid #eac6bc; border-radius:20px; padding:4px 13px; font-size:12px; margin:0 6px 8px 0; font-family:'JetBrains Mono',monospace; }}
+.sv-comp {{ border-bottom:1px solid #d0e4ed; padding:14px 0; }}
+.sv-comp-name {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.14em;
+  text-transform:uppercase; color:#071828; font-weight:700; margin-bottom:4px; }}
+.sv-comp-move {{ font-family:Georgia,serif; font-size:15.5px; font-weight:600; color:#071828; line-height:1.35; }}
+.sv-comp-detail {{ font-size:12.5px; color:#33566b; line-height:1.55; margin-top:3px; }}
+.sv-comp-cliche {{ margin-top:7px; font-size:12px; color:#c94f35; }}
+.sv-comp-cliche b {{ font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.1em;
+  text-transform:uppercase; color:#c94f35; }}
+.sv-map {{ background:#fdf1ee; border:1px solid #eac6bc; border-radius:10px; padding:16px 18px; margin-top:20px; }}
+.sv-map-title {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.14em;
+  text-transform:uppercase; color:#c94f35; font-weight:700; margin-bottom:10px; }}
+.sv-map-item {{ font-size:13px; color:#8a3a2a; line-height:1.9; }}
+/* Tensions */
+.sv-tension {{ background:#fff; border:1.5px solid #071828; border-radius:8px; padding:16px 18px; height:100%; }}
+.sv-tension-title {{ font-family:Georgia,serif; font-size:16px; font-weight:700; color:#071828; margin-bottom:10px; line-height:1.3; }}
+.sv-tension-side {{ font-size:12.5px; color:#33566b; line-height:1.5; padding-left:14px; position:relative; margin-bottom:6px; }}
+.sv-tension-side::before {{ content:"◆"; position:absolute; left:0; color:{_beacon}; font-size:8px; top:4px; }}
+.sv-tension-open {{ margin-top:11px; padding-top:10px; border-top:1px dashed #cde0e8; }}
+.sv-tension-open b {{ display:block; font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.1em;
+  text-transform:uppercase; color:{_beacon}; margin-bottom:4px; }}
+.sv-tension-open span {{ font-size:12.5px; color:#071828; line-height:1.55; }}
+/* Cliché language */
+.sv-lang {{ border-bottom:1px solid #d0e4ed; padding:13px 0; display:grid; grid-template-columns:1fr 1.4fr 1.4fr; gap:14px; align-items:start; }}
+.sv-lang-avoid {{ font-family:Georgia,serif; font-size:15px; font-weight:700; color:#c94f35; text-decoration:line-through; }}
+.sv-lang-lbl {{ font-family:'JetBrains Mono',monospace; font-size:8.5px; letter-spacing:.1em; text-transform:uppercase; color:#9dc4d8; display:block; margin-bottom:3px; }}
+.sv-lang-why {{ font-size:12.5px; color:#33566b; line-height:1.5; }}
+.sv-lang-instead {{ font-size:12.5px; color:#1a8a5a; line-height:1.5; }}
+/* Cliché images */
+.sv-img {{ background:#fff; border:1.5px solid #071828; border-radius:8px; padding:15px 17px; height:100%; }}
+.sv-img-lbl {{ font-family:'JetBrains Mono',monospace; font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:#c94f35; font-weight:700; margin-bottom:7px; }}
+.sv-img-title {{ font-family:Georgia,serif; font-size:15px; font-weight:700; color:#071828; margin-bottom:6px; line-height:1.3; }}
+.sv-img-why {{ font-size:12px; color:#33566b; line-height:1.5; }}
 .sv-empty {{ text-align:center; padding:2.2rem; color:#9dc4d8; font-family:Georgia,serif; font-style:italic; font-size:14px; }}
 </style>
-<div class="sv-masthead">
-  <span class="sv-logo">LIGHTHOUSE</span>
+<div style="text-align:center; padding: 0.8rem 0 0.4rem;">
+  <div class="sv-eyebrow">Lighthouse • {e(_active)} Intelligence Brief</div>
+  <div class="sv-bigtitle">The Lighthouse</div>
   <div class="sv-tagline">{e(_prof["tagline"])}</div>
+  <div class="sv-vol" style="margin-top:14px;">Live Brief — {e(_brief_date)}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -3923,15 +4000,21 @@ def render_simple_view():
         try: return _sigs[int(idx)]
         except Exception: return None
 
-    # ── Section 1 — Trending now ──────────────────────────────────────────
-    st.markdown(f'<div class="sv-section"><div class="sv-q">What is trending now in {e(_prof["category"])}?</div>'
-                f'<div class="sv-sub">Three currents, summarised</div></div>', unsafe_allow_html=True)
+    # ── Section 01 — The Currents ─────────────────────────────────────────
+    st.markdown(f'<div class="sv-section"><div class="sv-num">01</div>'
+                f'<div class="sv-seclabel">The Currents</div>'
+                f'<div class="sv-q">What is trending in {e(_prof["category"])}</div></div>',
+                unsafe_allow_html=True)
     if _res and _res.get("trends"):
         _tcols = st.columns(3)
         for _i, _t in enumerate(_res["trends"][:3]):
             with _tcols[_i]:
-                st.markdown(f'<div class="sv-card"><div class="sv-card-title">{e(_t.get("title",""))}</div>'
-                            f'<div class="sv-card-body">{e(_t.get("summary",""))}</div></div>', unsafe_allow_html=True)
+                _stat = _t.get("stat", "")
+                _stat_html = f'<div class="sv-stat">{e(_stat)}</div>' if _stat else ""
+                st.markdown(f'<div class="sv-card"><div class="sv-cur-label">Current</div>'
+                            f'<div class="sv-card-title">{e(_t.get("title",""))}</div>'
+                            f'<div class="sv-card-body">{e(_t.get("summary",""))}</div>'
+                            f'{_stat_html}</div>', unsafe_allow_html=True)
                 with st.expander("🔍 Dig deeper"):
                     _idxs = _t.get("signal_indexes", [])
                     if not _idxs:
@@ -3945,49 +4028,131 @@ def render_simple_view():
     else:
         st.markdown('<div class="sv-empty">Press ⚡ Scan the currents to fill this page.</div>', unsafe_allow_html=True)
 
-    # ── Section 2 — Consumer insights ─────────────────────────────────────
-    st.markdown('<div class="sv-section"><div class="sv-q">What are the most insightful consumer posts, comments and critiques right now?</div>'
-                '<div class="sv-sub">From social, communities, Reddit — complaints, love and everything between</div></div>',
+    # ── Section 02 — Consumer Insight ─────────────────────────────────────
+    st.markdown('<div class="sv-section"><div class="sv-num">02</div>'
+                '<div class="sv-seclabel">Consumer Insight</div>'
+                '<div class="sv-q">What people are actually saying</div></div>',
                 unsafe_allow_html=True)
     if _res:
         if _res.get("insights_summary"):
-            st.markdown(f'<div class="sv-card" style="margin-bottom:16px;"><div class="sv-card-body" '
-                        f'style="font-size:14px;">{e(_res["insights_summary"])}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="sv-lead">{e(_res["insights_summary"])}</div>', unsafe_allow_html=True)
         for _q in _res.get("insight_quotes", [])[:6]:
             _s = _sig(_q.get("signal_index"))
             if not _s: continue
-            _lbl = _SV_SRC_LABEL.get(_s["source"], _s["source"].title())
+            _src_lbl = _q.get("platform_label") or _SV_SRC_LABEL.get(_s["source"], _s["source"].title())
             _link = f' · <a href="{_s["url"]}" target="_blank">open ↗</a>' if _s.get("url") else ""
             _text = (_s["content"] or _s["title"])[:280]
-            st.markdown(f'<div class="sv-quote"><div class="sv-quote-text">&ldquo;{e(_text)}&rdquo;</div>'
-                        f'<div class="sv-quote-meta">{e(_lbl)} · {e(_q.get("why",""))}{_link}</div></div>', unsafe_allow_html=True)
+            _ctx = _q.get("context", "")
+            _eng = _q.get("engagement", "")
+            _meta_bits = " · ".join(b for b in [_ctx, _eng] if b)
+            st.markdown(f'<div class="sv-quote">'
+                        f'<div class="sv-quote-src">{e(_src_lbl)}</div>'
+                        f'<div class="sv-quote-text">&ldquo;{e(_text)}&rdquo;</div>'
+                        f'<div class="sv-quote-meta">{e(_meta_bits)}{_link}</div></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
-    # ── Section 3 — Competitor currents ───────────────────────────────────
-    st.markdown(f'<div class="sv-section"><div class="sv-q">What are the latest moves from competitors in the category?</div>'
-                f'<div class="sv-sub">{e(" · ".join(_competitors))}</div></div>', unsafe_allow_html=True)
+    # ── Section 03 — The Competitive Current ──────────────────────────────
+    st.markdown('<div class="sv-section"><div class="sv-num">03</div>'
+                '<div class="sv-seclabel">The Competitive Current</div>'
+                '<div class="sv-q">What everyone else is doing</div></div>',
+                unsafe_allow_html=True)
     if _res:
         if _res.get("competitors_summary"):
-            st.markdown(f'<div class="sv-card" style="margin-bottom:16px;"><div class="sv-card-body" '
-                        f'style="font-size:14px;">{e(_res["competitors_summary"])}</div></div>', unsafe_allow_html=True)
-        for _h in _res.get("competitor_headlines", [])[:3]:
-            _s = _sig(_h.get("signal_index"))
-            _link = f' <a href="{_s["url"]}" target="_blank" style="font-size:11px;">↗</a>' if _s and _s.get("url") else ""
-            _lbl = _SV_SRC_LABEL.get(_s["source"], "") if _s else ""
-            st.markdown(f'<div class="sv-headline">{e(_h.get("headline",""))}{_link}<small>{e(_lbl)}</small></div>', unsafe_allow_html=True)
-        if _res.get("cliches"):
-            st.markdown('<div style="margin-top:18px;font-family:\'JetBrains Mono\',monospace;font-size:10px;'
-                        'letter-spacing:.14em;text-transform:uppercase;color:#c94f35;margin-bottom:8px;">'
-                        '⚠ The clichés everyone is following — counter these to unlock white space</div>', unsafe_allow_html=True)
-            st.markdown("".join(f'<span class="sv-cliche">{e(c)}</span>' for c in _res["cliches"][:6]), unsafe_allow_html=True)
+            st.markdown(f'<div class="sv-lead">{e(_res["competitors_summary"])}</div>', unsafe_allow_html=True)
+        for _cmp in _res.get("competitors", [])[:5]:
+            _cl_txt = _cmp.get("cliche", "")
+            _cl_html = (f'<div class="sv-comp-cliche"><b>Cliché to counter:</b> {e(_cl_txt)}</div>'
+                        if _cl_txt else "")
+            st.markdown(f'<div class="sv-comp">'
+                        f'<div class="sv-comp-name">{e(_cmp.get("name",""))}</div>'
+                        f'<div class="sv-comp-move">{e(_cmp.get("move",""))}</div>'
+                        f'<div class="sv-comp-detail">{e(_cmp.get("detail",""))}</div>'
+                        f'{_cl_html}</div>', unsafe_allow_html=True)
+        if _res.get("cliche_map"):
+            _map_items = "".join(f'<div class="sv-map-item">✕ &nbsp;{e(c)}</div>'
+                                 for c in _res["cliche_map"][:6])
+            st.markdown(f'<div class="sv-map"><div class="sv-map-title">'
+                        f'Category clichés — the countercurrent map</div>{_map_items}</div>',
+                        unsafe_allow_html=True)
     else:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
-    # ── Section 4 — Test your hunch ───────────────────────────────────────
-    st.markdown('<div class="sv-section"><div class="sv-q">Test your hunch</div>'
-                '<div class="sv-sub">Type a potential countercurrent — the data supports or challenges it</div></div>',
+    # ── Section 04 — Cultural Tensions ────────────────────────────────────
+    st.markdown('<div class="sv-section"><div class="sv-num">04</div>'
+                '<div class="sv-seclabel">Cultural Tensions</div>'
+                '<div class="sv-q">The contradictions people are living inside</div></div>',
                 unsafe_allow_html=True)
+    st.markdown('<div class="sv-lead">Trends tell you what\'s happening. Tensions tell you where the '
+                'countercurrent actually lives — in the gap between what people want and what they distrust.</div>',
+                unsafe_allow_html=True)
+    if _res and _res.get("tensions"):
+        _tn = _res["tensions"][:4]
+        for _row_start in range(0, len(_tn), 2):
+            _cols = st.columns(2)
+            for _j, _t in enumerate(_tn[_row_start:_row_start + 2]):
+                with _cols[_j]:
+                    _open = _t.get("opening", "")
+                    _open_html = (f'<div class="sv-tension-open"><b>Countercurrent opening</b>'
+                                  f'<span>{e(_open)}</span></div>' if _open else "")
+                    st.markdown(f'<div class="sv-tension">'
+                                f'<div class="sv-tension-title">{e(_t.get("title",""))}</div>'
+                                f'<div class="sv-tension-side">{e(_t.get("side_a",""))}</div>'
+                                f'<div class="sv-tension-side">{e(_t.get("side_b",""))}</div>'
+                                f'{_open_html}</div>', unsafe_allow_html=True)
+                    st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
+    elif not _res:
+        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
+
+    # ── Section 05 — Cliché language to avoid ─────────────────────────────
+    st.markdown('<div class="sv-section"><div class="sv-num">05</div>'
+                '<div class="sv-seclabel">Cliché language to avoid</div>'
+                '<div class="sv-q">Words that put you back in the current</div></div>',
+                unsafe_allow_html=True)
+    st.markdown('<div class="sv-lead">Copy-deck poison. If a line lands in a deck with any of these words, '
+                'send it back — each one signals a brand swimming with the school.</div>', unsafe_allow_html=True)
+    if _res and _res.get("cliche_language"):
+        for _l in _res["cliche_language"][:6]:
+            st.markdown(f'<div class="sv-lang">'
+                        f'<div><span class="sv-lang-lbl">Avoid</span>'
+                        f'<span class="sv-lang-avoid">{e(_l.get("avoid",""))}</span></div>'
+                        f'<div><span class="sv-lang-lbl">Why</span>'
+                        f'<span class="sv-lang-why">{e(_l.get("why",""))}</span></div>'
+                        f'<div><span class="sv-lang-lbl">Instead</span>'
+                        f'<span class="sv-lang-instead">{e(_l.get("instead",""))}</span></div>'
+                        f'</div>', unsafe_allow_html=True)
+    elif not _res:
+        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
+
+    # ── Section 06 — Cliché images to avoid ───────────────────────────────
+    st.markdown('<div class="sv-section"><div class="sv-num">06</div>'
+                '<div class="sv-seclabel">Cliché images to avoid</div>'
+                '<div class="sv-q">Visual territory already burnt</div></div>',
+                unsafe_allow_html=True)
+    st.markdown('<div class="sv-lead">If the moodboard leans on any of these, the brand will look like the '
+                'ninth can on the shelf — not the countercurrent.</div>', unsafe_allow_html=True)
+    if _res and _res.get("cliche_images"):
+        _im = _res["cliche_images"][:6]
+        for _row_start in range(0, len(_im), 3):
+            _cols = st.columns(3)
+            for _j, _img in enumerate(_im[_row_start:_row_start + 3]):
+                with _cols[_j]:
+                    st.markdown(f'<div class="sv-img"><div class="sv-img-lbl">✕ Do not shoot</div>'
+                                f'<div class="sv-img-title">{e(_img.get("title",""))}</div>'
+                                f'<div class="sv-img-why">{e(_img.get("why",""))}</div></div>',
+                                unsafe_allow_html=True)
+                    st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
+    elif not _res:
+        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
+
+    # ── Section 07 — The Lighthouse Test ──────────────────────────────────
+    st.markdown('<div class="sv-section"><div class="sv-num">07</div>'
+                '<div class="sv-seclabel">The Lighthouse Test</div>'
+                '<div class="sv-q">Test your hypothesis</div></div>',
+                unsafe_allow_html=True)
+    st.markdown('<div class="sv-lead">Describe a potential countercurrent move. The Lighthouse '
+                'weighs it against the currents above and tells you if it truly cuts against the '
+                'grain — or if it\'s swimming with the school.</div>', unsafe_allow_html=True)
     _hc1, _hc2 = st.columns([5, 1])
     with _hc1:
         _hunch = st.text_input("Hunch", label_visibility="collapsed",
