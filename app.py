@@ -46,6 +46,7 @@ USERS = {
     "Marco":   os.environ.get("PASS_MARCO",   "Marco123"),
     "Pat":     os.environ.get("PASS_PAT",      "Pat123"),
     "Joao":    os.environ.get("PASS_JOAO",     "Joao123"),
+    "Stacia":  os.environ.get("PASS_STACIA",   "Stacia123"),
 }
 
 # User avatar colors
@@ -54,6 +55,7 @@ USER_COLORS = {
     "Marco":   "#1a6b4a",
     "Pat":     "#8a3a8c",
     "Joao":    "#0a4a6e",
+    "Stacia":  "#b5528a",
 }
 
 def e(text) -> str:
@@ -824,6 +826,99 @@ CLIENT_BEACON_2     = os.environ.get("CLIENT_BEACON_2",     "#0fa3b5")
 CLIENT_PILL_COLOR   = os.environ.get("CLIENT_PILL_COLOR",   "#0a4a6e")
 AGENCY_NAME         = os.environ.get("AGENCY_NAME",         "Atlantic · New York")
 
+# ── Client profiles ───────────────────────────────────────────────────────────
+# Each user can switch the active client freely (selector in the sidebar).
+# Adding a new client = add one entry here; no other code changes needed.
+# Fields:
+#   label        → display name (also the default "Client" field value)
+#   tagline      → brief tagline shown under the masthead
+#   focus        → default focus topic / brief for generation
+#   beacon/2     → brand colours (masthead beacon + lighter shade)
+#   pill         → pill/accent colour
+#   client_tag   → tag used to filter this client's signals in the DB
+#   competitors  → comma-separated competitor brands (Competitive Pulse)
+#   sov          → Share-of-Voice rows: (avatar_letter, avatar_hex, brand_name,
+#                  is_ours, descriptor, pct_label, direction, sub_label)
+CLIENTS = {
+    "Heinz": {
+        "label":       "Heinz Soup · United Kingdom",
+        "tagline":     "Reading Britain's lunch currents so Heinz can build the countercurrent.",
+        "focus":       "desk lunch, comfort food, cost of living, office return-to-work culture, UK workers",
+        "beacon":      "#cf2b29",   # Heinz red
+        "beacon2":     "#e0502f",
+        "pill":        "#0a4a6e",
+        "client_tag":  "Heinz",
+        "competitors": "Cully & Sully, New Covent Garden, Batchelors, Cup-a-Soup",
+        "sov_label":   "Soup",
+        "sov": [
+            ("H", "#0a7d8c", "Heinz Cream of Tomato", True,  "Can · flagship",      "▲ 41%", "up",   "Conversation"),
+            ("H", "#0a4a6e", "Heinz Soup of the Day", True,  "Pouch · convenience", "▲ 63%", "up",   "Conversation"),
+            ("C", "#3a6e3a", "Cully & Sully",         False, "Pot · competitor",    "▲ 28%", "up",   "Gaining"),
+            ("G", "#6b4e8c", "New Covent Garden",     False, "Carton · competitor", "● 2%",  "flat", "Flat"),
+            ("B", "#8a6a3a", "Batchelors Cup-a-Soup", False, "Sachet · declining",  "▼ 19%", "down", "Fading"),
+        ],
+    },
+    "Rambler": {
+        "label":       "Rambler Sparkling Water · United States",
+        "tagline":     "Reading America's beverage currents so Rambler can build the countercurrent.",
+        "focus":       "sparkling water, mineral water, non-alcoholic drinks, sober curious, better-for-you beverages, Austin Texas culture",
+        "beacon":      "#0f5c9e",   # Rambler blue
+        "beacon2":     "#1a86c9",
+        "pill":        "#0a3d5e",
+        "client_tag":  "Rambler",
+        "competitors": "Topo Chico, Liquid Death, LaCroix, Waterloo, Spindrift, Perrier",
+        "sov_label":   "Sparkling Water",
+        "sov": [
+            ("R", "#0f5c9e", "Rambler Original",    True,  "Can · flagship",     "▲ 37%", "up",   "Conversation"),
+            ("R", "#8a1f3a", "Rambler Wild Cherry", True,  "Can · new flavor",   "▲ 52%", "up",   "Conversation"),
+            ("T", "#c9a23a", "Topo Chico",          False, "Bottle · competitor","▲ 24%", "up",   "Gaining"),
+            ("L", "#111111", "Liquid Death",        False, "Can · competitor",   "▲ 61%", "up",   "Surging"),
+            ("L", "#3a8ab5", "LaCroix",             False, "Can · competitor",   "● 3%",  "flat", "Flat"),
+            ("W", "#3a6e5a", "Waterloo",            False, "Can · competitor",   "▼ 14%", "down", "Fading"),
+        ],
+    },
+}
+
+def get_active_client() -> dict:
+    """Return the config dict for the currently-selected client (default Heinz)."""
+    key = st.session_state.get("active_client", "Heinz")
+    return CLIENTS.get(key, CLIENTS["Heinz"])
+
+
+def _sov_pct_class_lh(direction: str) -> str:
+    return {"up": "lh-bpct lh-bpct-up", "down": "lh-bpct lh-bpct-down"}.get(
+        direction, 'lh-bpct" style="color:#6ea8c4')
+
+
+def render_sov_rows_lh(client_cfg: dict) -> str:
+    """Share-of-Voice rows for the on-page masthead panel (lh- CSS classes)."""
+    rows = ""
+    for av, av_hex, name, is_ours, desc, pct, direction, sub in client_cfg.get("sov", []):
+        ours = ' <span class="lh-ours">OURS</span>' if is_ours else ""
+        pct_cls = _sov_pct_class_lh(direction)
+        rows += (
+            f'<div class="lh-brandrow"><div class="lh-av" style="background:{av_hex}">{av}</div>'
+            f'<div><div class="lh-bn">{e(name)}{ours}</div><div class="lh-bi">{e(desc)}</div></div>'
+            f'<div class="lh-bstat"><div class="{pct_cls}">{pct}</div>'
+            f'<div class="lh-bsub">{e(sub)}</div></div></div>'
+        )
+    return rows
+
+
+def render_sov_rows_email(client_cfg: dict) -> str:
+    """Share-of-Voice rows for the email/HTML build (non-prefixed CSS classes)."""
+    rows = ""
+    for av, av_hex, name, is_ours, desc, pct, direction, sub in client_cfg.get("sov", []):
+        ours = ' <span class="ours">OURS</span>' if is_ours else ""
+        pct_cls = {"up": "pct up", "down": "pct down"}.get(direction, 'pct" style="color:#6ea8c4')
+        rows += (
+            f'<div class="brandrow"><div class="av" style="background:{av_hex}">{av}</div>'
+            f'<div><div class="bn">{e(name)}{ours}</div><div class="bi">{e(desc)}</div></div>'
+            f'<div class="stat"><div class="{pct_cls}">{pct}</div>'
+            f'<div class="sub">{e(sub)}</div></div></div>'
+        )
+    return rows
+
 # ── Sidebar — config ───────────────────────────────────────────────────────────
 with st.sidebar:
     current_user  = st.session_state.logged_in_user
@@ -888,17 +983,37 @@ with st.sidebar:
         st.markdown("---")
         st.caption("You're viewing a read-only client dispatch. Some sections may be hidden based on your access level.")
     else:
-        client_name   = st.text_input("Client", value="Heinz Soup · United Kingdom")
-        brief_tagline = st.text_input("Brief tagline", value="Reading Britain's lunch currents so Heinz can build the countercurrent.")
+        # ── Active client selector (each user switches freely) ──────────────
+        _client_keys = list(CLIENTS.keys())
+        _active_key = st.selectbox(
+            "◎ Active client",
+            _client_keys,
+            index=_client_keys.index(st.session_state.get("active_client", "Heinz"))
+                  if st.session_state.get("active_client", "Heinz") in _client_keys else 0,
+            key="active_client",
+            help="Switch the whole dashboard to another client — name, brand colour, "
+                 "competitors and Share of Voice all update.",
+        )
+        _cc = CLIENTS[_active_key]
+
+        # Apply the client's brand colours (module-level vars used by masthead/
+        # footer). This runs at module scope, so a plain assignment updates the
+        # globals that downstream render code reads.
+        CLIENT_BEACON_COLOR = _cc["beacon"]
+        CLIENT_BEACON_2     = _cc["beacon2"]
+        CLIENT_PILL_COLOR   = _cc["pill"]
+
+        client_name   = st.text_input("Client", value=_cc["label"])
+        brief_tagline = st.text_input("Brief tagline", value=_cc["tagline"])
         focus_topic   = st.text_area(
             "Focus topic / brief",
-            value="desk lunch, comfort food, cost of living, office return-to-work culture, UK workers",
+            value=_cc["focus"],
             height=80,
         )
         client_filter   = st.text_input("Client tag filter", value="", placeholder="Leave blank = all signals")
         competitors_raw = st.text_input(
             "Competitor brands",
-            value="Cully & Sully, New Covent Garden, Batchelors, Cup-a-Soup",
+            value=_cc["competitors"],
             help="Comma-separated — used in Competitive Pulse",
         )
 
@@ -2347,16 +2462,16 @@ def render_content_sections(content: dict, user: str, show_competitive: bool = T
 
     # ── RAIL SIDEBAR ──────────────────────────────────────────────────────────
     with col_rail:
-        # Share of Voice (static — no save button needed)
-        st.markdown("""
-<div class="lh-panel">
-  <div class="lh-panel-head">Share Of Voice · Soup <span class="lh-panel-cnt">7d</span></div>
-  <div class="lh-brandrow"><div class="lh-av" style="background:#0a7d8c">H</div><div><div class="lh-bn">Heinz Cream of Tomato <span class="lh-ours">OURS</span></div><div class="lh-bi">Can · flagship</div></div><div class="lh-bstat"><div class="lh-bpct lh-bpct-up">▲ 41%</div><div class="lh-bsub">Conversation</div></div></div>
-  <div class="lh-brandrow"><div class="lh-av" style="background:#0a4a6e">H</div><div><div class="lh-bn">Heinz Soup of the Day <span class="lh-ours">OURS</span></div><div class="lh-bi">Pouch · convenience</div></div><div class="lh-bstat"><div class="lh-bpct lh-bpct-up">▲ 63%</div><div class="lh-bsub">Conversation</div></div></div>
-  <div class="lh-brandrow"><div class="lh-av" style="background:#3a6e3a">C</div><div><div class="lh-bn">Cully &amp; Sully</div><div class="lh-bi">Pot · competitor</div></div><div class="lh-bstat"><div class="lh-bpct lh-bpct-up">▲ 28%</div><div class="lh-bsub">Gaining</div></div></div>
-  <div class="lh-brandrow"><div class="lh-av" style="background:#6b4e8c">G</div><div><div class="lh-bn">New Covent Garden</div><div class="lh-bi">Carton · competitor</div></div><div class="lh-bstat"><div class="lh-bpct" style="color:#6ea8c4">● 2%</div><div class="lh-bsub">Flat</div></div></div>
-  <div class="lh-brandrow"><div class="lh-av" style="background:#8a6a3a">B</div><div><div class="lh-bn">Batchelors Cup-a-Soup</div><div class="lh-bi">Sachet · declining</div></div><div class="lh-bstat"><div class="lh-bpct lh-bpct-down">▼ 19%</div><div class="lh-bsub">Fading</div></div></div>
-</div>""", unsafe_allow_html=True)
+        # Share of Voice (driven by the active client's config)
+        _sov_cc = get_active_client()
+        st.markdown(
+            f'<div class="lh-panel">'
+            f'<div class="lh-panel-head">Share Of Voice · {e(_sov_cc.get("sov_label","Category"))} '
+            f'<span class="lh-panel-cnt">7d</span></div>'
+            f'{render_sov_rows_lh(_sov_cc)}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         # Alerts
         alerts_html_native = "".join(
@@ -3351,31 +3466,7 @@ footer{{border-top:3px double var(--ink); padding:22px 0 40px; font-family:'JetB
     <aside class="rail">
       <div class="panel">
         <h5>Share Of Voice <span class="cnt">7d</span></h5>
-        <div class="brandrow">
-          <div class="av" style="background:#0e9aa7">H</div>
-          <div><div class="bn">Heinz Cream of Tomato <span class="ours">OURS</span></div><div class="bi">Can · flagship</div></div>
-          <div class="stat"><div class="pct up">▲ 41%</div><div class="sub">Conversation</div></div>
-        </div>
-        <div class="brandrow">
-          <div class="av" style="background:#cf2b29">H</div>
-          <div><div class="bn">Heinz Soup of the Day <span class="ours">OURS</span></div><div class="bi">Pouch · convenience</div></div>
-          <div class="stat"><div class="pct up">▲ 63%</div><div class="sub">Conversation</div></div>
-        </div>
-        <div class="brandrow">
-          <div class="av" style="background:#3a6e3a">C</div>
-          <div><div class="bn">Cully &amp; Sully</div><div class="bi">Pot · competitor</div></div>
-          <div class="stat"><div class="pct up">▲ 28%</div><div class="sub">Gaining</div></div>
-        </div>
-        <div class="brandrow">
-          <div class="av" style="background:#6b4e8c">G</div>
-          <div><div class="bn">New Covent Garden</div><div class="bi">Carton · competitor</div></div>
-          <div class="stat"><div class="pct" style="color:var(--ink-soft)">● 2%</div><div class="sub">Flat</div></div>
-        </div>
-        <div class="brandrow">
-          <div class="av" style="background:#a9572b">B</div>
-          <div><div class="bn">Batchelors Cup-a-Soup</div><div class="bi">Sachet · competitor</div></div>
-          <div class="stat"><div class="pct down">▼ 19%</div><div class="sub">Declining</div></div>
-        </div>
+        {render_sov_rows_email(get_active_client())}
       </div>
 
       <div class="panel">

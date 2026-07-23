@@ -464,16 +464,19 @@ def scrape_instagram(
         from apify_client import ApifyClient
         client = ApifyClient(api_token)
 
-        # Build hashtag URLs for apify/instagram-scraper (directUrls approach — more stable)
-        words = [w.lower().strip(".,!?#") for w in topic.replace(",", " ").split() if len(w) > 2]
+        # COST CONTROL: apify/instagram-scraper bills per result, and resultsLimit
+        # applies PER hashtag URL — so N results × M hashtags = N×M billed posts.
+        # We use a SINGLE hashtag (the full topic) and cap the limit at 10 to keep
+        # each Instagram search to ≤10 billed posts. This also stops Instagram from
+        # dominating the multi-source feed.
+        _ig_cap = min(n, 10)
         full_tag = topic.lower().replace(" ", "")
-        tags = list(dict.fromkeys([full_tag] + words))[:4]
-        direct_urls = [f"https://www.instagram.com/explore/tags/{t}/" for t in tags]
+        direct_urls = [f"https://www.instagram.com/explore/tags/{full_tag}/"]
 
         run_input = {
             "directUrls": direct_urls,
             "resultsType": "posts",
-            "resultsLimit": n,
+            "resultsLimit": _ig_cap,
             "addParentData": False,
         }
         run = client.actor("apify/instagram-scraper").call(run_input=run_input)
