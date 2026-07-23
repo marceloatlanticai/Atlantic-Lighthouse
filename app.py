@@ -3732,6 +3732,324 @@ def render_footer():
 """, unsafe_allow_html=True)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SIMPLE VIEW (Overview tab) — Pat's sketch layout, integrated as a tab.
+# Four plain-language sections: trending now · consumer insights · competitor
+# currents · test your hunch. Reads the active client from the sidebar selector.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_SV_PROFILES = {
+    "Rambler": {
+        "category": "mineral sparkling water",
+        "tagline":  "Monitoring the currents of the mineral sparkling water category so Rambler can build the countercurrent.",
+        "search":   "sparkling water mineral water",
+    },
+    "Heinz": {
+        "category": "comfort food & soup",
+        "tagline":  "Monitoring the currents of Britain's lunch culture so Heinz can build the countercurrent.",
+        "search":   "comfort food soup lunch",
+    },
+}
+
+_SV_SRC_LABEL = {"reddit": "Reddit", "gdelt": "News", "hacker_news": "HN", "youtube": "YouTube",
+                 "tiktok": "TikTok", "instagram": "Instagram", "twitter": "X/Twitter",
+                 "web": "Web", "rss": "RSS", "db": "Archive"}
+
+
+def _sv_gather(search_terms: str, active: str) -> list:
+    """Collect signals across sources (cost-aware caps) + saved DB signals."""
+    out: list = []
+    apify = os.environ.get("APIFY_API_TOKEN", "")
+    ytkey = os.environ.get("YOUTUBE_API_KEY", "")
+    fckey = os.environ.get("FIRECRAWL_API_KEY", "")
+
+    from ingestion import (scrape_reddit, scrape_gdelt, scrape_hacker_news,
+                           scrape_youtube, scrape_tiktok, scrape_instagram,
+                           scrape_twitter)
+
+    def _push(sigs, src):
+        for s in sigs:
+            out.append({"title": s.title, "content": s.content, "source": src,
+                        "url": s.url, "timestamp": s.timestamp})
+
+    try: _push(scrape_reddit(search_terms, max_items=10), "reddit")
+    except Exception: pass
+    try: _push(scrape_gdelt(search_terms, n=8), "gdelt")
+    except Exception: pass
+    try: _push(scrape_hacker_news(search_terms, n=5), "hacker_news")
+    except Exception: pass
+    if ytkey:
+        try:
+            _seen: set = set()
+            for kw in search_terms.split()[:2]:
+                for s in scrape_youtube(kw, api_key=ytkey, n=5, region_code="US"):
+                    if s.url not in _seen:
+                        _seen.add(s.url)
+                        out.append({"title": s.title, "content": s.content, "source": "youtube",
+                                    "url": s.url, "timestamp": s.timestamp})
+        except Exception: pass
+    if apify:
+        try: _push(scrape_tiktok(search_terms, api_token=apify, n=8, fetch_comments=False), "tiktok")
+        except Exception: pass
+        try: _push(scrape_instagram(search_terms, api_token=apify, n=5), "instagram")
+        except Exception: pass
+        try: _push(scrape_twitter(search_terms, api_token=apify, n=8), "twitter")
+        except Exception: pass
+    if fckey:
+        try:
+            from ingestion import scrape_web
+            _push(scrape_web(search_terms, api_key=fckey, n=6), "web")
+        except Exception: pass
+
+    # Saved DB signals for this client (free — already paid for)
+    try:
+        for s in _load_signals_raw(limit=200):
+            if _signal_matches_client(s, active):
+                out.append({"title": s.get("title", ""), "content": s.get("content", ""),
+                            "source": s.get("source", "db"), "url": s.get("url", ""),
+                            "timestamp": s.get("timestamp", "")})
+    except Exception: pass
+    return out
+
+
+def _sv_synthesize(signals: list, category: str, competitors: list) -> dict:
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key or not signals:
+        return {}
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+    batch = signals[:60]
+    sig_text = "\n\n".join(
+        f"[{i}] SOURCE: {s['source']} | URL: {s['url']}\n"
+        f"TITLE: {s['title'][:110]}\nCONTENT: {s['content'][:260]}"
+        for i, s in enumerate(batch)
+    )
+    comp = ", ".join(competitors)
+    prompt = f"""You are a sharp cultural strategist analysing the {category} category.
+
+Below are {len(batch)} signals from social media, news, communities and the web.
+
+SIGNALS:
+{sig_text}
+
+Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
+{{
+  "trends": [
+    {{"title": "short punchy trend name", "summary": "2-3 plain-language sentences", "signal_indexes": [0,5,12]}}
+  ],
+  "insights_summary": "3-4 sentences: what are consumers really saying about {category}? Complaints, love, tensions, surprises.",
+  "insight_quotes": [{{"signal_index": 3, "why": "one short line on why this matters"}}],
+  "competitors_summary": "3-4 sentences: what are competitors ({comp}) doing right now?",
+  "cliches": ["cliché 1", "cliché 2", "cliché 3", "cliché 4"],
+  "competitor_headlines": [{{"headline": "short headline of a competitor move", "signal_index": 7}}]
+}}
+
+Rules:
+- Exactly 3 trends; 4-6 insight_quotes (pick posts with authentic human voice); exactly 3 competitor_headlines.
+- signal_indexes/signal_index must reference real indexes above.
+- "cliches" = tropes EVERY brand in the category follows (to counter later).
+- Plain, punchy language. No jargon."""
+    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=2000,
+                                  messages=[{"role": "user", "content": prompt}])
+    raw = resp.content[0].text.strip()
+    s, en = raw.find("{"), raw.rfind("}") + 1
+    if s >= 0 and en > s:
+        try: return json.loads(raw[s:en])
+        except Exception: return {}
+    return {}
+
+
+def render_simple_view():
+    """Render the four-section Simple View inside the Overview tab."""
+    _cc = get_active_client()
+    _active = st.session_state.get("active_client", DEFAULT_CLIENT)
+    _prof = _SV_PROFILES.get(_active, {
+        "category": _cc.get("label", "the category"),
+        "tagline":  _cc.get("tagline", ""),
+        "search":   " ".join(_cc.get("focus", "").split()[:3]) or _active,
+    })
+    _beacon = _cc.get("beacon", "#0f5c9e")
+    _competitors = [c.strip() for c in _cc.get("competitors", "").split(",") if c.strip()]
+
+    st.markdown(f"""
+<style>
+.sv-masthead {{ text-align:center; padding: 1.2rem 0 0.6rem; }}
+.sv-logo {{ display:inline-block; font-family:Georgia,serif; font-size: 28px; font-weight:700;
+  letter-spacing:.14em; color:#071828; border:2.5px solid #071828; border-radius:6px; padding: 6px 22px; }}
+.sv-tagline {{ font-family:Georgia,serif; font-style:italic; font-size:15px; color:#274d68;
+  max-width: 620px; margin: 14px auto 0; line-height:1.55; }}
+.sv-section {{ border-top: 2.5px solid #071828; margin-top: 2.4rem; padding-top: 1.1rem; }}
+.sv-q {{ font-family:Georgia,serif; font-size: 20px; font-weight:600; color:#071828; line-height:1.35; margin-bottom: 4px; }}
+.sv-sub {{ font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.14em;
+  text-transform:uppercase; color:{_beacon}; margin-bottom: 14px; }}
+.sv-card {{ background:#fff; border:1.5px solid #071828; border-radius:8px; padding: 16px 18px; height:100%; }}
+.sv-card-title {{ font-family:Georgia,serif; font-size:15px; font-weight:700; color:#071828; margin-bottom:8px; line-height:1.35; }}
+.sv-card-body {{ font-size:13px; color:#33566b; line-height:1.6; }}
+.sv-quote {{ background:#f4f9fb; border-left:3px solid {_beacon}; border-radius:0 8px 8px 0; padding:12px 16px; margin-bottom:10px; }}
+.sv-quote-text {{ font-family:Georgia,serif; font-style:italic; font-size:14px; color:#071828; line-height:1.55; }}
+.sv-quote-meta {{ font-family:'JetBrains Mono',monospace; font-size:10px; color:#6ea8c4; margin-top:6px; text-transform:uppercase; letter-spacing:.06em; }}
+.sv-quote-meta a {{ color:{_beacon}; text-decoration:none; }}
+.sv-headline {{ font-family:Georgia,serif; font-size:15px; font-weight:600; color:#071828; padding:10px 0; border-bottom:1px solid #d0e4ed; line-height:1.4; }}
+.sv-headline small {{ display:block; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:400; color:#6ea8c4; margin-top:3px; text-transform:uppercase; }}
+.sv-cliche {{ display:inline-block; background:#fdf1ee; color:#c94f35; border:1px solid #eac6bc; border-radius:20px; padding:4px 13px; font-size:12px; margin:0 6px 8px 0; font-family:'JetBrains Mono',monospace; }}
+.sv-empty {{ text-align:center; padding:2.2rem; color:#9dc4d8; font-family:Georgia,serif; font-style:italic; font-size:14px; }}
+</style>
+<div class="sv-masthead">
+  <span class="sv-logo">LIGHTHOUSE</span>
+  <div class="sv-tagline">{e(_prof["tagline"])}</div>
+</div>
+""", unsafe_allow_html=True)
+
+    _c1, _c2, _c3 = st.columns([2, 1, 2])
+    with _c2:
+        _run = st.button("⚡ Scan the currents", use_container_width=True, type="primary", key="sv_scan")
+
+    if _run:
+        with st.spinner("🗼 Scanning the currents…"):
+            _signals = _sv_gather(_prof["search"], _active)
+            _result = _sv_synthesize(_signals, _prof["category"], _competitors)
+        if _result:
+            st.session_state["sv_result"]  = _result
+            st.session_state["sv_signals"] = _signals
+            st.session_state["sv_client"]  = _active
+            st.rerun()
+        else:
+            st.error("Scan produced no synthesis — check API keys or try again.")
+
+    _res  = st.session_state.get("sv_result") if st.session_state.get("sv_client") == _active else None
+    _sigs = st.session_state.get("sv_signals", []) if st.session_state.get("sv_client") == _active else []
+
+    def _sig(idx):
+        try: return _sigs[int(idx)]
+        except Exception: return None
+
+    # ── Section 1 — Trending now ──────────────────────────────────────────
+    st.markdown(f'<div class="sv-section"><div class="sv-q">What is trending now in {e(_prof["category"])}?</div>'
+                f'<div class="sv-sub">Three currents, summarised</div></div>', unsafe_allow_html=True)
+    if _res and _res.get("trends"):
+        _tcols = st.columns(3)
+        for _i, _t in enumerate(_res["trends"][:3]):
+            with _tcols[_i]:
+                st.markdown(f'<div class="sv-card"><div class="sv-card-title">{e(_t.get("title",""))}</div>'
+                            f'<div class="sv-card-body">{e(_t.get("summary",""))}</div></div>', unsafe_allow_html=True)
+                with st.expander("🔍 Dig deeper"):
+                    _idxs = _t.get("signal_indexes", [])
+                    if not _idxs:
+                        st.caption("No linked sources for this trend.")
+                    for _ix in _idxs[:6]:
+                        _s = _sig(_ix)
+                        if _s:
+                            _lbl = _SV_SRC_LABEL.get(_s["source"], _s["source"].title())
+                            st.markdown(f"**[{_lbl}]** {e(_s['title'][:90])}  \n"
+                                        + (f"[Open source ↗]({_s['url']})" if _s.get("url") else ""))
+    else:
+        st.markdown('<div class="sv-empty">Press ⚡ Scan the currents to fill this page.</div>', unsafe_allow_html=True)
+
+    # ── Section 2 — Consumer insights ─────────────────────────────────────
+    st.markdown('<div class="sv-section"><div class="sv-q">What are the most insightful consumer posts, comments and critiques right now?</div>'
+                '<div class="sv-sub">From social, communities, Reddit — complaints, love and everything between</div></div>',
+                unsafe_allow_html=True)
+    if _res:
+        if _res.get("insights_summary"):
+            st.markdown(f'<div class="sv-card" style="margin-bottom:16px;"><div class="sv-card-body" '
+                        f'style="font-size:14px;">{e(_res["insights_summary"])}</div></div>', unsafe_allow_html=True)
+        for _q in _res.get("insight_quotes", [])[:6]:
+            _s = _sig(_q.get("signal_index"))
+            if not _s: continue
+            _lbl = _SV_SRC_LABEL.get(_s["source"], _s["source"].title())
+            _link = f' · <a href="{_s["url"]}" target="_blank">open ↗</a>' if _s.get("url") else ""
+            _text = (_s["content"] or _s["title"])[:280]
+            st.markdown(f'<div class="sv-quote"><div class="sv-quote-text">&ldquo;{e(_text)}&rdquo;</div>'
+                        f'<div class="sv-quote-meta">{e(_lbl)} · {e(_q.get("why",""))}{_link}</div></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
+
+    # ── Section 3 — Competitor currents ───────────────────────────────────
+    st.markdown(f'<div class="sv-section"><div class="sv-q">What are the latest moves from competitors in the category?</div>'
+                f'<div class="sv-sub">{e(" · ".join(_competitors))}</div></div>', unsafe_allow_html=True)
+    if _res:
+        if _res.get("competitors_summary"):
+            st.markdown(f'<div class="sv-card" style="margin-bottom:16px;"><div class="sv-card-body" '
+                        f'style="font-size:14px;">{e(_res["competitors_summary"])}</div></div>', unsafe_allow_html=True)
+        for _h in _res.get("competitor_headlines", [])[:3]:
+            _s = _sig(_h.get("signal_index"))
+            _link = f' <a href="{_s["url"]}" target="_blank" style="font-size:11px;">↗</a>' if _s and _s.get("url") else ""
+            _lbl = _SV_SRC_LABEL.get(_s["source"], "") if _s else ""
+            st.markdown(f'<div class="sv-headline">{e(_h.get("headline",""))}{_link}<small>{e(_lbl)}</small></div>', unsafe_allow_html=True)
+        if _res.get("cliches"):
+            st.markdown('<div style="margin-top:18px;font-family:\'JetBrains Mono\',monospace;font-size:10px;'
+                        'letter-spacing:.14em;text-transform:uppercase;color:#c94f35;margin-bottom:8px;">'
+                        '⚠ The clichés everyone is following — counter these to unlock white space</div>', unsafe_allow_html=True)
+            st.markdown("".join(f'<span class="sv-cliche">{e(c)}</span>' for c in _res["cliches"][:6]), unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
+
+    # ── Section 4 — Test your hunch ───────────────────────────────────────
+    st.markdown('<div class="sv-section"><div class="sv-q">Test your hunch</div>'
+                '<div class="sv-sub">Type a potential countercurrent — the data supports or challenges it</div></div>',
+                unsafe_allow_html=True)
+    _hc1, _hc2 = st.columns([5, 1])
+    with _hc1:
+        _hunch = st.text_input("Hunch", label_visibility="collapsed",
+                               placeholder=f"e.g. {_active} should position against alcohol, not against soda…",
+                               key="sv_hunch")
+    with _hc2:
+        _test = st.button("Test →", use_container_width=True, key="sv_test")
+
+    if _test and _hunch.strip():
+        if not _sigs:
+            st.warning("Run ⚡ Scan the currents first — the hypothesis is tested against those signals.")
+        else:
+            _api = os.environ.get("ANTHROPIC_API_KEY", "")
+            if _api:
+                import anthropic as _ant
+                _cl = _ant.Anthropic(api_key=_api)
+                _batch = _sigs[:40]
+                _stext = "\n\n".join(f"[{i}] [{s['source']}] {s['title'][:100]}\n{s['content'][:200]}"
+                                     for i, s in enumerate(_batch))
+                _hprompt = (f'Hypothesis: "{_hunch}"\n\nSignals:\n{_stext}\n\n'
+                            'Classify each relevant signal as SUPPORTS or CHALLENGES the hypothesis '
+                            '(skip irrelevant ones). Respond ONLY with JSON:\n'
+                            '{"verdict": "one sentence overall read", '
+                            '"supports": [{"index": 0, "reason": "short reason"}], '
+                            '"challenges": [{"index": 4, "reason": "short reason"}]}')
+                with st.spinner("Testing against the signals…"):
+                    try:
+                        _hr = _cl.messages.create(model=CLAUDE_MODEL, max_tokens=1200,
+                                                  messages=[{"role": "user", "content": _hprompt}])
+                        _hraw = _hr.content[0].text.strip()
+                        _hs, _he = _hraw.find("{"), _hraw.rfind("}") + 1
+                        st.session_state["sv_hunch_result"] = json.loads(_hraw[_hs:_he])
+                    except Exception as _hexc:
+                        st.error(f"Test failed: {_hexc}")
+
+    _hres = st.session_state.get("sv_hunch_result")
+    if _hres:
+        st.markdown(f'<div class="sv-card" style="margin:14px 0;"><div class="sv-card-body" '
+                    f'style="font-size:14px;"><b>Verdict:</b> {e(_hres.get("verdict",""))}</div></div>', unsafe_allow_html=True)
+        _sc, _ch = st.columns(2)
+        with _sc:
+            st.markdown('<div class="sv-sub" style="color:#1a8a5a;">✓ Supports</div>', unsafe_allow_html=True)
+            for _it in _hres.get("supports", [])[:5]:
+                _s = _sig(_it.get("index"))
+                if _s:
+                    _lbl = _SV_SRC_LABEL.get(_s["source"], _s["source"])
+                    _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s.get("url") else ""
+                    st.markdown(f'<div class="sv-quote" style="border-left-color:#1a8a5a;">'
+                                f'<div class="sv-quote-text" style="font-size:13px;">{e(_s["title"][:100])}</div>'
+                                f'<div class="sv-quote-meta">{e(_lbl)} · {e(_it.get("reason",""))}{_lk}</div></div>', unsafe_allow_html=True)
+        with _ch:
+            st.markdown('<div class="sv-sub" style="color:#c94f35;">✗ Challenges</div>', unsafe_allow_html=True)
+            for _it in _hres.get("challenges", [])[:5]:
+                _s = _sig(_it.get("index"))
+                if _s:
+                    _lbl = _SV_SRC_LABEL.get(_s["source"], _s["source"])
+                    _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s.get("url") else ""
+                    st.markdown(f'<div class="sv-quote" style="border-left-color:#c94f35;">'
+                                f'<div class="sv-quote-text" style="font-size:13px;">{e(_s["title"][:100])}</div>'
+                                f'<div class="sv-quote-meta">{e(_lbl)} · {e(_it.get("reason",""))}{_lk}</div></div>', unsafe_allow_html=True)
+
+
 # ── Top-level navigation: Trends / Dispatch / Projects / Road Map ──────────
 # One-page layout: hero masthead always visible above the nav bar.
 # Clients see masthead + dispatch content only (no nav bar, no other sections).
@@ -3761,9 +4079,14 @@ if IS_CLIENT:
 # Invisible marker lets the CSS below target only THIS st.tabs() —
 # nested tab bars elsewhere (My Board, Briefing Builder, etc.) keep default look.
 st.markdown('<div id="lh-toptabs-marker" style="display:none"></div>', unsafe_allow_html=True)
-tab_feed, tab_trends, tab_dispatch, tab_projects, tab_roadmap = st.tabs([
-    "⚡ Feed", "Trends", "Dispatch", "Projects", "Road Map",
+tab_feed, tab_overview, tab_trends, tab_dispatch, tab_projects, tab_roadmap = st.tabs([
+    "⚡ Feed", "✦ Overview", "Trends", "Dispatch", "Projects", "Road Map",
 ])
+
+# ── Overview tab (Simple View — Pat's sketch, integrated as a tab) ─────────
+tab_overview.__enter__()
+render_simple_view()
+tab_overview.__exit__(None, None, None)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FEED TAB — simplified signal scanner (first tab, MVP view)
