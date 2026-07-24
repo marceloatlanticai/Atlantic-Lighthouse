@@ -3991,7 +3991,7 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
   .maptitle {{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:{RED}; font-weight:700; margin-bottom:8px; }}
   @media print {{ body {{ padding:0; }} .sec {{ page-break-inside:avoid; }} }}
 </style></head><body onload="window.print()"><div class="wrap">
-<div class="eyebrow">Lighthouse • {e(brand)} Intelligence Brief</div>
+<div class="eyebrow">Lighthouse • Intelligence Brief</div>
 <div class="big">The Lighthouse</div>
 <div class="tag">{e(tagline)}</div>
 <div class="vol">Live Brief — {e(date_label)}</div>''']
@@ -4104,6 +4104,9 @@ def render_simple_view():
     _competitors = [c.strip() for c in _cc.get("competitors", "").split(",") if c.strip()]
     _now = datetime.utcnow()
     _brief_date = f"Q{(_now.month - 1)//3 + 1} {_now.year}"
+    # Brand-neutral tagline (no client name) built from the category.
+    _tagline = (f"Monitoring the currents of the {_prof['category']} category "
+                f"so we can build the countercurrent.")
 
     # ── Lovable palette: warm cream paper · ink · gold accent · Helvetica ──
     _sans  = '"Helvetica Neue", Helvetica, Arial, sans-serif'
@@ -4220,9 +4223,9 @@ def render_simple_view():
 .sv-empty {{ text-align:center; padding:2.2rem; color:{_faint}; font-family:{_sans}; font-size:14px; }}
 </style>
 <div style="text-align:center; padding: 0.8rem 0 0.4rem;">
-  <div class="sv-eyebrow">Lighthouse • {e(_active)} Intelligence Brief</div>
+  <div class="sv-eyebrow">Lighthouse • Intelligence Brief</div>
   <div class="sv-bigtitle">The Lighthouse</div>
-  <div class="sv-tagline">{e(_prof["tagline"])}</div>
+  <div class="sv-tagline">{e(_tagline)}</div>
   <div class="sv-vol" style="margin-top:14px;">Live Brief — {e(_brief_date)}</div>
 </div>
 """, unsafe_allow_html=True)
@@ -4552,7 +4555,7 @@ def render_simple_view():
     if _res:
         st.markdown('<div style="border-top:3px solid ' + _line + ';margin-top:4rem;padding-top:1.6rem;"></div>',
                     unsafe_allow_html=True)
-        _export_html = _sv_export_html(_res, _disp_brand, _prof["tagline"], _brief_date, _competitors, _sigs)
+        _export_html = _sv_export_html(_res, _disp_brand, _tagline, _brief_date, _competitors, _sigs)
         _ec1, _ec2, _ec3 = st.columns([2, 1.4, 2])
         with _ec2:
             st.download_button(
