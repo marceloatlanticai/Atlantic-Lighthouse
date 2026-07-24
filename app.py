@@ -3893,14 +3893,18 @@ Rules:
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
 - Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly." """
-    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=4000,
+    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=8000,
                                   messages=[{"role": "user", "content": prompt}])
     raw = resp.content[0].text.strip()
-    s, en = raw.find("{"), raw.rfind("}") + 1
-    if s >= 0 and en > s:
-        try: return json.loads(raw[s:en])
-        except Exception: return {}
-    return {}
+    # _extract_json tolerates markdown fences AND truncated/cut-off responses
+    try:
+        return _extract_json(raw)
+    except Exception:
+        s, en = raw.find("{"), raw.rfind("}") + 1
+        if s >= 0 and en > s:
+            try: return json.loads(raw[s:en])
+            except Exception: return {}
+        return {}
 
 
 def _sv_save_brief(active: str, result: dict, signals: list) -> None:
@@ -4248,7 +4252,8 @@ def render_simple_view():
         _search = " ".join(dict.fromkeys(f"{_in_cat} {_in_prod}".split())).strip() or _prof["search"]
         with st.spinner("🗼 Scanning the currents…"):
             _signals = _sv_gather(_search, _active)
-            _result = _sv_synthesize(_signals, _in_cat or _prof["category"], _competitors, _in_brand or _active)
+            _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
+                                     _competitors, _in_brand or _active) if _signals else {}
         if _result:
             _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
                                 "product": _in_prod}
@@ -4257,8 +4262,13 @@ def render_simple_view():
             st.session_state["sv_client"]  = _active
             _sv_save_brief(_active, _result, _signals)   # persist for reloads/guests
             st.rerun()
+        elif not _signals:
+            st.error(f"No signals found for '{_search}'. Try broader terms in Category/Product, "
+                     "or check that the APIFY / YouTube / Firecrawl keys are set.")
         else:
-            st.error("Scan produced no synthesis — check API keys or try again.")
+            st.error(f"Found {len(_signals)} signals but the AI synthesis failed to return valid data. "
+                     "This is usually a temporary model hiccup — press Run Lighthouse again. "
+                     "If it persists, check the ANTHROPIC_API_KEY.")
 
     # Load the current session's result, or fall back to the last SAVED brief
     # for this client (so opening the app shows content without re-scraping).
