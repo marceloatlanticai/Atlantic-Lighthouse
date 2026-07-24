@@ -800,8 +800,15 @@ def show_login():
 
 
 if "logged_in_user" not in st.session_state:
-    show_login()
-    st.stop()
+    # Public share link (?view=overview) skips the login wall and runs as a
+    # read-only guest. Every other route still requires a password.
+    if st.query_params.get("view") == "overview":
+        st.session_state.logged_in_user = "guest"
+        st.session_state.user_role = "internal"
+        st.session_state["_is_guest"] = True
+    else:
+        show_login()
+        st.stop()
 
 # ── Role / permissions for the current session ─────────────────────────────────
 USER_ROLE     = st.session_state.get("user_role", "internal")
@@ -3614,6 +3621,8 @@ def load_last_dispatch_for_client(client_key: str):
     try:
         for rec in _db.load_all_dispatches():   # newest first
             full = rec.get("full") or {}
+            if full.get("_overview"):
+                continue   # skip Overview-tab briefs — they aren't Dispatch content
             if full.get("_client", "Heinz") == client_key:
                 full["_dispatch_id"] = rec.get("dispatch_id") or rec.get("timestamp", "fallback")
                 return full
@@ -3886,6 +3895,34 @@ Rules:
     return {}
 
 
+def _sv_save_brief(active: str, result: dict, signals: list) -> None:
+    """Persist the latest Overview brief for a client (so it survives reloads and
+    shows to guests without re-scraping — saves Apify credits)."""
+    trimmed = [{"title": s.get("title", "")[:160], "content": s.get("content", "")[:400],
+                "source": s.get("source", ""), "url": s.get("url", ""),
+                "timestamp": s.get("timestamp", "")} for s in (signals or [])[:80]]
+    payload = {"_overview": True, "_client": active, "sv_result": result,
+               "sv_signals": trimmed, "saved_at": datetime.utcnow().isoformat()}
+    try:
+        _db.save_dispatch(payload, f"__overview__{active}")
+    except Exception as _exc:
+        print(f"[overview] save error: {_exc}")
+
+
+def _sv_load_brief(active: str):
+    """Return the most recent saved Overview brief for a client, or None."""
+    try:
+        for rec in _db.load_all_dispatches():   # newest first
+            full = rec.get("full") or {}
+            if full.get("_overview") and full.get("_client") == active:
+                return {"result": full.get("sv_result") or {},
+                        "signals": full.get("sv_signals") or [],
+                        "saved_at": full.get("saved_at", "")}
+    except Exception as _exc:
+        print(f"[overview] load error: {_exc}")
+    return None
+
+
 def render_simple_view():
     """Render the four-section Simple View inside the Overview tab."""
     _cc = get_active_client()
@@ -3986,24 +4023,45 @@ def render_simple_view():
 </div>
 """, unsafe_allow_html=True)
 
-    _c1, _c2, _c3 = st.columns([2, 1, 2])
-    with _c2:
-        _run = st.button("⚡ Scan the currents", use_container_width=True, type="primary", key="sv_scan")
+    _is_guest = st.session_state.get("_is_guest", False)
 
-    if _run:
-        with st.spinner("🗼 Scanning the currents…"):
-            _signals = _sv_gather(_prof["search"], _active)
-            _result = _sv_synthesize(_signals, _prof["category"], _competitors)
-        if _result:
-            st.session_state["sv_result"]  = _result
-            st.session_state["sv_signals"] = _signals
-            st.session_state["sv_client"]  = _active
-            st.rerun()
-        else:
-            st.error("Scan produced no synthesis — check API keys or try again.")
+    # Guests (public link) never trigger paid scraping — read-only.
+    if not _is_guest:
+        _c1, _c2, _c3 = st.columns([2, 1, 2])
+        with _c2:
+            _run = st.button("⚡ Scan the currents", use_container_width=True,
+                             type="primary", key="sv_scan")
+        if _run:
+            with st.spinner("🗼 Scanning the currents…"):
+                _signals = _sv_gather(_prof["search"], _active)
+                _result = _sv_synthesize(_signals, _prof["category"], _competitors)
+            if _result:
+                st.session_state["sv_result"]  = _result
+                st.session_state["sv_signals"] = _signals
+                st.session_state["sv_client"]  = _active
+                _sv_save_brief(_active, _result, _signals)   # persist for reloads/guests
+                st.rerun()
+            else:
+                st.error("Scan produced no synthesis — check API keys or try again.")
 
+    # Load the current session's result, or fall back to the last SAVED brief
+    # for this client (so opening the app shows content without re-scraping).
     _res  = st.session_state.get("sv_result") if st.session_state.get("sv_client") == _active else None
     _sigs = st.session_state.get("sv_signals", []) if st.session_state.get("sv_client") == _active else []
+    _saved_at = ""
+    if _res is None:
+        _loaded = _sv_load_brief(_active)
+        if _loaded and _loaded.get("result"):
+            _res = _loaded["result"]
+            _sigs = _loaded["signals"]
+            _saved_at = _loaded.get("saved_at", "")
+            st.session_state["sv_result"]  = _res
+            st.session_state["sv_signals"] = _sigs
+            st.session_state["sv_client"]  = _active
+    if _saved_at:
+        st.markdown(f'<div style="text-align:center;font-family:{_sans};font-size:10.5px;'
+                    f'color:{_faint};letter-spacing:.06em;margin-bottom:6px;">'
+                    f'Last updated {e(_saved_at[:10])}</div>', unsafe_allow_html=True)
 
     def _sig(idx):
         try: return _sigs[int(idx)]
@@ -4035,7 +4093,9 @@ def render_simple_view():
                             st.markdown(f"**[{_lbl}]** {e(_s['title'][:90])}  \n"
                                         + (f"[Open source ↗]({_s['url']})" if _s.get("url") else ""))
     else:
-        st.markdown('<div class="sv-empty">Press ⚡ Scan the currents to fill this page.</div>', unsafe_allow_html=True)
+        _empty_msg = ("No brief has been published yet — check back soon."
+                      if _is_guest else "Press ⚡ Scan the currents to fill this page.")
+        st.markdown(f'<div class="sv-empty">{_empty_msg}</div>', unsafe_allow_html=True)
 
     # ── Section 02 — Consumer Insight ─────────────────────────────────────
     st.markdown('<div class="sv-section"><div class="sv-num">02</div>'
@@ -4162,13 +4222,19 @@ def render_simple_view():
     st.markdown('<div class="sv-lead">Describe a potential countercurrent move. The Lighthouse '
                 'weighs it against the currents above and tells you if it truly cuts against the '
                 'grain — or if it\'s swimming with the school.</div>', unsafe_allow_html=True)
-    _hc1, _hc2 = st.columns([5, 1])
-    with _hc1:
-        _hunch = st.text_input("Hunch", label_visibility="collapsed",
-                               placeholder=f"e.g. {_active} should position against alcohol, not against soda…",
-                               key="sv_hunch")
-    with _hc2:
-        _test = st.button("Test →", use_container_width=True, key="sv_test")
+    _hunch, _test = "", False
+    if _is_guest:
+        st.markdown(f'<div style="font-family:{_sans};font-size:13px;color:{_faint};">'
+                    f'Sign in to test your own hypotheses against the currents.</div>',
+                    unsafe_allow_html=True)
+    else:
+        _hc1, _hc2 = st.columns([5, 1])
+        with _hc1:
+            _hunch = st.text_input("Hunch", label_visibility="collapsed",
+                                   placeholder=f"e.g. {_active} should position against alcohol, not against soda…",
+                                   key="sv_hunch")
+        with _hc2:
+            _test = st.button("Test →", use_container_width=True, key="sv_test")
 
     if _test and _hunch.strip():
         if not _sigs:
@@ -4238,7 +4304,7 @@ if st.query_params.get("view") == "overview":
     st.markdown("""
 <style>
   [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"] { display:none !important; }
-  .stApp { background:#fbfaf5 !important; }
+  .stApp { background:#ffffff !important; }
   .block-container { max-width:1120px !important; padding-top:1.4rem !important; }
 </style>
 """, unsafe_allow_html=True)
