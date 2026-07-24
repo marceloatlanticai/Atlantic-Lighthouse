@@ -3945,8 +3945,8 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
             return (s.get("content") or s.get("title") or "")[:260]
         except Exception:
             return ""
-    INK, GOLD, PAPER, CARD, MUTED, FAINT, RED = ("#000000", "#0000ff", "#cfcfcf",
-                                                 "#ffffff", "#222222", "#666666", "#0000ff")
+    INK, GOLD, PAPER, CARD, MUTED, FAINT, RED = ("#000000", "#0000ff", "#ffffff",
+                                                 "#e8e8e8", "#222222", "#666666", "#0000ff")
     SANS = "'Helvetica Neue', Helvetica, Arial, sans-serif"
 
     def _sec(num, label, q):
@@ -4111,7 +4111,7 @@ def render_simple_view():
     _sans  = '"Helvetica Neue", Helvetica, Arial, sans-serif'
     _ink   = "#000000"   # black text
     _gold  = "#0000ff"   # blue — the single accent (labels, numbers, highlights)
-    _card  = "#ffffff"   # white cards on the grey ground
+    _card  = "#e8e8e8"   # grey cards on the white ground
     _muted = "#222222"   # near-black body text
     _faint = "#666666"   # grey meta labels
     _line  = "#000000"   # black rules / borders
@@ -4590,7 +4590,7 @@ if st.query_params.get("view") == "overview":
 <style>
   [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"],
   #lh-topnav { display:none !important; }
-  .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], .main, section.main { background:#cfcfcf !important; }
+  .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], .main, section.main { background:#ffffff !important; }
   .block-container { max-width:1120px !important; padding-top:1.4rem !important; }
   /* no sticky-nav offset needed on the clean brief */
   [id^="lh-sec-"] { scroll-margin-top:0 !important; }
