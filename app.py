@@ -4104,9 +4104,8 @@ def render_simple_view():
     _competitors = [c.strip() for c in _cc.get("competitors", "").split(",") if c.strip()]
     _now = datetime.utcnow()
     _brief_date = f"Q{(_now.month - 1)//3 + 1} {_now.year}"
-    # Brand-neutral tagline (no client name) built from the category.
-    _tagline = (f"Monitoring the currents of the {_prof['category']} category "
-                f"so we can build the countercurrent.")
+    # Brand-neutral, category-neutral tagline.
+    _tagline = "Monitoring the currents so we can navigate the countercurrent."
 
     # ── Lovable palette: warm cream paper · ink · gold accent · Helvetica ──
     _sans  = '"Helvetica Neue", Helvetica, Arial, sans-serif'
