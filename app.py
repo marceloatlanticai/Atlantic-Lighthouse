@@ -4025,24 +4025,25 @@ def render_simple_view():
 
     _is_guest = st.session_state.get("_is_guest", False)
 
-    # Guests (public link) never trigger paid scraping — read-only.
-    if not _is_guest:
-        _c1, _c2, _c3 = st.columns([2, 1, 2])
-        with _c2:
-            _run = st.button("⚡ Scan the currents", use_container_width=True,
-                             type="primary", key="sv_scan")
-        if _run:
-            with st.spinner("🗼 Scanning the currents…"):
-                _signals = _sv_gather(_prof["search"], _active)
-                _result = _sv_synthesize(_signals, _prof["category"], _competitors)
-            if _result:
-                st.session_state["sv_result"]  = _result
-                st.session_state["sv_signals"] = _signals
-                st.session_state["sv_client"]  = _active
-                _sv_save_brief(_active, _result, _signals)   # persist for reloads/guests
-                st.rerun()
-            else:
-                st.error("Scan produced no synthesis — check API keys or try again.")
+    # Scan is available to everyone (incl. the public link). The last brief is
+    # persisted and auto-loaded on open, so credits are only spent on a deliberate
+    # re-scan — not on every page view.
+    _c1, _c2, _c3 = st.columns([2, 1, 2])
+    with _c2:
+        _run = st.button("⚡ Scan the currents", use_container_width=True,
+                         type="primary", key="sv_scan")
+    if _run:
+        with st.spinner("🗼 Scanning the currents…"):
+            _signals = _sv_gather(_prof["search"], _active)
+            _result = _sv_synthesize(_signals, _prof["category"], _competitors)
+        if _result:
+            st.session_state["sv_result"]  = _result
+            st.session_state["sv_signals"] = _signals
+            st.session_state["sv_client"]  = _active
+            _sv_save_brief(_active, _result, _signals)   # persist for reloads/guests
+            st.rerun()
+        else:
+            st.error("Scan produced no synthesis — check API keys or try again.")
 
     # Load the current session's result, or fall back to the last SAVED brief
     # for this client (so opening the app shows content without re-scraping).
@@ -4093,9 +4094,8 @@ def render_simple_view():
                             st.markdown(f"**[{_lbl}]** {e(_s['title'][:90])}  \n"
                                         + (f"[Open source ↗]({_s['url']})" if _s.get("url") else ""))
     else:
-        _empty_msg = ("No brief has been published yet — check back soon."
-                      if _is_guest else "Press ⚡ Scan the currents to fill this page.")
-        st.markdown(f'<div class="sv-empty">{_empty_msg}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sv-empty">Press ⚡ Scan the currents to fill this page.</div>',
+                    unsafe_allow_html=True)
 
     # ── Section 02 — Consumer Insight ─────────────────────────────────────
     st.markdown('<div class="sv-section"><div class="sv-num">02</div>'
@@ -4222,19 +4222,13 @@ def render_simple_view():
     st.markdown('<div class="sv-lead">Describe a potential countercurrent move. The Lighthouse '
                 'weighs it against the currents above and tells you if it truly cuts against the '
                 'grain — or if it\'s swimming with the school.</div>', unsafe_allow_html=True)
-    _hunch, _test = "", False
-    if _is_guest:
-        st.markdown(f'<div style="font-family:{_sans};font-size:13px;color:{_faint};">'
-                    f'Sign in to test your own hypotheses against the currents.</div>',
-                    unsafe_allow_html=True)
-    else:
-        _hc1, _hc2 = st.columns([5, 1])
-        with _hc1:
-            _hunch = st.text_input("Hunch", label_visibility="collapsed",
-                                   placeholder=f"e.g. {_active} should position against alcohol, not against soda…",
-                                   key="sv_hunch")
-        with _hc2:
-            _test = st.button("Test →", use_container_width=True, key="sv_test")
+    _hc1, _hc2 = st.columns([5, 1])
+    with _hc1:
+        _hunch = st.text_input("Hunch", label_visibility="collapsed",
+                               placeholder=f"e.g. {_active} should position against alcohol, not against soda…",
+                               key="sv_hunch")
+    with _hc2:
+        _test = st.button("Test →", use_container_width=True, key="sv_test")
 
     if _test and _hunch.strip():
         if not _sigs:
@@ -4304,7 +4298,7 @@ if st.query_params.get("view") == "overview":
     st.markdown("""
 <style>
   [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"] { display:none !important; }
-  .stApp { background:#ffffff !important; }
+  .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], .main, section.main { background:#ffffff !important; }
   .block-container { max-width:1120px !important; padding-top:1.4rem !important; }
 </style>
 """, unsafe_allow_html=True)
