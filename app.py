@@ -3750,11 +3750,13 @@ def render_footer():
 _SV_PROFILES = {
     "Rambler": {
         "category": "mineral sparkling water",
+        "product":  "Sparkling Water",
         "tagline":  "Monitoring the currents of the mineral sparkling water category so Rambler can build the countercurrent.",
         "search":   "sparkling water mineral water",
     },
     "Heinz": {
         "category": "comfort food & soup",
+        "product":  "Soup",
         "tagline":  "Monitoring the currents of Britain's lunch culture so Heinz can build the countercurrent.",
         "search":   "comfort food soup lunch",
     },
@@ -3821,7 +3823,7 @@ def _sv_gather(search_terms: str, active: str) -> list:
     return out
 
 
-def _sv_synthesize(signals: list, category: str, competitors: list) -> dict:
+def _sv_synthesize(signals: list, category: str, competitors: list, brand: str = "the brand") -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key or not signals:
         return {}
@@ -3834,7 +3836,7 @@ def _sv_synthesize(signals: list, category: str, competitors: list) -> dict:
         for i, s in enumerate(batch)
     )
     comp = ", ".join(competitors)
-    prompt = f"""You are the editor of "The Lighthouse", a cultural-intelligence brief written for a strategy team working in the {category} category. Write with a confident editorial voice and a clear point of view. Headlines should make an ARGUMENT (e.g. "Functional water eats flavored water", "Mineral provenance is the new luxury") — never flat descriptions.
+    prompt = f"""You are the editor of "The Lighthouse", a cultural-intelligence brief written for a strategy team working on the brand {brand} in the {category} category. Write with a confident editorial voice and a clear point of view. Headlines should make an ARGUMENT (e.g. "Functional water eats flavored water", "Mineral provenance is the new luxury") — never flat descriptions.
 
 Below are {len(batch)} REAL signals scraped from social media, communities, news and the web.
 
@@ -3876,12 +3878,17 @@ Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
   "cliche_images": [
     {{"title": "an overused visual/photography trope in the category",
       "why": "why it makes the brand look like everyone else"}}
+  ],
+  "provocations": [
+    {{"starter": "a bold 'What if {brand}...' provocation question that reverses a category current",
+      "cuts_against": "the current/cliché this provocation reverses",
+      "the_move": "the concrete, tangible move it implies"}}
   ]
 }}
 
 Rules:
 - EXACTLY 3 trends. EXACTLY 6 insight_quotes chosen for authentic human voice and spanning MULTIPLE networks (mix Reddit, TikTok, X, Instagram, YouTube — not all from one). 4-5 competitors (the named ones plus any real player you spot in the signals). 4-6 cliche_map entries.
-- 4 tensions (real contradictions consumers hold), 5-6 cliche_language entries, 5-6 cliche_images entries.
+- 4 tensions (real contradictions consumers hold), 5-6 cliche_language entries, 5-6 cliche_images entries, EXACTLY 4 provocations (bold 'What if...' openings for {brand}).
 - signal_index / signal_indexes must reference real indexes from the list above.
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
@@ -3922,6 +3929,155 @@ def _sv_load_brief(active: str):
     except Exception as _exc:
         print(f"[overview] load error: {_exc}")
     return None
+
+
+def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
+                    competitors: list, signals: list) -> str:
+    """Build a self-contained, print-ready HTML of the full brief (opens the
+    browser print dialog on load → Save as PDF)."""
+    def _qtext(idx):
+        try:
+            s = signals[int(idx)]
+            return (s.get("content") or s.get("title") or "")[:260]
+        except Exception:
+            return ""
+    INK, GOLD, PAPER, CARD, MUTED, FAINT, RED = ("#211c15", "#c2953a", "#ffffff",
+                                                 "#fbf8f0", "#6b6154", "#a99f8d", "#b64a2e")
+    SANS = "'Helvetica Neue', Helvetica, Arial, sans-serif"
+
+    def _sec(num, label, q):
+        return (f'<div class="sec"><div class="grid"><div><div class="num">{num}</div>'
+                f'<div class="slabel">{e(label)}</div></div><div class="q">{e(q)}</div></div></div>')
+
+    parts = [f'''<!DOCTYPE html><html><head><meta charset="utf-8"><title>The Lighthouse — {e(brand)}</title>
+<style>
+  * {{ box-sizing:border-box; }}
+  body {{ font-family:{SANS}; background:{PAPER}; color:{INK}; margin:0; padding:40px 46px; }}
+  .wrap {{ max-width:1000px; margin:0 auto; }}
+  .eyebrow {{ text-align:center; font-size:11px; letter-spacing:.24em; text-transform:uppercase; color:{GOLD}; font-weight:600; }}
+  .big {{ text-align:center; font-size:48px; font-weight:700; margin:8px 0 12px; letter-spacing:-.02em; }}
+  .tag {{ text-align:center; font-style:italic; font-weight:700; color:{MUTED}; max-width:620px; margin:0 auto 6px; }}
+  .vol {{ text-align:center; font-size:10.5px; letter-spacing:.18em; text-transform:uppercase; color:{FAINT}; margin-bottom:6px; }}
+  .sec {{ border-top:3px solid {INK}; margin-top:44px; padding-top:18px; }}
+  .grid {{ display:grid; grid-template-columns:180px 1fr; gap:28px; align-items:start; margin-bottom:22px; }}
+  .num {{ font-size:40px; font-weight:800; color:{GOLD}; line-height:.9; }}
+  .slabel {{ font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:{FAINT}; font-weight:700; margin-top:10px; }}
+  .q {{ font-size:34px; font-weight:700; letter-spacing:-.02em; line-height:1.1; }}
+  .lead {{ font-style:italic; font-weight:700; color:{MUTED}; font-size:16px; max-width:760px; margin:0 0 22px; }}
+  .cards {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }}
+  .cards2 {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+  .card {{ border:1.5px solid {INK}; border-radius:4px; padding:16px 18px; break-inside:avoid; }}
+  .clabel {{ font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:{GOLD}; font-weight:700; margin-bottom:8px; }}
+  .ctitle {{ font-size:17px; font-weight:700; margin-bottom:8px; line-height:1.25; }}
+  .cbody {{ font-size:13px; color:{MUTED}; line-height:1.55; }}
+  .stat {{ margin-top:12px; padding-top:10px; border-top:1px solid #e3dccb; font-size:11.5px; font-weight:600; color:{GOLD}; }}
+  .qhead {{ display:flex; justify-content:space-between; margin-bottom:10px; }}
+  .qsrc {{ font-size:10px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; }}
+  .qhandle {{ font-size:11px; color:{FAINT}; }}
+  .qtext {{ font-weight:700; font-style:italic; font-size:14px; line-height:1.45; }}
+  .qmeta {{ font-size:11px; color:{FAINT}; margin-top:10px; padding-top:9px; border-top:1px solid #e3dccb; }}
+  table {{ width:100%; border:1.5px solid {INK}; border-collapse:collapse; }}
+  td {{ border-bottom:1.5px solid {INK}; padding:16px 18px; vertical-align:top; font-size:13px; color:{MUTED}; }}
+  tr:last-child td {{ border-bottom:none; }}
+  .cn {{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:{INK}; font-weight:700; }}
+  .cm {{ font-size:16px; font-weight:700; color:{INK}; }}
+  .sublbl {{ font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:{FAINT}; font-weight:700; margin-bottom:4px; }}
+  .strike {{ text-decoration:line-through; font-weight:700; color:{INK}; font-size:15px; }}
+  .map {{ background:#f3e7d5; border:1.5px solid {INK}; border-radius:4px; padding:16px 18px; margin-top:18px; }}
+  .maptitle {{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:{RED}; font-weight:700; margin-bottom:8px; }}
+  @media print {{ body {{ padding:0; }} .sec {{ page-break-inside:avoid; }} }}
+</style></head><body onload="window.print()"><div class="wrap">
+<div class="eyebrow">Lighthouse • {e(brand)} Intelligence Brief</div>
+<div class="big">The Lighthouse</div>
+<div class="tag">{e(tagline)}</div>
+<div class="vol">Live Brief — {e(date_label)}</div>''']
+
+    tr = res.get("trends", [])
+    if tr:
+        parts.append(_sec("01", "The Currents", "What is trending"))
+        parts.append('<div class="cards">')
+        for t in tr[:3]:
+            _st = f'<div class="stat">{e(t.get("stat",""))}</div>' if t.get("stat") else ""
+            parts.append(f'<div class="card"><div class="clabel">Current</div>'
+                         f'<div class="ctitle">{e(t.get("title",""))}</div>'
+                         f'<div class="cbody">{e(t.get("summary",""))}</div>{_st}</div>')
+        parts.append('</div>')
+
+    iq = res.get("insight_quotes", [])
+    if iq:
+        parts.append(_sec("02", "Consumer Insight", "What people are actually saying"))
+        if res.get("insights_summary"):
+            parts.append(f'<div class="lead">{e(res["insights_summary"])}</div>')
+        parts.append('<div class="cards">')
+        for q in iq[:6]:
+            parts.append(f'<div class="card"><div class="qhead"><span class="qsrc">{e(q.get("network",""))}</span>'
+                         f'<span class="qhandle">{e(q.get("handle",""))}</span></div>'
+                         f'<div class="qtext">&ldquo;{e(_qtext(q.get("signal_index")))}&rdquo;</div>'
+                         f'<div class="qmeta">{e(q.get("context",""))}<br>{e(q.get("engagement",""))}</div></div>')
+        parts.append('</div>')
+
+    cp = res.get("competitors", [])
+    if cp:
+        parts.append(_sec("03", "The Competitive Current", "What everyone else is doing"))
+        if res.get("competitors_summary"):
+            parts.append(f'<div class="lead">{e(res["competitors_summary"])}</div>')
+        parts.append('<table>')
+        for c in cp[:5]:
+            parts.append(f'<tr><td style="width:180px;"><span class="cn">{e(c.get("name",""))}</span></td>'
+                         f'<td><div class="cm">{e(c.get("move",""))}</div><div style="margin-top:5px;">{e(c.get("detail",""))}</div></td>'
+                         f'<td><div class="sublbl">Cliché to counter</div>{e(c.get("cliche",""))}</td></tr>')
+        parts.append('</table>')
+        if res.get("cliche_map"):
+            parts.append('<div class="map"><div class="maptitle">Category clichés — the countercurrent map</div>')
+            for m in res["cliche_map"][:6]:
+                parts.append(f'<div class="cbody" style="color:{INK};line-height:1.9;">✕&nbsp; {e(m)}</div>')
+            parts.append('</div>')
+
+    tn = res.get("tensions", [])
+    if tn:
+        parts.append(_sec("04", "Cultural Tensions", "The contradictions people are living inside"))
+        parts.append('<div class="cards2">')
+        for t in tn[:4]:
+            parts.append(f'<div class="card"><div class="ctitle">{e(t.get("title",""))}</div>'
+                         f'<div class="cbody">◆ {e(t.get("side_a",""))}</div>'
+                         f'<div class="cbody">◆ {e(t.get("side_b",""))}</div>'
+                         f'<div class="stat" style="color:{GOLD};"><div class="sublbl" style="color:{GOLD};">Countercurrent opening</div>'
+                         f'<span style="color:{INK};font-weight:400;">{e(t.get("opening",""))}</span></div></div>')
+        parts.append('</div>')
+
+    cl = res.get("cliche_language", [])
+    if cl:
+        parts.append(_sec("05", "Cliché language to avoid", "Words that put you back in the current"))
+        parts.append('<table>')
+        for l in cl[:6]:
+            parts.append(f'<tr><td style="width:200px;"><div class="sublbl">Avoid</div><span class="strike">{e(l.get("avoid",""))}</span></td>'
+                         f'<td><div class="sublbl">Why</div>{e(l.get("why",""))}</td>'
+                         f'<td><div class="sublbl">Instead</div><span style="color:#3f7d4a;">{e(l.get("instead",""))}</span></td></tr>')
+        parts.append('</table>')
+
+    ci = res.get("cliche_images", [])
+    if ci:
+        parts.append(_sec("06", "Cliché images to avoid", "Visual territory already burnt"))
+        parts.append('<div class="cards">')
+        for im in ci[:6]:
+            parts.append(f'<div class="card"><div class="clabel" style="color:{RED};">✕ Do not shoot</div>'
+                         f'<div class="ctitle">{e(im.get("title",""))}</div>'
+                         f'<div class="cbody">{e(im.get("why",""))}</div></div>')
+        parts.append('</div>')
+
+    pv = res.get("provocations", [])
+    if pv:
+        parts.append(_sec("08", "Countercurrent Thought Starters", "Provocations to take into the room"))
+        parts.append('<div class="cards2">')
+        for i, p in enumerate(pv[:4]):
+            parts.append(f'<div class="card"><div class="clabel" style="color:{FAINT};">Starter / 0{i+1}</div>'
+                         f'<div class="cm" style="margin-bottom:12px;">{e(p.get("starter",""))}</div>'
+                         f'<div class="sublbl">Cuts against</div><div class="cbody" style="margin-bottom:10px;">{e(p.get("cuts_against",""))}</div>'
+                         f'<div class="sublbl">The move</div><div class="cbody">{e(p.get("the_move",""))}</div></div>')
+        parts.append('</div>')
+
+    parts.append('</div></body></html>')
+    return "".join(parts)
 
 
 def _sv_header(num: str, label: str, question: str) -> str:
@@ -4044,6 +4200,19 @@ def render_simple_view():
 .sv-img-lbl {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:{_red}; font-weight:700; margin-bottom:8px; }}
 .sv-img-title {{ font-family:{_sans}; font-size:15.5px; font-weight:700; color:{_ink}; margin-bottom:7px; line-height:1.28; }}
 .sv-img-why {{ font-family:{_sans}; font-size:12.5px; color:{_muted}; line-height:1.5; }}
+/* Brand / Category / Product input row */
+.sv-input-lbl {{ font-family:{_sans}; font-size:10.5px; letter-spacing:.16em; text-transform:uppercase;
+  color:{_faint}; font-weight:700; margin-bottom:6px; }}
+/* Provocations / thought starters (08) */
+.sv-starter {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:20px 22px; height:100%; }}
+.sv-starter-lbl {{ font-family:{_sans}; font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+  color:{_faint}; font-weight:700; margin-bottom:12px; }}
+.sv-starter-q {{ font-family:{_sans}; font-size:22px; font-weight:700; letter-spacing:-.01em;
+  color:{_ink}; line-height:1.2; margin-bottom:16px; }}
+.sv-starter-div {{ border-top:1px solid #e3dccb; margin:0 0 14px; }}
+.sv-starter-sublbl {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
+  color:{_faint}; font-weight:700; margin-bottom:5px; }}
+.sv-starter-txt {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; margin-bottom:13px; }}
 .sv-empty {{ text-align:center; padding:2.2rem; color:{_faint}; font-family:{_sans}; font-size:14px; }}
 </style>
 <div style="text-align:center; padding: 0.8rem 0 0.4rem;">
@@ -4056,18 +4225,33 @@ def render_simple_view():
 
     _is_guest = st.session_state.get("_is_guest", False)
 
+    # ── Brand / Category / Product control row + Run Lighthouse ────────────
     # Scan is available to everyone (incl. the public link). The last brief is
     # persisted and auto-loaded on open, so credits are only spent on a deliberate
-    # re-scan — not on every page view.
-    _c1, _c2, _c3 = st.columns([2, 1, 2])
-    with _c2:
-        _run = st.button("⚡ Scan the currents", use_container_width=True,
-                         type="primary", key="sv_scan")
+    # re-run — not on every page view.
+    _ic1, _ic2, _ic3, _ic4 = st.columns([1.2, 1.5, 1.2, 1], gap="medium")
+    with _ic1:
+        st.markdown('<div class="sv-input-lbl">Brand</div>', unsafe_allow_html=True)
+        _in_brand = st.text_input("Brand", value=_active, label_visibility="collapsed", key="sv_brand")
+    with _ic2:
+        st.markdown('<div class="sv-input-lbl">Category</div>', unsafe_allow_html=True)
+        _in_cat = st.text_input("Category", value=_prof["category"].title(),
+                                label_visibility="collapsed", key="sv_cat")
+    with _ic3:
+        st.markdown('<div class="sv-input-lbl">Product</div>', unsafe_allow_html=True)
+        _in_prod = st.text_input("Product", value=_prof.get("product", ""),
+                                 label_visibility="collapsed", key="sv_prod")
+    with _ic4:
+        st.markdown('<div class="sv-input-lbl">&nbsp;</div>', unsafe_allow_html=True)
+        _run = st.button("Run Lighthouse", use_container_width=True, type="primary", key="sv_scan")
     if _run:
+        _search = " ".join(dict.fromkeys(f"{_in_cat} {_in_prod}".split())).strip() or _prof["search"]
         with st.spinner("🗼 Scanning the currents…"):
-            _signals = _sv_gather(_prof["search"], _active)
-            _result = _sv_synthesize(_signals, _prof["category"], _competitors)
+            _signals = _sv_gather(_search, _active)
+            _result = _sv_synthesize(_signals, _in_cat or _prof["category"], _competitors, _in_brand or _active)
         if _result:
+            _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
+                                "product": _in_prod}
             st.session_state["sv_result"]  = _result
             st.session_state["sv_signals"] = _signals
             st.session_state["sv_client"]  = _active
@@ -4095,12 +4279,17 @@ def render_simple_view():
                     f'color:{_faint};letter-spacing:.06em;margin-bottom:6px;">'
                     f'Last updated {e(_saved_at[:10])}</div>', unsafe_allow_html=True)
 
+    # Brand / category used for display come from the saved brief's meta when present
+    _meta = (_res or {}).get("_meta", {}) if isinstance(_res, dict) else {}
+    _disp_cat   = _meta.get("category") or _prof["category"]
+    _disp_brand = _meta.get("brand") or _active
+
     def _sig(idx):
         try: return _sigs[int(idx)]
         except Exception: return None
 
     # ── Section 01 — The Currents ─────────────────────────────────────────
-    st.markdown(_sv_header("01", "The Currents", f'What is trending in {_prof["category"]}'),
+    st.markdown(_sv_header("01", "The Currents", f'What is trending in {_disp_cat}'),
                 unsafe_allow_html=True)
     if _res and _res.get("trends"):
         _tcols = st.columns(3)
@@ -4322,6 +4511,46 @@ def render_simple_view():
                 st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:{_red};'
                             f'line-height:1.5;margin-bottom:7px;"><b>✗ Challenges</b> · {e(_it.get("reason",""))}{_lk}</div>',
                             unsafe_allow_html=True)
+
+    # ── Section 08 — Countercurrent Thought Starters ──────────────────────
+    st.markdown(_sv_header("08", "Countercurrent Thought Starters", "Provocations to take into the room"),
+                unsafe_allow_html=True)
+    st.markdown('<div class="sv-lead">Not campaigns. Not strategies. Openings. Each one is a deliberate '
+                'reversal of a current the category is riding — a place to start arguing, sketching, '
+                'writing. Steal freely.</div>', unsafe_allow_html=True)
+    if _res and _res.get("provocations"):
+        _pv = _res["provocations"][:4]
+        for _rs in range(0, len(_pv), 2):
+            _cols = st.columns(2, gap="large")
+            for _j, _p in enumerate(_pv[_rs:_rs + 2]):
+                with _cols[_j]:
+                    st.markdown(
+                        f'<div class="sv-starter">'
+                        f'<div class="sv-starter-lbl">Starter / 0{_rs + _j + 1}</div>'
+                        f'<div class="sv-starter-q">{e(_p.get("starter",""))}</div>'
+                        f'<div class="sv-starter-div"></div>'
+                        f'<div class="sv-starter-sublbl">Cuts against</div>'
+                        f'<div class="sv-starter-txt">{e(_p.get("cuts_against",""))}</div>'
+                        f'<div class="sv-starter-sublbl">The move</div>'
+                        f'<div class="sv-starter-txt" style="margin-bottom:0;">{e(_p.get("the_move",""))}</div>'
+                        f'</div>', unsafe_allow_html=True)
+                    st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
+    elif not _res:
+        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
+
+    # ── Export — download the full brief as a print-ready PDF ──────────────
+    if _res:
+        st.markdown('<div style="border-top:3px solid ' + _line + ';margin-top:4rem;padding-top:1.6rem;"></div>',
+                    unsafe_allow_html=True)
+        _export_html = _sv_export_html(_res, _disp_brand, _prof["tagline"], _brief_date, _competitors, _sigs)
+        _ec1, _ec2, _ec3 = st.columns([2, 1.4, 2])
+        with _ec2:
+            st.download_button(
+                "⬇  Export brief as PDF",
+                data=_export_html, file_name=f"lighthouse-{_disp_brand.lower().replace(' ','-')}-brief.html",
+                mime="text/html", use_container_width=True, key="sv_export",
+                help="Downloads the full brief. Open it and choose Print → Save as PDF (it opens the print dialog automatically).",
+            )
 
 
 # ── Top-level navigation: Trends / Dispatch / Projects / Road Map ──────────
