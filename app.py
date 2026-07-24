@@ -3989,7 +3989,7 @@ def render_simple_view():
 .sv-stat {{ margin-top:13px; padding-top:11px; border-top:1px solid #e3dccb;
   font-family:{_sans}; font-size:11.5px; font-weight:600; color:{_gold}; line-height:1.5; }}
 .sv-lead {{ font-family:{_sans}; font-size:17.5px; color:{_muted}; line-height:1.6;
-  max-width:780px; margin: 0 0 26px; }}
+  max-width:780px; margin: 0 0 26px; font-weight:700; font-style:italic; }}
 /* Consumer-insight quote cards (02) */
 .sv-quote {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:17px 19px;
   height:100%; display:flex; flex-direction:column; }}
