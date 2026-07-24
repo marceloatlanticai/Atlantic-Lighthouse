@@ -3923,6 +3923,14 @@ def _sv_load_brief(active: str):
     return None
 
 
+def _sv_header(num: str, label: str, question: str) -> str:
+    """Two-column editorial section header: number+label rail | big headline."""
+    return (f'<div class="sv-section"><div class="sv-sec-grid">'
+            f'<div class="sv-sec-left"><div class="sv-num">{e(num)}</div>'
+            f'<div class="sv-seclabel">{e(label)}</div></div>'
+            f'<div class="sv-q">{e(question)}</div></div></div>')
+
+
 def render_simple_view():
     """Render the four-section Simple View inside the Overview tab."""
     _cc = get_active_client()
@@ -3957,12 +3965,18 @@ def render_simple_view():
   letter-spacing:-.01em; color:{_ink}; line-height:1.0; margin: 2px 0 16px; }}
 .sv-tagline {{ font-family:{_sans}; font-size:16px; color:{_muted};
   max-width: 640px; margin: 0 auto 8px; line-height:1.55; text-align:center; }}
-.sv-section {{ border-top: 2.5px solid {_line}; margin-top: 3rem; padding-top: 1.2rem; }}
-.sv-num {{ font-family:{_sans}; font-size:32px; font-weight:800; color:{_gold}; line-height:1; }}
+.sv-section {{ border-top: 3px solid {_line}; margin-top: 5rem; padding-top: 1.8rem; }}
+.sv-sec-grid {{ display:grid; grid-template-columns: 210px 1fr; gap: 32px; align-items:start; margin-bottom: 26px; }}
+.sv-sec-left {{ padding-top: 4px; }}
+.sv-num {{ font-family:{_sans}; font-size:44px; font-weight:800; color:{_gold}; line-height:.9; }}
 .sv-seclabel {{ font-family:{_sans}; font-size:11px; letter-spacing:.22em;
-  text-transform:uppercase; color:{_faint}; font-weight:600; margin: 8px 0 2px; }}
-.sv-q {{ font-family:{_sans}; font-size: 27px; font-weight:700; letter-spacing:-.01em; color:{_ink};
-  line-height:1.25; margin-bottom: 14px; }}
+  text-transform:uppercase; color:{_faint}; font-weight:700; margin: 12px 0 0; }}
+.sv-q {{ font-family:{_sans}; font-size: 40px; font-weight:700; letter-spacing:-.022em; color:{_ink};
+  line-height:1.08; margin: 0; }}
+@media (max-width: 820px) {{
+  .sv-sec-grid {{ grid-template-columns: 1fr; gap: 10px; }}
+  .sv-q {{ font-size: 30px; }}
+}}
 .sv-sub {{ font-family:{_sans}; font-size:11px; letter-spacing:.16em;
   text-transform:uppercase; color:{_gold}; font-weight:600; margin-bottom: 14px; }}
 .sv-card {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding: 18px 20px; height:100%; }}
@@ -3973,8 +3987,8 @@ def render_simple_view():
 .sv-card-body {{ font-family:{_sans}; font-size:13.5px; color:{_muted}; line-height:1.6; }}
 .sv-stat {{ margin-top:13px; padding-top:11px; border-top:1px solid #e3dccb;
   font-family:{_sans}; font-size:11.5px; font-weight:600; color:{_gold}; line-height:1.5; }}
-.sv-lead {{ font-family:{_sans}; font-size:16px; color:{_muted}; line-height:1.6;
-  max-width:760px; margin-bottom: 20px; }}
+.sv-lead {{ font-family:{_sans}; font-size:17.5px; color:{_muted}; line-height:1.6;
+  max-width:780px; margin: 0 0 26px; }}
 .sv-quote {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:15px 18px; margin-bottom:12px; }}
 .sv-quote-src {{ font-family:{_sans}; font-size:10.5px; letter-spacing:.12em;
   text-transform:uppercase; color:{_gold}; font-weight:700; margin-bottom:8px; }}
@@ -4069,9 +4083,7 @@ def render_simple_view():
         except Exception: return None
 
     # ── Section 01 — The Currents ─────────────────────────────────────────
-    st.markdown(f'<div class="sv-section"><div class="sv-num">01</div>'
-                f'<div class="sv-seclabel">The Currents</div>'
-                f'<div class="sv-q">What is trending in {e(_prof["category"])}</div></div>',
+    st.markdown(_sv_header("01", "The Currents", f'What is trending in {_prof["category"]}'),
                 unsafe_allow_html=True)
     if _res and _res.get("trends"):
         _tcols = st.columns(3)
@@ -4098,9 +4110,7 @@ def render_simple_view():
                     unsafe_allow_html=True)
 
     # ── Section 02 — Consumer Insight ─────────────────────────────────────
-    st.markdown('<div class="sv-section"><div class="sv-num">02</div>'
-                '<div class="sv-seclabel">Consumer Insight</div>'
-                '<div class="sv-q">What people are actually saying</div></div>',
+    st.markdown(_sv_header("02", "Consumer Insight", "What people are actually saying"),
                 unsafe_allow_html=True)
     if _res:
         if _res.get("insights_summary"):
@@ -4122,9 +4132,7 @@ def render_simple_view():
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
     # ── Section 03 — The Competitive Current ──────────────────────────────
-    st.markdown('<div class="sv-section"><div class="sv-num">03</div>'
-                '<div class="sv-seclabel">The Competitive Current</div>'
-                '<div class="sv-q">What everyone else is doing</div></div>',
+    st.markdown(_sv_header("03", "The Competitive Current", "What everyone else is doing"),
                 unsafe_allow_html=True)
     if _res:
         if _res.get("competitors_summary"):
@@ -4148,9 +4156,7 @@ def render_simple_view():
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
     # ── Section 04 — Cultural Tensions ────────────────────────────────────
-    st.markdown('<div class="sv-section"><div class="sv-num">04</div>'
-                '<div class="sv-seclabel">Cultural Tensions</div>'
-                '<div class="sv-q">The contradictions people are living inside</div></div>',
+    st.markdown(_sv_header("04", "Cultural Tensions", "The contradictions people are living inside"),
                 unsafe_allow_html=True)
     st.markdown('<div class="sv-lead">Trends tell you what\'s happening. Tensions tell you where the '
                 'countercurrent actually lives — in the gap between what people want and what they distrust.</div>',
@@ -4174,9 +4180,7 @@ def render_simple_view():
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
     # ── Section 05 — Cliché language to avoid ─────────────────────────────
-    st.markdown('<div class="sv-section"><div class="sv-num">05</div>'
-                '<div class="sv-seclabel">Cliché language to avoid</div>'
-                '<div class="sv-q">Words that put you back in the current</div></div>',
+    st.markdown(_sv_header("05", "Cliché language to avoid", "Words that put you back in the current"),
                 unsafe_allow_html=True)
     st.markdown('<div class="sv-lead">Copy-deck poison. If a line lands in a deck with any of these words, '
                 'send it back — each one signals a brand swimming with the school.</div>', unsafe_allow_html=True)
@@ -4194,9 +4198,7 @@ def render_simple_view():
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
     # ── Section 06 — Cliché images to avoid ───────────────────────────────
-    st.markdown('<div class="sv-section"><div class="sv-num">06</div>'
-                '<div class="sv-seclabel">Cliché images to avoid</div>'
-                '<div class="sv-q">Visual territory already burnt</div></div>',
+    st.markdown(_sv_header("06", "Cliché images to avoid", "Visual territory already burnt"),
                 unsafe_allow_html=True)
     st.markdown('<div class="sv-lead">If the moodboard leans on any of these, the brand will look like the '
                 'ninth can on the shelf — not the countercurrent.</div>', unsafe_allow_html=True)
@@ -4215,9 +4217,7 @@ def render_simple_view():
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
     # ── Section 07 — The Lighthouse Test ──────────────────────────────────
-    st.markdown('<div class="sv-section"><div class="sv-num">07</div>'
-                '<div class="sv-seclabel">The Lighthouse Test</div>'
-                '<div class="sv-q">Test your hypothesis</div></div>',
+    st.markdown(_sv_header("07", "The Lighthouse Test", "Test your hypothesis"),
                 unsafe_allow_html=True)
     st.markdown('<div class="sv-lead">Describe a potential countercurrent move. The Lighthouse '
                 'weighs it against the currents above and tells you if it truly cuts against the '
