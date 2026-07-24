@@ -3945,8 +3945,8 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
             return (s.get("content") or s.get("title") or "")[:260]
         except Exception:
             return ""
-    INK, GOLD, PAPER, CARD, MUTED, FAINT, RED = ("#211c15", "#c2953a", "#ffffff",
-                                                 "#fbf8f0", "#6b6154", "#a99f8d", "#b64a2e")
+    INK, GOLD, PAPER, CARD, MUTED, FAINT, RED = ("#000000", "#0000ff", "#cfcfcf",
+                                                 "#ffffff", "#222222", "#666666", "#0000ff")
     SANS = "'Helvetica Neue', Helvetica, Arial, sans-serif"
 
     def _sec(num, label, q):
@@ -3974,12 +3974,12 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
   .clabel {{ font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:{GOLD}; font-weight:700; margin-bottom:8px; }}
   .ctitle {{ font-size:17px; font-weight:700; margin-bottom:8px; line-height:1.25; }}
   .cbody {{ font-size:13px; color:{MUTED}; line-height:1.55; }}
-  .stat {{ margin-top:12px; padding-top:10px; border-top:1px solid #e3dccb; font-size:11.5px; font-weight:600; color:{GOLD}; }}
+  .stat {{ margin-top:12px; padding-top:10px; border-top:1px solid #dddddd; font-size:11.5px; font-weight:600; color:{GOLD}; }}
   .qhead {{ display:flex; justify-content:space-between; margin-bottom:10px; }}
   .qsrc {{ font-size:10px; letter-spacing:.12em; text-transform:uppercase; font-weight:700; }}
   .qhandle {{ font-size:11px; color:{FAINT}; }}
   .qtext {{ font-weight:700; font-style:italic; font-size:14px; line-height:1.45; }}
-  .qmeta {{ font-size:11px; color:{FAINT}; margin-top:10px; padding-top:9px; border-top:1px solid #e3dccb; }}
+  .qmeta {{ font-size:11px; color:{FAINT}; margin-top:10px; padding-top:9px; border-top:1px solid #dddddd; }}
   table {{ width:100%; border:1.5px solid {INK}; border-collapse:collapse; }}
   td {{ border-bottom:1.5px solid {INK}; padding:16px 18px; vertical-align:top; font-size:13px; color:{MUTED}; }}
   tr:last-child td {{ border-bottom:none; }}
@@ -3987,7 +3987,7 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
   .cm {{ font-size:16px; font-weight:700; color:{INK}; }}
   .sublbl {{ font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:{FAINT}; font-weight:700; margin-bottom:4px; }}
   .strike {{ text-decoration:line-through; font-weight:700; color:{INK}; font-size:15px; }}
-  .map {{ background:#f3e7d5; border:1.5px solid {INK}; border-radius:4px; padding:16px 18px; margin-top:18px; }}
+  .map {{ background:#eaeaea; border:1.5px solid {INK}; border-radius:4px; padding:16px 18px; margin-top:18px; }}
   .maptitle {{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:{RED}; font-weight:700; margin-bottom:8px; }}
   @media print {{ body {{ padding:0; }} .sec {{ page-break-inside:avoid; }} }}
 </style></head><body onload="window.print()"><div class="wrap">
@@ -4056,7 +4056,7 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
         for l in cl[:6]:
             parts.append(f'<tr><td style="width:200px;"><div class="sublbl">Avoid</div><span class="strike">{e(l.get("avoid",""))}</span></td>'
                          f'<td><div class="sublbl">Why</div>{e(l.get("why",""))}</td>'
-                         f'<td><div class="sublbl">Instead</div><span style="color:#3f7d4a;">{e(l.get("instead",""))}</span></td></tr>')
+                         f'<td><div class="sublbl">Instead</div><span style="color:#0000ff;">{e(l.get("instead",""))}</span></td></tr>')
         parts.append('</table>')
 
     ci = res.get("cliche_images", [])
@@ -4107,15 +4107,15 @@ def render_simple_view():
     # Brand-neutral, category-neutral tagline.
     _tagline = "Monitoring the currents so we can navigate the countercurrent."
 
-    # ── Lovable palette: warm cream paper · ink · gold accent · Helvetica ──
+    # ── 3-colour palette: black text · light-grey ground · blue accent ──────
     _sans  = '"Helvetica Neue", Helvetica, Arial, sans-serif'
-    _ink   = "#211c15"   # warm near-black
-    _gold  = "#c2953a"   # amber / gold accent
-    _card  = "#fbf8f0"   # warm card
-    _muted = "#6b6154"   # warm grey text
-    _faint = "#a99f8d"   # faint warm grey (meta)
-    _line  = "#211c15"   # editorial black rules
-    _red   = "#b64a2e"   # warm red for clichés
+    _ink   = "#000000"   # black text
+    _gold  = "#0000ff"   # blue — the single accent (labels, numbers, highlights)
+    _card  = "#ffffff"   # white cards on the grey ground
+    _muted = "#222222"   # near-black body text
+    _faint = "#666666"   # grey meta labels
+    _line  = "#000000"   # black rules / borders
+    _red   = "#0000ff"   # map warnings to the same blue accent
     _beacon = _gold      # back-compat alias
 
     st.markdown(f"""
@@ -4148,7 +4148,7 @@ def render_simple_view():
 .sv-card-title {{ font-family:{_sans}; font-size:18px; font-weight:700; color:{_ink};
   margin-bottom:9px; line-height:1.28; }}
 .sv-card-body {{ font-family:{_sans}; font-size:13.5px; color:{_muted}; line-height:1.6; }}
-.sv-stat {{ margin-top:13px; padding-top:11px; border-top:1px solid #e3dccb;
+.sv-stat {{ margin-top:13px; padding-top:11px; border-top:1px solid #dddddd;
   font-family:{_sans}; font-size:11.5px; font-weight:600; color:{_gold}; line-height:1.5; }}
 .sv-lead {{ font-family:{_sans}; font-size:17.5px; color:{_muted}; line-height:1.6;
   max-width:780px; margin: 0 0 26px; font-weight:700; font-style:italic; }}
@@ -4161,7 +4161,7 @@ def render_simple_view():
 .sv-quote-handle {{ font-family:{_sans}; font-size:12px; color:{_faint}; text-align:right; }}
 .sv-quote-text {{ font-family:{_sans}; font-size:15px; color:{_ink}; line-height:1.5;
   font-weight:700; font-style:italic; flex:1; }}
-.sv-quote-divider {{ border-top:1px solid #e3dccb; margin:15px 0 11px; }}
+.sv-quote-divider {{ border-top:1px solid #dddddd; margin:15px 0 11px; }}
 .sv-quote-ctx {{ font-family:{_sans}; font-size:11.5px; color:{_muted}; line-height:1.45; margin-bottom:4px; }}
 .sv-quote-eng {{ font-family:{_sans}; font-size:11.5px; color:{_faint}; }}
 .sv-quote-eng a {{ color:{_gold}; text-decoration:none; }}
@@ -4178,7 +4178,7 @@ def render_simple_view():
   text-transform:uppercase; color:{_faint}; font-weight:700; margin-bottom:6px; }}
 .sv-comp-cl {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; }}
 @media (max-width: 820px) {{ .sv-comp-row {{ grid-template-columns:1fr; gap:10px; }} }}
-.sv-map {{ background:#f3e7d5; border:1.5px solid {_line}; border-radius:4px; padding:18px 20px; margin-top:22px; }}
+.sv-map {{ background:#eaeaea; border:1.5px solid {_line}; border-radius:4px; padding:18px 20px; margin-top:22px; }}
 .sv-map-title {{ font-family:{_sans}; font-size:11px; letter-spacing:.16em;
   text-transform:uppercase; color:{_red}; font-weight:700; margin-bottom:12px; }}
 .sv-map-item {{ font-family:{_sans}; font-size:13.5px; color:{_ink}; line-height:2.0; }}
@@ -4187,7 +4187,7 @@ def render_simple_view():
 .sv-tension-title {{ font-family:{_sans}; font-size:17px; font-weight:700; color:{_ink}; margin-bottom:12px; line-height:1.28; }}
 .sv-tension-side {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; padding-left:16px; position:relative; margin-bottom:7px; }}
 .sv-tension-side::before {{ content:"◆"; position:absolute; left:0; color:{_gold}; font-size:8px; top:4px; }}
-.sv-tension-open {{ margin-top:12px; padding-top:11px; border-top:1px solid #e3dccb; }}
+.sv-tension-open {{ margin-top:12px; padding-top:11px; border-top:1px solid #dddddd; }}
 .sv-tension-open b {{ display:block; font-family:{_sans}; font-size:9.5px; letter-spacing:.12em;
   text-transform:uppercase; color:{_gold}; font-weight:700; margin-bottom:5px; }}
 .sv-tension-open span {{ font-family:{_sans}; font-size:13px; color:{_ink}; line-height:1.55; }}
@@ -4199,7 +4199,7 @@ def render_simple_view():
 .sv-lang-avoid {{ font-family:{_sans}; font-size:16px; font-weight:700; color:{_ink}; text-decoration:line-through; }}
 .sv-lang-lbl {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:{_faint}; font-weight:700; display:block; margin-bottom:6px; }}
 .sv-lang-why {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; }}
-.sv-lang-instead {{ font-family:{_sans}; font-size:13px; color:#3f7d4a; line-height:1.5; }}
+.sv-lang-instead {{ font-family:{_sans}; font-size:13px; color:#0000ff; line-height:1.5; }}
 @media (max-width: 820px) {{ .sv-lang {{ grid-template-columns:1fr; gap:10px; }} }}
 /* Cliché images */
 .sv-img {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:16px 18px; height:100%; }}
@@ -4215,11 +4215,21 @@ def render_simple_view():
   color:{_faint}; font-weight:700; margin-bottom:12px; }}
 .sv-starter-q {{ font-family:{_sans}; font-size:22px; font-weight:700; letter-spacing:-.01em;
   color:{_ink}; line-height:1.2; margin-bottom:16px; }}
-.sv-starter-div {{ border-top:1px solid #e3dccb; margin:0 0 14px; }}
+.sv-starter-div {{ border-top:1px solid #dddddd; margin:0 0 14px; }}
 .sv-starter-sublbl {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
   color:{_faint}; font-weight:700; margin-bottom:5px; }}
 .sv-starter-txt {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; margin-bottom:13px; }}
 .sv-empty {{ text-align:center; padding:2.2rem; color:{_faint}; font-family:{_sans}; font-size:14px; }}
+/* Blue buttons (single accent) */
+button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="baseButton-primary"] {{
+  background-color:{_gold} !important; border-color:{_gold} !important; color:#ffffff !important; }}
+[data-testid="stDownloadButton"] button, .stDownloadButton button {{
+  background-color:{_gold} !important; border-color:{_gold} !important; color:#ffffff !important; }}
+/* Inputs: white field, black text/border on the grey ground */
+.sv-input-lbl + div [data-baseweb="input"] input, [data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea {{
+  background:#ffffff !important; color:{_ink} !important; border-color:{_line} !important;
+  font-family:{_sans} !important; }}
 </style>
 <div style="text-align:center; padding: 0.8rem 0 0.4rem;">
   <div class="sv-eyebrow">Lighthouse • Intelligence Brief</div>
@@ -4514,13 +4524,13 @@ def render_simple_view():
             for _it in _hres.get("supports", [])[:4]:
                 _s = _sig(_it.get("index"))
                 _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
-                st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:#3f7d4a;'
+                st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:#0000ff;'
                             f'line-height:1.5;margin-bottom:7px;"><b>✓ Supports</b> · {e(_it.get("reason",""))}{_lk}</div>',
                             unsafe_allow_html=True)
             for _it in _hres.get("challenges", [])[:4]:
                 _s = _sig(_it.get("index"))
                 _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
-                st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:{_red};'
+                st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:{_ink};'
                             f'line-height:1.5;margin-bottom:7px;"><b>✗ Challenges</b> · {e(_it.get("reason",""))}{_lk}</div>',
                             unsafe_allow_html=True)
 
@@ -4580,7 +4590,7 @@ if st.query_params.get("view") == "overview":
 <style>
   [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"],
   #lh-topnav { display:none !important; }
-  .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], .main, section.main { background:#ffffff !important; }
+  .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], .main, section.main { background:#cfcfcf !important; }
   .block-container { max-width:1120px !important; padding-top:1.4rem !important; }
   /* no sticky-nav offset needed on the clean brief */
   [id^="lh-sec-"] { scroll-margin-top:0 !important; }
