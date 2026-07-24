@@ -3851,8 +3851,9 @@ Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
   "insights_summary": "3-4 sentences: what are people really asking of {category}? The tension, the recurring complaint, the surprise.",
   "insight_quotes": [
     {{"signal_index": 3,
-      "platform_label": "real source/handle from the signal, e.g. 'Reddit r/Hydrohomies' or 'TikTok @handle'",
-      "context": "one line of context on the post",
+      "network": "platform name ONLY, e.g. 'Reddit', 'TikTok', 'X', 'Instagram', 'YouTube', 'TikTok comment'",
+      "handle": "the community or username, e.g. 'r/Hydrohomies' or '@thewaterguy'",
+      "context": "one line of context on the post (e.g. 'Top comment on ...')",
       "engagement": "real engagement from the signal (likes/views/comments) if present, else empty string"}}
   ],
   "competitors_summary": "3-4 sentences: what are competitors ({comp}) doing right now, and what's the predictable pattern everyone follows?",
@@ -3879,7 +3880,7 @@ Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
 }}
 
 Rules:
-- EXACTLY 3 trends. 5-6 insight_quotes chosen for authentic human voice. 4-5 competitors (the named ones plus any real player you spot in the signals). 4-6 cliche_map entries.
+- EXACTLY 3 trends. EXACTLY 6 insight_quotes chosen for authentic human voice and spanning MULTIPLE networks (mix Reddit, TikTok, X, Instagram, YouTube — not all from one). 4-5 competitors (the named ones plus any real player you spot in the signals). 4-6 cliche_map entries.
 - 4 tensions (real contradictions consumers hold), 5-6 cliche_language entries, 5-6 cliche_images entries.
 - signal_index / signal_indexes must reference real indexes from the list above.
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
@@ -3989,20 +3990,32 @@ def render_simple_view():
   font-family:{_sans}; font-size:11.5px; font-weight:600; color:{_gold}; line-height:1.5; }}
 .sv-lead {{ font-family:{_sans}; font-size:17.5px; color:{_muted}; line-height:1.6;
   max-width:780px; margin: 0 0 26px; }}
-.sv-quote {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:15px 18px; margin-bottom:12px; }}
-.sv-quote-src {{ font-family:{_sans}; font-size:10.5px; letter-spacing:.12em;
-  text-transform:uppercase; color:{_gold}; font-weight:700; margin-bottom:8px; }}
-.sv-quote-text {{ font-family:{_sans}; font-size:15px; color:{_ink}; line-height:1.55; }}
-.sv-quote-meta {{ font-family:{_sans}; font-size:11px; color:{_faint}; margin-top:9px; letter-spacing:.02em; }}
-.sv-quote-meta a {{ color:{_gold}; text-decoration:none; }}
-.sv-comp {{ border-bottom:1px solid #e3dccb; padding:15px 0; }}
-.sv-comp-name {{ font-family:{_sans}; font-size:11px; letter-spacing:.16em;
-  text-transform:uppercase; color:{_gold}; font-weight:700; margin-bottom:5px; }}
-.sv-comp-move {{ font-family:{_sans}; font-size:16px; font-weight:700; color:{_ink}; line-height:1.32; }}
-.sv-comp-detail {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.55; margin-top:4px; }}
-.sv-comp-cliche {{ margin-top:8px; font-family:{_sans}; font-size:12.5px; color:{_red}; }}
-.sv-comp-cliche b {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.12em;
-  text-transform:uppercase; color:{_red}; font-weight:700; }}
+/* Consumer-insight quote cards (02) */
+.sv-quote {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:17px 19px;
+  height:100%; display:flex; flex-direction:column; }}
+.sv-quote-head {{ display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:13px; }}
+.sv-quote-src {{ font-family:{_sans}; font-size:10.5px; letter-spacing:.14em;
+  text-transform:uppercase; color:{_ink}; font-weight:700; }}
+.sv-quote-handle {{ font-family:{_sans}; font-size:12px; color:{_faint}; text-align:right; }}
+.sv-quote-text {{ font-family:{_sans}; font-size:15px; color:{_ink}; line-height:1.5;
+  font-weight:700; font-style:italic; flex:1; }}
+.sv-quote-divider {{ border-top:1px solid #e3dccb; margin:15px 0 11px; }}
+.sv-quote-ctx {{ font-family:{_sans}; font-size:11.5px; color:{_muted}; line-height:1.45; margin-bottom:4px; }}
+.sv-quote-eng {{ font-family:{_sans}; font-size:11.5px; color:{_faint}; }}
+.sv-quote-eng a {{ color:{_gold}; text-decoration:none; }}
+/* Competitor table (03) */
+.sv-comp-table {{ border:1.5px solid {_line}; border-radius:4px; overflow:hidden; }}
+.sv-comp-row {{ display:grid; grid-template-columns: 200px 1.35fr 1.25fr; gap:26px;
+  padding:20px 24px; border-bottom:1.5px solid {_line}; }}
+.sv-comp-row:last-child {{ border-bottom:none; }}
+.sv-comp-name {{ font-family:{_sans}; font-size:11px; letter-spacing:.14em;
+  text-transform:uppercase; color:{_ink}; font-weight:700; }}
+.sv-comp-move {{ font-family:{_sans}; font-size:17px; font-weight:700; color:{_ink}; line-height:1.3; }}
+.sv-comp-detail {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; margin-top:6px; }}
+.sv-comp-cl-lbl {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.12em;
+  text-transform:uppercase; color:{_faint}; font-weight:700; margin-bottom:6px; }}
+.sv-comp-cl {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; }}
+@media (max-width: 820px) {{ .sv-comp-row {{ grid-template-columns:1fr; gap:10px; }} }}
 .sv-map {{ background:#f3e7d5; border:1.5px solid {_line}; border-radius:4px; padding:18px 20px; margin-top:22px; }}
 .sv-map-title {{ font-family:{_sans}; font-size:11px; letter-spacing:.16em;
   text-transform:uppercase; color:{_red}; font-weight:700; margin-bottom:12px; }}
@@ -4016,12 +4029,16 @@ def render_simple_view():
 .sv-tension-open b {{ display:block; font-family:{_sans}; font-size:9.5px; letter-spacing:.12em;
   text-transform:uppercase; color:{_gold}; font-weight:700; margin-bottom:5px; }}
 .sv-tension-open span {{ font-family:{_sans}; font-size:13px; color:{_ink}; line-height:1.55; }}
-/* Cliché language */
-.sv-lang {{ border-bottom:1px solid #e3dccb; padding:14px 0; display:grid; grid-template-columns:1fr 1.4fr 1.4fr; gap:16px; align-items:start; }}
-.sv-lang-avoid {{ font-family:{_sans}; font-size:15.5px; font-weight:700; color:{_red}; text-decoration:line-through; }}
-.sv-lang-lbl {{ font-family:{_sans}; font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:{_faint}; font-weight:600; display:block; margin-bottom:4px; }}
+/* Cliché language table (05) */
+.sv-lang-table {{ border:1.5px solid {_line}; border-radius:4px; overflow:hidden; }}
+.sv-lang {{ display:grid; grid-template-columns:1fr 1.4fr 1.4fr; gap:26px; padding:20px 24px;
+  border-bottom:1.5px solid {_line}; align-items:start; }}
+.sv-lang:last-child {{ border-bottom:none; }}
+.sv-lang-avoid {{ font-family:{_sans}; font-size:16px; font-weight:700; color:{_ink}; text-decoration:line-through; }}
+.sv-lang-lbl {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:{_faint}; font-weight:700; display:block; margin-bottom:6px; }}
 .sv-lang-why {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; }}
 .sv-lang-instead {{ font-family:{_sans}; font-size:13px; color:#3f7d4a; line-height:1.5; }}
+@media (max-width: 820px) {{ .sv-lang {{ grid-template-columns:1fr; gap:10px; }} }}
 /* Cliché images */
 .sv-img {{ background:{_card}; border:1.5px solid {_line}; border-radius:4px; padding:16px 18px; height:100%; }}
 .sv-img-lbl {{ font-family:{_sans}; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:{_red}; font-weight:700; margin-bottom:8px; }}
@@ -4115,19 +4132,28 @@ def render_simple_view():
     if _res:
         if _res.get("insights_summary"):
             st.markdown(f'<div class="sv-lead">{e(_res["insights_summary"])}</div>', unsafe_allow_html=True)
-        for _q in _res.get("insight_quotes", [])[:6]:
-            _s = _sig(_q.get("signal_index"))
-            if not _s: continue
-            _src_lbl = _q.get("platform_label") or _SV_SRC_LABEL.get(_s["source"], _s["source"].title())
-            _link = f' · <a href="{_s["url"]}" target="_blank">open ↗</a>' if _s.get("url") else ""
-            _text = (_s["content"] or _s["title"])[:280]
-            _ctx = _q.get("context", "")
-            _eng = _q.get("engagement", "")
-            _meta_bits = " · ".join(b for b in [_ctx, _eng] if b)
-            st.markdown(f'<div class="sv-quote">'
-                        f'<div class="sv-quote-src">{e(_src_lbl)}</div>'
+        _quotes = [q for q in _res.get("insight_quotes", []) if _sig(q.get("signal_index"))][:6]
+        for _rs in range(0, len(_quotes), 3):
+            _cols = st.columns(3)
+            for _j, _q in enumerate(_quotes[_rs:_rs + 3]):
+                _s = _sig(_q.get("signal_index"))
+                _net = _q.get("network") or _SV_SRC_LABEL.get(_s["source"], _s["source"].title())
+                _handle = _q.get("handle", "")
+                _text = (_s["content"] or _s["title"])[:260]
+                _ctx = _q.get("context", "")
+                _eng = _q.get("engagement", "")
+                _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s.get("url") else ""
+                with _cols[_j]:
+                    st.markdown(
+                        f'<div class="sv-quote">'
+                        f'<div class="sv-quote-head"><span class="sv-quote-src">{e(_net)}</span>'
+                        f'<span class="sv-quote-handle">{e(_handle)}</span></div>'
                         f'<div class="sv-quote-text">&ldquo;{e(_text)}&rdquo;</div>'
-                        f'<div class="sv-quote-meta">{e(_meta_bits)}{_link}</div></div>', unsafe_allow_html=True)
+                        f'<div class="sv-quote-divider"></div>'
+                        + (f'<div class="sv-quote-ctx">{e(_ctx)}</div>' if _ctx else '')
+                        + f'<div class="sv-quote-eng">{e(_eng)}{_lk}</div>'
+                        f'</div>', unsafe_allow_html=True)
+                    st.markdown('<div style="height:14px;"></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
@@ -4137,15 +4163,19 @@ def render_simple_view():
     if _res:
         if _res.get("competitors_summary"):
             st.markdown(f'<div class="sv-lead">{e(_res["competitors_summary"])}</div>', unsafe_allow_html=True)
-        for _cmp in _res.get("competitors", [])[:5]:
-            _cl_txt = _cmp.get("cliche", "")
-            _cl_html = (f'<div class="sv-comp-cliche"><b>Cliché to counter:</b> {e(_cl_txt)}</div>'
-                        if _cl_txt else "")
-            st.markdown(f'<div class="sv-comp">'
-                        f'<div class="sv-comp-name">{e(_cmp.get("name",""))}</div>'
-                        f'<div class="sv-comp-move">{e(_cmp.get("move",""))}</div>'
-                        f'<div class="sv-comp-detail">{e(_cmp.get("detail",""))}</div>'
-                        f'{_cl_html}</div>', unsafe_allow_html=True)
+        _comps = _res.get("competitors", [])[:5]
+        if _comps:
+            _rows = ""
+            for _cmp in _comps:
+                _cl_txt = _cmp.get("cliche", "")
+                _c3 = (f'<div><div class="sv-comp-cl-lbl">Cliché to counter</div>'
+                       f'<div class="sv-comp-cl">{e(_cl_txt)}</div></div>') if _cl_txt else '<div></div>'
+                _rows += (f'<div class="sv-comp-row">'
+                          f'<div class="sv-comp-name">{e(_cmp.get("name",""))}</div>'
+                          f'<div><div class="sv-comp-move">{e(_cmp.get("move",""))}</div>'
+                          f'<div class="sv-comp-detail">{e(_cmp.get("detail",""))}</div></div>'
+                          f'{_c3}</div>')
+            st.markdown(f'<div class="sv-comp-table">{_rows}</div>', unsafe_allow_html=True)
         if _res.get("cliche_map"):
             _map_items = "".join(f'<div class="sv-map-item">✕ &nbsp;{e(c)}</div>'
                                  for c in _res["cliche_map"][:6])
@@ -4185,15 +4215,17 @@ def render_simple_view():
     st.markdown('<div class="sv-lead">Copy-deck poison. If a line lands in a deck with any of these words, '
                 'send it back — each one signals a brand swimming with the school.</div>', unsafe_allow_html=True)
     if _res and _res.get("cliche_language"):
+        _lang_rows = ""
         for _l in _res["cliche_language"][:6]:
-            st.markdown(f'<div class="sv-lang">'
-                        f'<div><span class="sv-lang-lbl">Avoid</span>'
-                        f'<span class="sv-lang-avoid">{e(_l.get("avoid",""))}</span></div>'
-                        f'<div><span class="sv-lang-lbl">Why</span>'
-                        f'<span class="sv-lang-why">{e(_l.get("why",""))}</span></div>'
-                        f'<div><span class="sv-lang-lbl">Instead</span>'
-                        f'<span class="sv-lang-instead">{e(_l.get("instead",""))}</span></div>'
-                        f'</div>', unsafe_allow_html=True)
+            _lang_rows += (f'<div class="sv-lang">'
+                           f'<div><span class="sv-lang-lbl">Avoid</span>'
+                           f'<span class="sv-lang-avoid">{e(_l.get("avoid",""))}</span></div>'
+                           f'<div><span class="sv-lang-lbl">Why</span>'
+                           f'<span class="sv-lang-why">{e(_l.get("why",""))}</span></div>'
+                           f'<div><span class="sv-lang-lbl">Instead</span>'
+                           f'<span class="sv-lang-instead">{e(_l.get("instead",""))}</span></div>'
+                           f'</div>')
+        st.markdown(f'<div class="sv-lang-table">{_lang_rows}</div>', unsafe_allow_html=True)
     elif not _res:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
@@ -4219,16 +4251,27 @@ def render_simple_view():
     # ── Section 07 — The Lighthouse Test ──────────────────────────────────
     st.markdown(_sv_header("07", "The Lighthouse Test", "Test your hypothesis"),
                 unsafe_allow_html=True)
-    st.markdown('<div class="sv-lead">Describe a potential countercurrent move. The Lighthouse '
-                'weighs it against the currents above and tells you if it truly cuts against the '
-                'grain — or if it\'s swimming with the school.</div>', unsafe_allow_html=True)
-    _hc1, _hc2 = st.columns([5, 1])
-    with _hc1:
-        _hunch = st.text_input("Hunch", label_visibility="collapsed",
-                               placeholder=f"e.g. {_active} should position against alcohol, not against soda…",
-                               key="sv_hunch")
-    with _hc2:
-        _test = st.button("Test →", use_container_width=True, key="sv_test")
+    # Two side-by-side boxes: left = your hunch (input) · right = the reading
+    _tcol1, _tcol2 = st.columns(2, gap="large")
+    with _tcol1:
+        with st.container(border=True):
+            st.markdown('<div class="sv-quote-src" style="margin-bottom:10px;">Your hunch</div>'
+                        '<div class="sv-comp-detail" style="margin-bottom:14px;">Describe a potential '
+                        'countercurrent move. The Lighthouse weighs it against the currents above and tells '
+                        'you if it truly cuts against the grain — or if it\'s swimming with the school.</div>',
+                        unsafe_allow_html=True)
+            _hunch = st.text_area("Hunch", label_visibility="collapsed", height=130,
+                                  placeholder=f"e.g. {_active} positions as the only sparkling water that says "
+                                              f"nothing about health — just water, from a specific place, in a "
+                                              f"specific glass, at a specific moment.",
+                                  key="sv_hunch")
+            _test = st.button("Test against the currents", use_container_width=True,
+                              type="primary", key="sv_test")
+    with _tcol2:
+        with st.container(border=True):
+            st.markdown('<div class="sv-quote-src" style="margin-bottom:12px;">Lighthouse reading</div>',
+                        unsafe_allow_html=True)
+            _reading_slot = st.empty()
 
     if _test and _hunch.strip():
         if not _sigs:
@@ -4257,31 +4300,28 @@ def render_simple_view():
                     except Exception as _hexc:
                         st.error(f"Test failed: {_hexc}")
 
+    # Render the reading into the right-hand box
     _hres = st.session_state.get("sv_hunch_result")
-    if _hres:
-        st.markdown(f'<div class="sv-card" style="margin:14px 0;"><div class="sv-card-body" '
-                    f'style="font-size:14px;"><b>Verdict:</b> {e(_hres.get("verdict",""))}</div></div>', unsafe_allow_html=True)
-        _sc, _ch = st.columns(2)
-        with _sc:
-            st.markdown('<div class="sv-sub" style="color:#1a8a5a;">✓ Supports</div>', unsafe_allow_html=True)
-            for _it in _hres.get("supports", [])[:5]:
+    with _reading_slot.container():
+        if not _hres:
+            st.markdown('<div class="sv-comp-detail" style="font-style:italic;">Awaiting a hypothesis. '
+                        'The lighthouse can only judge a direction once you point at one.</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="sv-comp-move" style="margin-bottom:14px;">{e(_hres.get("verdict",""))}</div>',
+                        unsafe_allow_html=True)
+            for _it in _hres.get("supports", [])[:4]:
                 _s = _sig(_it.get("index"))
-                if _s:
-                    _lbl = _SV_SRC_LABEL.get(_s["source"], _s["source"])
-                    _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s.get("url") else ""
-                    st.markdown(f'<div class="sv-quote" style="border-left-color:#1a8a5a;">'
-                                f'<div class="sv-quote-text" style="font-size:13px;">{e(_s["title"][:100])}</div>'
-                                f'<div class="sv-quote-meta">{e(_lbl)} · {e(_it.get("reason",""))}{_lk}</div></div>', unsafe_allow_html=True)
-        with _ch:
-            st.markdown('<div class="sv-sub" style="color:#c94f35;">✗ Challenges</div>', unsafe_allow_html=True)
-            for _it in _hres.get("challenges", [])[:5]:
+                _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
+                st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:#3f7d4a;'
+                            f'line-height:1.5;margin-bottom:7px;"><b>✓ Supports</b> · {e(_it.get("reason",""))}{_lk}</div>',
+                            unsafe_allow_html=True)
+            for _it in _hres.get("challenges", [])[:4]:
                 _s = _sig(_it.get("index"))
-                if _s:
-                    _lbl = _SV_SRC_LABEL.get(_s["source"], _s["source"])
-                    _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s.get("url") else ""
-                    st.markdown(f'<div class="sv-quote" style="border-left-color:#c94f35;">'
-                                f'<div class="sv-quote-text" style="font-size:13px;">{e(_s["title"][:100])}</div>'
-                                f'<div class="sv-quote-meta">{e(_lbl)} · {e(_it.get("reason",""))}{_lk}</div></div>', unsafe_allow_html=True)
+                _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
+                st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:{_red};'
+                            f'line-height:1.5;margin-bottom:7px;"><b>✗ Challenges</b> · {e(_it.get("reason",""))}{_lk}</div>',
+                            unsafe_allow_html=True)
 
 
 # ── Top-level navigation: Trends / Dispatch / Projects / Road Map ──────────
