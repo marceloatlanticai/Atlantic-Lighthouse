@@ -4149,7 +4149,11 @@ def render_simple_view():
     _tagline = "Monitoring the currents so we can navigate the countercurrent."
 
     # ── 3-colour palette: black text · light-grey ground · blue accent ──────
-    _sans  = '"Helvetica Neue", Helvetica, Arial, sans-serif'
+    # NOTE: single quotes on purpose. This value is interpolated into inline
+    # style="..." attributes as well as CSS blocks — double quotes would close
+    # the HTML attribute early and silently drop every following declaration
+    # (that's what turned the Archive rows' text white).
+    _sans  = "'Helvetica Neue', Helvetica, Arial, sans-serif"
     _ink   = "#000000"   # black text
     _gold  = "#0000ff"   # blue — the single accent (labels, numbers, highlights)
     _card  = "#e8e8e8"   # grey cards on the white ground
