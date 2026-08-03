@@ -320,6 +320,10 @@ st.set_page_config(
 st.markdown("""
 <style>
 #MainMenu, header, footer { visibility: hidden; }
+/* Hide Streamlit's floating chrome: running-status widget, toolbar, deploy/manage button */
+[data-testid="stStatusWidget"], [data-testid="stToolbar"], [data-testid="stDecoration"],
+.stDeployButton, [data-testid="stAppDeployButton"], [data-testid="manage-app-button"] {
+  display: none !important; visibility: hidden !important; }
 
 /* ── Global CSS variable override — force light theme vars so Streamlit
    elements that inherit --background-color don't render dark-on-dark ── */
@@ -3908,17 +3912,54 @@ Rules:
 
 
 def _sv_save_brief(active: str, result: dict, signals: list) -> None:
-    """Persist the latest Overview brief for a client (so it survives reloads and
-    shows to guests without re-scraping — saves Apify credits)."""
+    """Archive a generated brief. Every run is kept, so the Archive section can
+    reopen any past report at zero API cost."""
     trimmed = [{"title": s.get("title", "")[:160], "content": s.get("content", "")[:400],
                 "source": s.get("source", ""), "url": s.get("url", ""),
                 "timestamp": s.get("timestamp", "")} for s in (signals or [])[:80]]
+    meta = (result or {}).get("_meta", {}) or {}
     payload = {"_overview": True, "_client": active, "sv_result": result,
-               "sv_signals": trimmed, "saved_at": datetime.utcnow().isoformat()}
+               "sv_signals": trimmed, "saved_at": datetime.utcnow().isoformat(),
+               "brand": meta.get("brand", active), "category": meta.get("category", ""),
+               "product": meta.get("product", ""), "signal_count": len(signals or [])}
     try:
         _db.save_dispatch(payload, f"__overview__{active}")
     except Exception as _exc:
         print(f"[overview] save error: {_exc}")
+
+
+def _sv_list_briefs(active: str, limit: int = 40) -> list:
+    """All archived briefs for a client, newest first — for the Archive section."""
+    out = []
+    try:
+        for rec in _db.load_all_dispatches():   # newest first
+            full = rec.get("full") or {}
+            if not full.get("_overview") or full.get("_client") != active:
+                continue
+            out.append({
+                "saved_at":  full.get("saved_at", "") or rec.get("timestamp", ""),
+                "brand":     full.get("brand", active),
+                "category":  full.get("category", ""),
+                "product":   full.get("product", ""),
+                "count":     full.get("signal_count", len(full.get("sv_signals") or [])),
+                "result":    full.get("sv_result") or {},
+                "signals":   full.get("sv_signals") or [],
+                "id":        rec.get("dispatch_id", "") or full.get("saved_at", ""),
+            })
+            if len(out) >= limit:
+                break
+    except Exception as _exc:
+        print(f"[overview] archive list error: {_exc}")
+    return out
+
+
+def _sv_fmt_date(iso: str) -> str:
+    """'2026-07-29T16:28:44' → '29 Jul 2026 · 16:28'."""
+    try:
+        d = datetime.fromisoformat(str(iso).replace("Z", "").split(".")[0])
+        return d.strftime("%d %b %Y · %H:%M")
+    except Exception:
+        return str(iso)[:16].replace("T", " · ")
 
 
 def _sv_load_brief(active: str):
@@ -4269,10 +4310,12 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
         if _result:
             _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
                                 "product": _in_prod}
-            st.session_state["sv_result"]  = _result
-            st.session_state["sv_signals"] = _signals
-            st.session_state["sv_client"]  = _active
-            _sv_save_brief(_active, _result, _signals)   # persist for reloads/guests
+            st.session_state["sv_result"]   = _result
+            st.session_state["sv_signals"]  = _signals
+            st.session_state["sv_client"]   = _active
+            st.session_state["sv_saved_at"] = datetime.utcnow().isoformat()
+            st.session_state.pop("sv_hunch_result", None)   # new search → fresh reading
+            _sv_save_brief(_active, _result, _signals)      # archive this run
             st.rerun()
         elif not _signals:
             st.error(f"No signals found for '{_search}'. Try broader terms in Category/Product, "
@@ -4284,22 +4327,26 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
 
     # Load the current session's result, or fall back to the last SAVED brief
     # for this client (so opening the app shows content without re-scraping).
+    # The team ALWAYS starts on a clean slate — a brief only appears after you run
+    # a scan or open one from the Archive. Nothing is lost: every run is archived
+    # below. Guests on the public link still see the latest published brief.
     _res  = st.session_state.get("sv_result") if st.session_state.get("sv_client") == _active else None
     _sigs = st.session_state.get("sv_signals", []) if st.session_state.get("sv_client") == _active else []
-    _saved_at = ""
-    if _res is None:
+    _saved_at = st.session_state.get("sv_saved_at", "") if st.session_state.get("sv_client") == _active else ""
+    if _res is None and _is_guest:
         _loaded = _sv_load_brief(_active)
         if _loaded and _loaded.get("result"):
-            _res = _loaded["result"]
-            _sigs = _loaded["signals"]
+            _res      = _loaded["result"]
+            _sigs     = _loaded["signals"]
             _saved_at = _loaded.get("saved_at", "")
-            st.session_state["sv_result"]  = _res
-            st.session_state["sv_signals"] = _sigs
-            st.session_state["sv_client"]  = _active
+            st.session_state["sv_result"]   = _res
+            st.session_state["sv_signals"]  = _sigs
+            st.session_state["sv_client"]   = _active
+            st.session_state["sv_saved_at"] = _saved_at
     if _saved_at:
         st.markdown(f'<div style="text-align:center;font-family:{_sans};font-size:10.5px;'
                     f'color:{_faint};letter-spacing:.06em;margin-bottom:6px;">'
-                    f'Last updated {e(_saved_at[:10])}</div>', unsafe_allow_html=True)
+                    f'Report from {e(_sv_fmt_date(_saved_at))}</div>', unsafe_allow_html=True)
 
     # Brand / category used for display come from the saved brief's meta when present
     _meta = (_res or {}).get("_meta", {}) if isinstance(_res, dict) else {}
@@ -4559,6 +4606,55 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
                     st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
     elif not _res:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
+
+    # ── Section 09 — Archive (every past report, reopenable at zero cost) ──
+    st.markdown(_sv_header("09", "Report Archive", "Every brief we've run"),
+                unsafe_allow_html=True)
+    st.markdown('<div class="sv-lead">Each run is kept. Reopen any past report to compare how '
+                'the currents moved — week to week, month to month. Reopening costs nothing; '
+                'it never re-scans.</div>', unsafe_allow_html=True)
+    _archive = _sv_list_briefs(_active)
+    if _archive:
+        # Header strip
+        st.markdown(
+            f'<div style="display:grid;grid-template-columns:200px 1fr 130px 120px;gap:20px;'
+            f'padding:0 24px 10px;font-family:{_sans};font-size:9.5px;letter-spacing:.12em;'
+            f'text-transform:uppercase;color:{_faint};font-weight:700;">'
+            f'<div>Date</div><div>Brand · Category</div><div>Signals</div><div></div></div>',
+            unsafe_allow_html=True)
+        for _ai, _a in enumerate(_archive[:20]):
+            _c1, _c2, _c3, _c4 = st.columns([2, 4, 1.3, 1.2], gap="medium")
+            _scope = " · ".join(x for x in [_a.get("brand", ""), _a.get("category", "")] if x)
+            with _c1:
+                st.markdown(f'<div style="font-family:{_sans};font-size:13px;color:{_ink};'
+                            f'font-weight:700;padding-top:8px;">{e(_sv_fmt_date(_a["saved_at"]))}</div>',
+                            unsafe_allow_html=True)
+            with _c2:
+                st.markdown(f'<div style="font-family:{_sans};font-size:13px;color:{_muted};'
+                            f'padding-top:8px;">{e(_scope)}</div>', unsafe_allow_html=True)
+            with _c3:
+                st.markdown(f'<div style="font-family:{_sans};font-size:13px;color:{_faint};'
+                            f'padding-top:8px;">{e(_a.get("count", 0))}</div>', unsafe_allow_html=True)
+            with _c4:
+                if st.button("Open", key=f"sv_arch_{_ai}", use_container_width=True):
+                    st.session_state["sv_result"]   = _a["result"]
+                    st.session_state["sv_signals"]  = _a["signals"]
+                    st.session_state["sv_client"]   = _active
+                    st.session_state["sv_saved_at"] = _a["saved_at"]
+                    st.session_state.pop("sv_hunch_result", None)
+                    st.rerun()
+            st.markdown(f'<div style="border-bottom:1px solid #dddddd;margin:2px 0 8px;"></div>',
+                        unsafe_allow_html=True)
+        if _res:
+            _cc1, _cc2, _cc3 = st.columns([2, 1.4, 2])
+            with _cc2:
+                if st.button("Clear current report", key="sv_clear", use_container_width=True):
+                    for _k in ("sv_result", "sv_signals", "sv_saved_at", "sv_hunch_result"):
+                        st.session_state.pop(_k, None)
+                    st.rerun()
+    else:
+        st.markdown('<div class="sv-empty">No reports archived yet — your first run will appear here.</div>',
+                    unsafe_allow_html=True)
 
     # ── Export — download the full brief as a print-ready PDF ──────────────
     if _res:
