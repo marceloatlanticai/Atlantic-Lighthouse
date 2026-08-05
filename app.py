@@ -4086,6 +4086,8 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
     SRC = {"reddit":"Reddit","gdelt":"News","hacker_news":"HN","youtube":"YouTube",
            "tiktok":"TikTok","instagram":"Instagram","twitter":"X/Twitter",
            "web":"Web","rss":"RSS","db":"Archive"}
+    _SV_LOGO_EMITTED.clear()   # each document carries its own <symbol> defs
+
     def sig(i):
         try: return sigs[int(i)]
         except Exception: return None
@@ -4222,6 +4224,28 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
     return html, h
 
 
+# Tracks which heavy logo symbols have already been written into the current
+# document, so a repeated network costs one <use> instead of the whole mark.
+_SV_LOGO_EMITTED: dict = {}
+
+
+def _sv_wordmark() -> str:
+    """The LIGHTHOUSE wordmark for the masthead.
+
+    Export it from the Figma file as SVG and drop it in `assets/lighthouse.svg`
+    — the layered black/blue offset is baked into the artwork, so it's inlined
+    as-is. Falls back to type set in the brief's own font if the file is absent.
+    """
+    try:
+        svg = open("assets/lighthouse.svg", encoding="utf-8").read()
+    except Exception:
+        return ('<div class="sv-wm-fallback">LIGHTHOUSE</div>')
+    svg = _re_global.sub(r"<\?xml.*?\?>", "", svg, flags=_re_global.DOTALL)
+    # let CSS drive the size; keep the viewBox so it scales cleanly
+    svg = _re_global.sub(r'\s(width|height)="[^"]*"', "", svg, count=2)
+    return svg
+
+
 def _sv_logo(network: str, on_blue: bool = True) -> str:
     """Inline the network mark for a quote card, if we have the asset.
 
@@ -4241,7 +4265,26 @@ def _sv_logo(network: str, on_blue: bool = True) -> str:
     # strip XML prolog, force currentColor so it inherits the card's type colour
     svg = _re_global.sub(r"<\?xml.*?\?>", "", svg, flags=_re_global.DOTALL)
     svg = _re_global.sub(r'\s(width|height)="[^"]*"', "", svg, count=2)
-    svg = _re_global.sub(r'fill="(?!none)[^"]*"', 'fill="currentColor"', svg)
+    # Only recolour true vector art. An SVG that just wraps a base64 raster
+    # can't be recoloured, and rewriting its fills would corrupt it.
+    if "base64" not in svg:
+        svg = _re_global.sub(r'fill="(?!none)[^"]*"', 'fill="currentColor"', svg)
+    # Heavy marks (e.g. a raster-backed export) are emitted ONCE as a <symbol>
+    # and referenced afterwards, so repeating a network across cards doesn't
+    # multiply the payload.
+    if len(svg) > 4000:
+        sid = "lg-" + key
+        seen = _SV_LOGO_EMITTED.setdefault(id(_SV_LOGO_EMITTED), set())
+        inner = _re_global.sub(r"^\s*<svg[^>]*>|</svg>\s*$", "", svg).strip()
+        vb = _re_global.search(r'viewBox="([^"]+)"', svg)
+        vb = vb.group(1) if vb else "0 0 24 24"
+        if sid not in seen:
+            seen.add(sid)
+            body = (f'<svg style="display:none" aria-hidden="true">'
+                    f'<symbol id="{sid}" viewBox="{vb}">{inner}</symbol></svg>')
+        else:
+            body = ""
+        svg = f'{body}<svg viewBox="{vb}"><use href="#{sid}"/></svg>'
     return (f'<span class="qlogo" style="color:{"#ffffff" if on_blue else "#000000"}">'
             f'{svg}</span>')
 
@@ -4656,12 +4699,35 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
 /* ── Pills / buttons pick up the new radius ── */
 button[kind="primary"], [data-testid="stBaseButton-primary"],
 [data-testid="stDownloadButton"] button {{ border-radius:{_rad} !important; }}
+
+/* ── Masthead: wordmark left, standfirst right ── */
+.sv-masthead {{
+  display:grid; grid-template-columns:1fr 250px; gap:36px;
+  align-items:center; padding:1.4rem 0 2.6rem;
+}}
+.sv-wm svg {{ width:100%; height:auto; display:block; }}
+.sv-wm-fallback {{
+  font-family:{_sans}; font-size:clamp(52px, 9vw, 118px); font-weight:800;
+  letter-spacing:-.03em; line-height:.9; color:{_ink};
+  text-shadow:6px 5px 0 {_blue};
+}}
+.sv-mast-label {{
+  font-family:{_sans}; font-size:11px; font-weight:700; letter-spacing:.16em;
+  text-transform:uppercase; color:{_blue}; margin-bottom:9px;
+}}
+.sv-mast-tag {{
+  font-family:{_sans}; font-size:13.5px; line-height:1.45; color:{_ink};
+}}
+@media (max-width: 820px) {{
+  .sv-masthead {{ grid-template-columns:1fr; gap:18px; }}
+}}
 </style>
-<div style="text-align:center; padding: 0.8rem 0 0.4rem;">
-  <div class="sv-eyebrow">Lighthouse • Intelligence Brief</div>
-  <div class="sv-bigtitle">The Lighthouse</div>
-  <div class="sv-tagline">{e(_tagline)}</div>
-  <div class="sv-vol" style="margin-top:14px;">Live Brief — {e(_brief_date)}</div>
+<div class="sv-masthead">
+  <div class="sv-wm">{_sv_wordmark()}</div>
+  <div class="sv-mast-side">
+    <div class="sv-mast-label">Intelligence Brief</div>
+    <div class="sv-mast-tag">{e(_tagline)}</div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
