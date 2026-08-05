@@ -3976,6 +3976,271 @@ def _sv_load_brief(active: str):
     return None
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# BRIEF RENDERER — one HTML generator, two outputs
+#   mode="screen" → alternating full-bleed blue blocks, for components.v1.html
+#   mode="print"  → white ground with blue accents, for the PDF export
+# Rendering the brief as a single HTML document is what makes the blue blocks
+# possible at all: inside one document the background is ours, instead of
+# fighting Streamlit's per-widget DOM.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_SV_CSS = """
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:__SANS__;background:__PAPER__;color:__INK__;
+     -webkit-font-smoothing:antialiased;}
+.sec{padding:56px 60px 64px;}
+.sec.blue{background:__BLUE__;}
+.sec.blue .q,.sec.blue .num,.sec.blue .slabel,.sec.blue .lead{color:#ffffff;}
+.grid{display:grid;grid-template-columns:210px 1fr;gap:32px;align-items:start;
+      margin-bottom:26px;max-width:1120px;}
+.num{font-size:44px;font-weight:800;color:__BLUE__;line-height:.9;}
+.slabel{font-size:11px;letter-spacing:.22em;text-transform:uppercase;
+        color:__META__;font-weight:700;margin-top:12px;}
+.q{font-size:40px;font-weight:700;letter-spacing:-.022em;line-height:1.08;color:__INK__;}
+.lead{font-size:17.5px;font-weight:700;font-style:italic;line-height:1.6;
+      color:__BODY__;max-width:780px;margin-bottom:26px;}
+.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;max-width:1120px;}
+.row2{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;max-width:1120px;}
+.card{background:#ffffff;border-radius:10.5px;padding:20px 22px;}
+.sec:not(.blue) .card{border:1.5px solid __INK__;}
+.clabel{font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+        color:__BLUE__;font-weight:600;margin-bottom:10px;}
+.ctitle{font-size:18px;font-weight:700;line-height:1.28;margin-bottom:9px;color:__INK__;}
+.cbody{font-size:13.5px;line-height:1.6;color:__BODY__;}
+.hair{border-top:1px solid __HAIR__;margin:14px 0 12px;}
+.stat{font-size:11.5px;font-weight:600;color:__BLUE__;line-height:1.5;}
+details{margin-top:14px;}
+details>summary{list-style:none;cursor:pointer;font-size:10px;font-weight:700;
+  letter-spacing:.14em;text-transform:uppercase;color:__INK__;
+  display:flex;justify-content:space-between;align-items:center;}
+details>summary::-webkit-details-marker{display:none;}
+details>summary::after{content:"+";font-size:14px;}
+details[open]>summary::after{content:"–";}
+details .src{font-size:11.5px;line-height:1.6;color:__BODY__;margin-top:10px;}
+details .src a{color:__BLUE__;text-decoration:none;}
+/* quote cards — solid blue, white type */
+.qc{background:__BLUE__;border-radius:10.5px;padding:22px 24px;
+    display:flex;flex-direction:column;}
+.sec.blue .qc{background:#ffffff;}
+.qhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+       margin-bottom:14px;}
+.qsrc{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+      font-weight:700;color:#ffffff;}
+.qhandle{font-size:12px;color:rgba(255,255,255,.85);text-align:right;}
+.qtext{font-size:15px;font-weight:700;font-style:italic;line-height:1.5;
+       color:#ffffff;flex:1;}
+.qdiv{border-top:1px solid rgba(255,255,255,.55);margin:16px 0 12px;}
+.qctx{font-size:11.5px;line-height:1.45;color:rgba(255,255,255,.85);margin-bottom:10px;}
+.qeng{display:inline-block;font-size:11.5px;color:#ffffff;
+      border:1px solid rgba(255,255,255,.85);border-radius:999px;padding:5px 14px;}
+.qeng a{color:#ffffff;text-decoration:none;}
+/* competitor + language tables */
+.tbl{background:#ffffff;border-radius:10.5px;overflow:hidden;max-width:1120px;}
+.sec:not(.blue) .tbl{border:1.5px solid __INK__;}
+.trow{display:grid;gap:26px;padding:22px 26px;border-bottom:1.5px solid __INK__;}
+.trow:last-child{border-bottom:none;}
+.tcomp{grid-template-columns:200px 1.35fr 1.25fr;}
+.tlang{grid-template-columns:1fr 1.4fr 1.4fr;}
+.cn{font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:__BLUE__;}
+.cm{font-size:17px;font-weight:700;line-height:1.3;color:__INK__;}
+.cd{font-size:13px;line-height:1.5;color:__BODY__;margin-top:6px;}
+.mlabel{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+        color:__META__;font-weight:700;margin-bottom:6px;}
+.mbody{font-size:13px;line-height:1.5;color:__BODY__;}
+.strike{font-size:16px;font-weight:700;color:__RED__;text-decoration:line-through;}
+.map{background:#ffffff;border-radius:10.5px;padding:20px 24px;margin-top:22px;max-width:1120px;}
+.sec:not(.blue) .map{border:1.5px solid __INK__;}
+.maptitle{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+          color:__RED__;font-weight:700;margin-bottom:12px;}
+.mapitem{font-size:13.5px;line-height:2;color:__INK__;}
+/* tensions */
+.tside{font-size:13px;line-height:1.5;color:__BODY__;padding-left:16px;
+       position:relative;margin-bottom:8px;}
+.tside::before{content:"\\25C6";position:absolute;left:0;top:3px;font-size:8px;color:__BLUE__;}
+.topen{border-top:1px solid __HAIR__;margin-top:12px;padding-top:12px;}
+/* image clichés + starters */
+.dns{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+     color:__RED__;font-weight:700;margin-bottom:8px;}
+.slbl{font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+      color:__META__;font-weight:700;margin-bottom:12px;}
+.sq{font-size:22px;font-weight:700;letter-spacing:-.01em;line-height:1.2;
+    margin-bottom:16px;color:__INK__;}
+@media(max-width:820px){
+  .row3,.row2{grid-template-columns:1fr;}
+  .grid{grid-template-columns:1fr;gap:10px;}
+  .q{font-size:30px;}
+  .trow{grid-template-columns:1fr!important;gap:10px;}
+}
+"""
+
+
+def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str = "screen") -> tuple:
+    """Render the requested brief sections as HTML.
+
+    Returns (html, estimated_height_px). Odd sections get the blue block on
+    screen; `which` lets the caller split the brief around the interactive
+    sections (07 Test, 09 Archive) that must stay as Streamlit widgets.
+    """
+    SRC = {"reddit":"Reddit","gdelt":"News","hacker_news":"HN","youtube":"YouTube",
+           "tiktok":"TikTok","instagram":"Instagram","twitter":"X/Twitter",
+           "web":"Web","rss":"RSS","db":"Archive"}
+    def sig(i):
+        try: return sigs[int(i)]
+        except Exception: return None
+    def head(num, label, q):
+        return (f'<div class="grid"><div><div class="num">{e(num)}</div>'
+                f'<div class="slabel">{e(label)}</div></div>'
+                f'<div class="q">{e(q)}</div></div>')
+    def open_sec(num):
+        blue = mode == "screen" and num in ("01", "03", "05", "08")
+        return f'<section class="sec{" blue" if blue else ""}">'
+
+    H, h = [], 0
+
+    if "01" in which:
+        H.append(open_sec("01") + head("01", "The Currents", f"What is trending in {category}"))
+        H.append('<div class="row3">')
+        for t in (res.get("trends") or [])[:3]:
+            links = ""
+            for ix in (t.get("signal_indexes") or [])[:6]:
+                s = sig(ix)
+                if s:
+                    lbl = SRC.get(s.get("source",""), str(s.get("source","")).title())
+                    u = s.get("url","")
+                    links += (f'<div class="src"><b>[{e(lbl)}]</b> {e(str(s.get("title",""))[:88])}'
+                              + (f' <a href="{e(u)}" target="_blank">open ↗</a>' if u else "") + '</div>')
+            st_ = f'<div class="hair"></div><div class="stat">{e(t.get("stat",""))}</div>' if t.get("stat") else ""
+            dd = f'<details><summary>Dig deeper</summary>{links}</details>' if links else ""
+            H.append(f'<div class="card"><div class="clabel">Current</div>'
+                     f'<div class="ctitle">{e(t.get("title",""))}</div>'
+                     f'<div class="cbody">{e(t.get("summary",""))}</div>{st_}{dd}</div>')
+        H.append('</div></section>'); h += 560
+
+    if "02" in which:
+        H.append(open_sec("02") + head("02", "Consumer Insight", "What people are actually saying"))
+        if res.get("insights_summary"):
+            H.append(f'<div class="lead">{e(res["insights_summary"])}</div>')
+        H.append('<div class="row3">')
+        for q in (res.get("insight_quotes") or [])[:6]:
+            s = sig(q.get("signal_index"))
+            if not s: continue
+            net = q.get("network") or SRC.get(s.get("source",""), "")
+            txt = (s.get("content") or s.get("title") or "")[:260]
+            u = s.get("url","")
+            lk = f' <a href="{e(u)}" target="_blank">↗</a>' if u else ""
+            H.append(f'<div class="qc"><div class="qhead"><span class="qsrc">{e(net)}</span>'
+                     f'<span class="qhandle">{e(q.get("handle",""))}</span></div>'
+                     f'<div class="qtext">&ldquo;{e(txt)}&rdquo;</div><div class="qdiv"></div>'
+                     f'<div class="qctx">{e(q.get("context",""))}</div>'
+                     f'<div><span class="qeng">{e(q.get("engagement",""))}{lk}</span></div></div>')
+        H.append('</div></section>'); h += 880
+
+    if "03" in which:
+        H.append(open_sec("03") + head("03", "The Competitive Current", "What everyone else is doing"))
+        if res.get("competitors_summary"):
+            H.append(f'<div class="lead">{e(res["competitors_summary"])}</div>')
+        comps = (res.get("competitors") or [])[:5]
+        if comps:
+            H.append('<div class="tbl">')
+            for c in comps:
+                cl = (f'<div><div class="mlabel">Cliché to counter</div>'
+                      f'<div class="mbody">{e(c.get("cliche",""))}</div></div>') if c.get("cliche") else "<div></div>"
+                H.append(f'<div class="trow tcomp"><div class="cn">{e(c.get("name",""))}</div>'
+                         f'<div><div class="cm">{e(c.get("move",""))}</div>'
+                         f'<div class="cd">{e(c.get("detail",""))}</div></div>{cl}</div>')
+            H.append('</div>'); h += len(comps) * 130
+        if res.get("cliche_map"):
+            items = "".join(f'<div class="mapitem">✕ &nbsp;{e(m)}</div>' for m in res["cliche_map"][:6])
+            H.append(f'<div class="map"><div class="maptitle">Category clichés — '
+                     f'the countercurrent map</div>{items}</div>'); h += 220
+        H.append('</section>'); h += 240
+
+    if "04" in which:
+        H.append(open_sec("04") + head("04", "Cultural Tensions",
+                                       "The contradictions people are living inside"))
+        H.append('<div class="lead">Trends tell you what\'s happening. Tensions tell you where '
+                 'the countercurrent actually lives — in the gap between what people want and '
+                 'what they distrust.</div>')
+        H.append('<div class="row2">')
+        for t in (res.get("tensions") or [])[:4]:
+            op = (f'<div class="topen"><div class="mlabel" style="color:#0000ff">Countercurrent opening</div>'
+                  f'<div class="mbody" style="color:#000">{e(t.get("opening",""))}</div></div>') if t.get("opening") else ""
+            H.append(f'<div class="card"><div class="ctitle">{e(t.get("title",""))}</div>'
+                     f'<div class="tside">{e(t.get("side_a",""))}</div>'
+                     f'<div class="tside">{e(t.get("side_b",""))}</div>{op}</div>')
+        H.append('</div></section>'); h += 700
+
+    if "05" in which:
+        H.append(open_sec("05") + head("05", "Cliché language to avoid",
+                                       "Words that put you back in the current"))
+        H.append('<div class="lead">Copy-deck poison. If a line lands in a deck with any of '
+                 'these words, send it back — each one signals a brand swimming with the school.</div>')
+        langs = (res.get("cliche_language") or [])[:6]
+        if langs:
+            H.append('<div class="tbl">')
+            for l in langs:
+                H.append(f'<div class="trow tlang">'
+                         f'<div><div class="mlabel">Avoid</div><span class="strike">{e(l.get("avoid",""))}</span></div>'
+                         f'<div><div class="mlabel">Why</div><div class="mbody">{e(l.get("why",""))}</div></div>'
+                         f'<div><div class="mlabel">Instead</div>'
+                         f'<div class="mbody" style="color:#0000ff">{e(l.get("instead",""))}</div></div></div>')
+            H.append('</div>'); h += len(langs) * 118
+        H.append('</section>'); h += 240
+
+    if "06" in which:
+        H.append(open_sec("06") + head("06", "Cliché images to avoid", "Visual territory already burnt"))
+        H.append('<div class="lead">If the moodboard leans on any of these, the brand will look '
+                 'like the ninth can on the shelf — not the countercurrent.</div>')
+        H.append('<div class="row3">')
+        for im in (res.get("cliche_images") or [])[:6]:
+            H.append(f'<div class="card"><div class="dns">✕ Do not shoot</div>'
+                     f'<div class="ctitle" style="font-size:15.5px">{e(im.get("title",""))}</div>'
+                     f'<div class="cbody" style="font-size:12.5px">{e(im.get("why",""))}</div></div>')
+        H.append('</div></section>'); h += 560
+
+    if "08" in which:
+        H.append(open_sec("08") + head("08", "Countercurrent Thought Starters",
+                                       "Provocations to take into the room"))
+        H.append('<div class="lead">Not campaigns. Not strategies. Openings. Each one is a '
+                 'deliberate reversal of a current the category is riding — a place to start '
+                 'arguing, sketching, writing. Steal freely.</div>')
+        H.append('<div class="row2">')
+        for i, p in enumerate((res.get("provocations") or [])[:4]):
+            H.append(f'<div class="card"><div class="slbl">Starter / 0{i+1}</div>'
+                     f'<div class="sq">{e(p.get("starter",""))}</div><div class="hair"></div>'
+                     f'<div class="mlabel">Cuts against</div>'
+                     f'<div class="mbody" style="margin-bottom:12px">{e(p.get("cuts_against",""))}</div>'
+                     f'<div class="mlabel">The move</div>'
+                     f'<div class="mbody">{e(p.get("the_move",""))}</div></div>')
+        H.append('</div></section>'); h += 760
+
+    html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<style>{_sv_css(mode)}</style></head><body>' + "".join(H) + '</body></html>')
+    return html, h
+
+
+def _sv_css(mode: str) -> str:
+    """Theme the shared stylesheet. Print drops the blue blocks — a solid blue
+    page is a wall of ink on paper."""
+    sans = "'Telegraf', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+    css = (_SV_CSS.replace("__SANS__", sans).replace("__PAPER__", "#ffffff")
+                  .replace("__INK__", "#000000").replace("__BLUE__", "#0000ff")
+                  .replace("__BODY__", "#222222").replace("__META__", "#666666")
+                  .replace("__HAIR__", "#dddddd").replace("__RED__", "#ff383c"))
+    if mode == "print":
+        css += ("\n/* print: no blue blocks, no interactive affordances */\n"
+                ".sec.blue{background:#ffffff;}\n"
+                ".sec.blue .q,.sec.blue .num{color:#000000;}\n"
+                ".sec.blue .num{color:#0000ff;}\n"
+                ".sec.blue .slabel,.sec.blue .lead{color:#666666;}\n"
+                ".sec.blue .card,.sec.blue .tbl,.sec.blue .map{border:1.5px solid #000000;}\n"
+                ".sec{padding:28px 0 34px;border-top:3px solid #000000;}\n"
+                "details{display:none;}\n"
+                "@media print{.sec{page-break-inside:avoid;}}\n")
+    return css
+
+
 def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
                     competitors: list, signals: list) -> str:
     """Build a self-contained, print-ready HTML of the full brief (opens the
@@ -4126,19 +4391,6 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
 
     parts.append('</div></body></html>')
     return "".join(parts)
-
-
-def _sv_blue_block():
-    """Open a full-bleed BLUE section block.
-
-    Returns a Streamlit container; drop the section's content inside it with
-    `with _sv_blue_block():`. The marker div is what the CSS keys off to paint
-    the container edge-to-edge and flip its type to white.
-    """
-    box = st.container()
-    with box:
-        st.markdown('<div class="sv-blue-marker"></div>', unsafe_allow_html=True)
-    return box
 
 
 def _sv_header(num: str, label: str, question: str) -> str:
@@ -4304,37 +4556,12 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
    even = white ground (blue type). Red is negative markers only.
    ══════════════════════════════════════════════════════════════════════════ */
 
-/* ── Full-bleed blue block ──
-   Applied to the Streamlit container that holds a .sv-blue-marker element. */
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) {{
-  background:{_blue};
-  width:100vw;
-  margin-left:calc(-50vw + 50%);
-  margin-right:calc(-50vw + 50%);
-  padding:10px calc(50vw - 50%) 64px;
-  margin-top:4.5rem;
-}}
-.sv-blue-marker {{ display:none; }}
-
-/* Type inside a blue block turns white; the 3px rule and section gap are
-   redundant there because the block itself separates the sections. */
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-q,
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-num,
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-seclabel,
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-lead {{
-  color:#ffffff !important;
-}}
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-section {{
-  border-top:none !important; margin-top:0 !important; padding-top:1.2rem !important;
-}}
-/* Cards sitting on blue lose their border — the contrast does the work. */
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-card,
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-comp-table,
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-lang-table,
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-tension,
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-img {{
-  border:none !important; background:#ffffff !important;
-}}
+/* ── Blue section blocks: pending ──
+   The Figma design paints sections 01/03/05/07 edge-to-edge blue with white
+   type. Painting a Streamlit container that way needs :has() against a DOM
+   whose nesting isn't stable, so it silently failed and left white-on-white
+   text. Parked until the brief is rendered as one HTML component, where the
+   background is ours to control. Type stays readable in the meantime. */
 
 /* ── Cards: white, softer corner ── */
 .sv-card, .sv-tension, .sv-img, .sv-comp-table, .sv-lang-table {{
@@ -4348,6 +4575,10 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
   padding:22px 24px;
 }}
 .sv-quote-src, .sv-quote-handle, .sv-quote-text, .sv-quote-ctx {{ color:#ffffff !important; }}
+/* Label for the Streamlit-rendered boxes in section 07 — must NOT inherit the
+   white-on-blue quote-card treatment above, or it vanishes on white. */
+.sv-boxlbl {{ font-family:{_sans}; font-size:10.5px; letter-spacing:.14em;
+  text-transform:uppercase; color:{_ink}; font-weight:700; }}
 .sv-quote-handle, .sv-quote-ctx {{ opacity:.85; }}
 .sv-quote-divider {{ border-top:1px solid rgba(255,255,255,.55) !important; }}
 /* engagement becomes an outlined pill */
@@ -4451,173 +4682,30 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         try: return _sigs[int(idx)]
         except Exception: return None
 
-    # ── Section 01 — The Currents ── (blue block) ─────────────────────────
-    _blk1 = _sv_blue_block(); _blk1.__enter__()
-    st.markdown(_sv_header("01", "The Currents", f'What is trending in {_disp_cat}'),
-                unsafe_allow_html=True)
-    if _res and _res.get("trends"):
-        _tcols = st.columns(3)
-        for _i, _t in enumerate(_res["trends"][:3]):
-            with _tcols[_i]:
-                _stat = _t.get("stat", "")
-                _stat_html = f'<div class="sv-stat">{e(_stat)}</div>' if _stat else ""
-                st.markdown(f'<div class="sv-card"><div class="sv-cur-label">Current</div>'
-                            f'<div class="sv-card-title">{e(_t.get("title",""))}</div>'
-                            f'<div class="sv-card-body">{e(_t.get("summary",""))}</div>'
-                            f'{_stat_html}</div>', unsafe_allow_html=True)
-                with st.expander("🔍 Dig deeper"):
-                    _idxs = _t.get("signal_indexes", [])
-                    if not _idxs:
-                        st.caption("No linked sources for this trend.")
-                    for _ix in _idxs[:6]:
-                        _s = _sig(_ix)
-                        if _s:
-                            _lbl = _SV_SRC_LABEL.get(_s["source"], _s["source"].title())
-                            st.markdown(f"**[{_lbl}]** {e(_s['title'][:90])}  \n"
-                                        + (f"[Open source ↗]({_s['url']})" if _s.get("url") else ""))
+    # ── Sections 01–06 — rendered as ONE HTML component ───────────────────
+    # A single document is what makes the alternating full-bleed blue blocks
+    # possible; Streamlit's per-widget DOM can't hold a background across
+    # sections. "Dig deeper" becomes a native <details>, so it stays
+    # interactive without a Streamlit widget.
+    if _res:
+        _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
+                                     ("01", "02", "03", "04", "05", "06"), "screen")
+        st.components.v1.html(_html_a, height=_h_a, scrolling=False)
     else:
-        st.markdown('<div class="sv-empty">Press ⚡ Scan the currents to fill this page.</div>',
+        st.markdown(_sv_header("01", "The Currents", f"What is trending in {_disp_cat}"),
+                    unsafe_allow_html=True)
+        st.markdown('<div class="sv-empty">Press ⚡ Run Lighthouse to fill this page.</div>',
                     unsafe_allow_html=True)
 
-    _blk1.__exit__(None, None, None)
 
-    # ── Section 02 — Consumer Insight ─────────────────────────────────────
-    st.markdown(_sv_header("02", "Consumer Insight", "What people are actually saying"),
-                unsafe_allow_html=True)
-    if _res:
-        if _res.get("insights_summary"):
-            st.markdown(f'<div class="sv-lead">{e(_res["insights_summary"])}</div>', unsafe_allow_html=True)
-        _quotes = [q for q in _res.get("insight_quotes", []) if _sig(q.get("signal_index"))][:6]
-        for _rs in range(0, len(_quotes), 3):
-            _cols = st.columns(3)
-            for _j, _q in enumerate(_quotes[_rs:_rs + 3]):
-                _s = _sig(_q.get("signal_index"))
-                _net = _q.get("network") or _SV_SRC_LABEL.get(_s["source"], _s["source"].title())
-                _handle = _q.get("handle", "")
-                _text = (_s["content"] or _s["title"])[:260]
-                _ctx = _q.get("context", "")
-                _eng = _q.get("engagement", "")
-                _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s.get("url") else ""
-                with _cols[_j]:
-                    st.markdown(
-                        f'<div class="sv-quote">'
-                        f'<div class="sv-quote-head"><span class="sv-quote-src">{e(_net)}</span>'
-                        f'<span class="sv-quote-handle">{e(_handle)}</span></div>'
-                        f'<div class="sv-quote-text">&ldquo;{e(_text)}&rdquo;</div>'
-                        f'<div class="sv-quote-divider"></div>'
-                        + (f'<div class="sv-quote-ctx">{e(_ctx)}</div>' if _ctx else '')
-                        + f'<div class="sv-quote-eng">{e(_eng)}{_lk}</div>'
-                        f'</div>', unsafe_allow_html=True)
-                    st.markdown('<div style="height:14px;"></div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
-
-    # ── Section 03 — The Competitive Current ── (blue block) ──────────────
-    _blk3 = _sv_blue_block(); _blk3.__enter__()
-    st.markdown(_sv_header("03", "The Competitive Current", "What everyone else is doing"),
-                unsafe_allow_html=True)
-    if _res:
-        if _res.get("competitors_summary"):
-            st.markdown(f'<div class="sv-lead">{e(_res["competitors_summary"])}</div>', unsafe_allow_html=True)
-        _comps = _res.get("competitors", [])[:5]
-        if _comps:
-            _rows = ""
-            for _cmp in _comps:
-                _cl_txt = _cmp.get("cliche", "")
-                _c3 = (f'<div><div class="sv-comp-cl-lbl">Cliché to counter</div>'
-                       f'<div class="sv-comp-cl">{e(_cl_txt)}</div></div>') if _cl_txt else '<div></div>'
-                _rows += (f'<div class="sv-comp-row">'
-                          f'<div class="sv-comp-name">{e(_cmp.get("name",""))}</div>'
-                          f'<div><div class="sv-comp-move">{e(_cmp.get("move",""))}</div>'
-                          f'<div class="sv-comp-detail">{e(_cmp.get("detail",""))}</div></div>'
-                          f'{_c3}</div>')
-            st.markdown(f'<div class="sv-comp-table">{_rows}</div>', unsafe_allow_html=True)
-        if _res.get("cliche_map"):
-            _map_items = "".join(f'<div class="sv-map-item">✕ &nbsp;{e(c)}</div>'
-                                 for c in _res["cliche_map"][:6])
-            st.markdown(f'<div class="sv-map"><div class="sv-map-title">'
-                        f'Category clichés — the countercurrent map</div>{_map_items}</div>',
-                        unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
-
-    _blk3.__exit__(None, None, None)
-
-    # ── Section 04 — Cultural Tensions ────────────────────────────────────
-    st.markdown(_sv_header("04", "Cultural Tensions", "The contradictions people are living inside"),
-                unsafe_allow_html=True)
-    st.markdown('<div class="sv-lead">Trends tell you what\'s happening. Tensions tell you where the '
-                'countercurrent actually lives — in the gap between what people want and what they distrust.</div>',
-                unsafe_allow_html=True)
-    if _res and _res.get("tensions"):
-        _tn = _res["tensions"][:4]
-        for _row_start in range(0, len(_tn), 2):
-            _cols = st.columns(2)
-            for _j, _t in enumerate(_tn[_row_start:_row_start + 2]):
-                with _cols[_j]:
-                    _open = _t.get("opening", "")
-                    _open_html = (f'<div class="sv-tension-open"><b>Countercurrent opening</b>'
-                                  f'<span>{e(_open)}</span></div>' if _open else "")
-                    st.markdown(f'<div class="sv-tension">'
-                                f'<div class="sv-tension-title">{e(_t.get("title",""))}</div>'
-                                f'<div class="sv-tension-side">{e(_t.get("side_a",""))}</div>'
-                                f'<div class="sv-tension-side">{e(_t.get("side_b",""))}</div>'
-                                f'{_open_html}</div>', unsafe_allow_html=True)
-                    st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
-    elif not _res:
-        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
-
-    # ── Section 05 — Cliché language to avoid ── (blue block) ─────────────
-    _blk5 = _sv_blue_block(); _blk5.__enter__()
-    st.markdown(_sv_header("05", "Cliché language to avoid", "Words that put you back in the current"),
-                unsafe_allow_html=True)
-    st.markdown('<div class="sv-lead">Copy-deck poison. If a line lands in a deck with any of these words, '
-                'send it back — each one signals a brand swimming with the school.</div>', unsafe_allow_html=True)
-    if _res and _res.get("cliche_language"):
-        _lang_rows = ""
-        for _l in _res["cliche_language"][:6]:
-            _lang_rows += (f'<div class="sv-lang">'
-                           f'<div><span class="sv-lang-lbl">Avoid</span>'
-                           f'<span class="sv-lang-avoid">{e(_l.get("avoid",""))}</span></div>'
-                           f'<div><span class="sv-lang-lbl">Why</span>'
-                           f'<span class="sv-lang-why">{e(_l.get("why",""))}</span></div>'
-                           f'<div><span class="sv-lang-lbl">Instead</span>'
-                           f'<span class="sv-lang-instead">{e(_l.get("instead",""))}</span></div>'
-                           f'</div>')
-        st.markdown(f'<div class="sv-lang-table">{_lang_rows}</div>', unsafe_allow_html=True)
-    elif not _res:
-        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
-
-    _blk5.__exit__(None, None, None)
-
-    # ── Section 06 — Cliché images to avoid ───────────────────────────────
-    st.markdown(_sv_header("06", "Cliché images to avoid", "Visual territory already burnt"),
-                unsafe_allow_html=True)
-    st.markdown('<div class="sv-lead">If the moodboard leans on any of these, the brand will look like the '
-                'ninth can on the shelf — not the countercurrent.</div>', unsafe_allow_html=True)
-    if _res and _res.get("cliche_images"):
-        _im = _res["cliche_images"][:6]
-        for _row_start in range(0, len(_im), 3):
-            _cols = st.columns(3)
-            for _j, _img in enumerate(_im[_row_start:_row_start + 3]):
-                with _cols[_j]:
-                    st.markdown(f'<div class="sv-img"><div class="sv-img-lbl">✕ Do not shoot</div>'
-                                f'<div class="sv-img-title">{e(_img.get("title",""))}</div>'
-                                f'<div class="sv-img-why">{e(_img.get("why",""))}</div></div>',
-                                unsafe_allow_html=True)
-                    st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
-    elif not _res:
-        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
-
-    # ── Section 07 — The Lighthouse Test ── (blue block) ──────────────────
-    _blk7 = _sv_blue_block(); _blk7.__enter__()
+    # ── Section 07 — The Lighthouse Test ─────────────────────────
     st.markdown(_sv_header("07", "The Lighthouse Test", "Test your hypothesis"),
                 unsafe_allow_html=True)
     # Two side-by-side boxes: left = your hunch (input) · right = the reading
     _tcol1, _tcol2 = st.columns(2, gap="large")
     with _tcol1:
         with st.container(border=True):
-            st.markdown('<div class="sv-quote-src" style="margin-bottom:10px;">Your hunch</div>'
+            st.markdown('<div class="sv-boxlbl" style="margin-bottom:10px;">Your hunch</div>'
                         '<div class="sv-comp-detail" style="margin-bottom:14px;">Describe a potential '
                         'countercurrent move. The Lighthouse weighs it against the currents above and tells '
                         'you if it truly cuts against the grain — or if it\'s swimming with the school.</div>',
@@ -4631,7 +4719,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                               type="primary", key="sv_test")
     with _tcol2:
         with st.container(border=True):
-            st.markdown('<div class="sv-quote-src" style="margin-bottom:12px;">Lighthouse reading</div>',
+            st.markdown('<div class="sv-boxlbl" style="margin-bottom:12px;">Lighthouse reading</div>',
                         unsafe_allow_html=True)
             _reading_slot = st.empty()
 
@@ -4685,33 +4773,12 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                             f'line-height:1.5;margin-bottom:7px;"><b>✗ Challenges</b> · {e(_it.get("reason",""))}{_lk}</div>',
                             unsafe_allow_html=True)
 
-    _blk7.__exit__(None, None, None)
 
-    # ── Section 08 — Countercurrent Thought Starters ──────────────────────
-    st.markdown(_sv_header("08", "Countercurrent Thought Starters", "Provocations to take into the room"),
-                unsafe_allow_html=True)
-    st.markdown('<div class="sv-lead">Not campaigns. Not strategies. Openings. Each one is a deliberate '
-                'reversal of a current the category is riding — a place to start arguing, sketching, '
-                'writing. Steal freely.</div>', unsafe_allow_html=True)
-    if _res and _res.get("provocations"):
-        _pv = _res["provocations"][:4]
-        for _rs in range(0, len(_pv), 2):
-            _cols = st.columns(2, gap="large")
-            for _j, _p in enumerate(_pv[_rs:_rs + 2]):
-                with _cols[_j]:
-                    st.markdown(
-                        f'<div class="sv-starter">'
-                        f'<div class="sv-starter-lbl">Starter / 0{_rs + _j + 1}</div>'
-                        f'<div class="sv-starter-q">{e(_p.get("starter",""))}</div>'
-                        f'<div class="sv-starter-div"></div>'
-                        f'<div class="sv-starter-sublbl">Cuts against</div>'
-                        f'<div class="sv-starter-txt">{e(_p.get("cuts_against",""))}</div>'
-                        f'<div class="sv-starter-sublbl">The move</div>'
-                        f'<div class="sv-starter-txt" style="margin-bottom:0;">{e(_p.get("the_move",""))}</div>'
-                        f'</div>', unsafe_allow_html=True)
-                    st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
-    elif not _res:
-        st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
+    # ── Section 08 — rendered as an HTML component (blue block) ───────────
+    if _res:
+        _html_b, _h_b = _sv_sections(_res, _sigs, _disp_cat, ("08",), "screen")
+        st.components.v1.html(_html_b, height=_h_b, scrolling=False)
+
 
     # ── Section 09 — Archive (every past report, reopenable at zero cost) ──
     st.markdown(_sv_header("09", "Report Archive", "Every brief we've run"),
