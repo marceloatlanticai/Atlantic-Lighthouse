@@ -3986,9 +3986,12 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
             return (s.get("content") or s.get("title") or "")[:260]
         except Exception:
             return ""
+    # Print palette. Deliberately does NOT use the full-bleed blue blocks from
+    # the screen design — solid blue pages are a wall of ink on paper. Instead
+    # the brief prints white with blue accents; red stays for negative markers.
     INK, GOLD, PAPER, CARD, MUTED, FAINT, RED = ("#000000", "#0000ff", "#ffffff",
-                                                 "#e8e8e8", "#222222", "#666666", "#0000ff")
-    SANS = "'Helvetica Neue', Helvetica, Arial, sans-serif"
+                                                 "#ffffff", "#222222", "#666666", "#ff383c")
+    SANS = "'Telegraf', 'Helvetica Neue', Helvetica, Arial, sans-serif"
 
     def _sec(num, label, q):
         return (f'<div class="sec"><div class="grid"><div><div class="num">{num}</div>'
@@ -4125,6 +4128,19 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
     return "".join(parts)
 
 
+def _sv_blue_block():
+    """Open a full-bleed BLUE section block.
+
+    Returns a Streamlit container; drop the section's content inside it with
+    `with _sv_blue_block():`. The marker div is what the CSS keys off to paint
+    the container edge-to-edge and flip its type to white.
+    """
+    box = st.container()
+    with box:
+        st.markdown('<div class="sv-blue-marker"></div>', unsafe_allow_html=True)
+    return box
+
+
 def _sv_header(num: str, label: str, question: str) -> str:
     """Two-column editorial section header: number+label rail | big headline."""
     return (f'<div class="sv-section"><div class="sv-sec-grid">'
@@ -4148,19 +4164,25 @@ def render_simple_view():
     # Brand-neutral, category-neutral tagline.
     _tagline = "Monitoring the currents so we can navigate the countercurrent."
 
-    # ── 3-colour palette: black text · light-grey ground · blue accent ──────
+    # ── Palette — art direction, Jul 2026 ──────────────────────────────────
+    # Sections ALTERNATE: odd (01/03/05/07) are full-bleed BLUE blocks with
+    # white type and white cards; even (02/04/06/08) sit on white with blue
+    # type. Red is reserved exclusively for negative markers (✕ AVOID /
+    # ✕ DO NOT SHOOT) — never decorative.
+    #
     # NOTE: single quotes on purpose. This value is interpolated into inline
     # style="..." attributes as well as CSS blocks — double quotes would close
-    # the HTML attribute early and silently drop every following declaration
-    # (that's what turned the Archive rows' text white).
-    _sans  = "'Helvetica Neue', Helvetica, Arial, sans-serif"
+    # the HTML attribute early and silently drop every following declaration.
+    _sans  = "'Telegraf', 'Helvetica Neue', Helvetica, Arial, sans-serif"
     _ink   = "#000000"   # black text
-    _gold  = "#0000ff"   # blue — the single accent (labels, numbers, highlights)
-    _card  = "#e8e8e8"   # grey cards on the white ground
-    _muted = "#222222"   # near-black body text
-    _faint = "#666666"   # grey meta labels
+    _gold  = "#0000ff"   # blue — accent AND section-block background
+    _blue  = "#0000ff"
+    _card  = "#ffffff"   # cards are white now, on blue and on white alike
+    _muted = "#222222"   # body text
+    _faint = "#666666"   # meta labels
     _line  = "#000000"   # black rules / borders
-    _red   = "#0000ff"   # map warnings to the same blue accent
+    _red   = "#ff383c"   # negative markers ONLY
+    _rad   = "10.5px"    # corner radius
     _beacon = _gold      # back-compat alias
 
     st.markdown(f"""
@@ -4275,6 +4297,74 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
 [data-testid="stTextArea"] textarea {{
   background:#ffffff !important; color:{_ink} !important; border-color:{_line} !important;
   font-family:{_sans} !important; }}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ART DIRECTION — Jul 2026
+   Sections alternate: odd = full-bleed blue block (white type, white cards),
+   even = white ground (blue type). Red is negative markers only.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Full-bleed blue block ──
+   Applied to the Streamlit container that holds a .sv-blue-marker element. */
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) {{
+  background:{_blue};
+  width:100vw;
+  margin-left:calc(-50vw + 50%);
+  margin-right:calc(-50vw + 50%);
+  padding:10px calc(50vw - 50%) 64px;
+  margin-top:4.5rem;
+}}
+.sv-blue-marker {{ display:none; }}
+
+/* Type inside a blue block turns white; the 3px rule and section gap are
+   redundant there because the block itself separates the sections. */
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-q,
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-num,
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-seclabel,
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-lead {{
+  color:#ffffff !important;
+}}
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-section {{
+  border-top:none !important; margin-top:0 !important; padding-top:1.2rem !important;
+}}
+/* Cards sitting on blue lose their border — the contrast does the work. */
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-card,
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-comp-table,
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-lang-table,
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-tension,
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .sv-blue-marker) .sv-img {{
+  border:none !important; background:#ffffff !important;
+}}
+
+/* ── Cards: white, softer corner ── */
+.sv-card, .sv-tension, .sv-img, .sv-comp-table, .sv-lang-table {{
+  background:#ffffff; border-radius:{_rad};
+}}
+.sv-card, .sv-tension, .sv-img {{ border:1.5px solid {_line}; }}
+
+/* ── Quote cards (02): solid blue, white type ── */
+.sv-quote {{
+  background:{_blue} !important; border:none !important; border-radius:{_rad};
+  padding:22px 24px;
+}}
+.sv-quote-src, .sv-quote-handle, .sv-quote-text, .sv-quote-ctx {{ color:#ffffff !important; }}
+.sv-quote-handle, .sv-quote-ctx {{ opacity:.85; }}
+.sv-quote-divider {{ border-top:1px solid rgba(255,255,255,.55) !important; }}
+/* engagement becomes an outlined pill */
+.sv-quote-eng {{
+  display:inline-block; color:#ffffff !important;
+  border:1px solid rgba(255,255,255,.85); border-radius:999px;
+  padding:5px 14px; margin-top:4px;
+}}
+.sv-quote-eng a {{ color:#ffffff !important; }}
+
+/* ── Red: negative markers only ── */
+.sv-img-lbl, .sv-map-title {{ color:{_red} !important; }}
+.sv-lang-avoid {{ color:{_red} !important; }}
+
+/* ── Pills / buttons pick up the new radius ── */
+button[kind="primary"], [data-testid="stBaseButton-primary"],
+[data-testid="stDownloadButton"] button {{ border-radius:{_rad} !important; }}
 </style>
 <div style="text-align:center; padding: 0.8rem 0 0.4rem;">
   <div class="sv-eyebrow">Lighthouse • Intelligence Brief</div>
@@ -4361,7 +4451,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
         try: return _sigs[int(idx)]
         except Exception: return None
 
-    # ── Section 01 — The Currents ─────────────────────────────────────────
+    # ── Section 01 — The Currents ── (blue block) ─────────────────────────
+    _blk1 = _sv_blue_block(); _blk1.__enter__()
     st.markdown(_sv_header("01", "The Currents", f'What is trending in {_disp_cat}'),
                 unsafe_allow_html=True)
     if _res and _res.get("trends"):
@@ -4387,6 +4478,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
     else:
         st.markdown('<div class="sv-empty">Press ⚡ Scan the currents to fill this page.</div>',
                     unsafe_allow_html=True)
+
+    _blk1.__exit__(None, None, None)
 
     # ── Section 02 — Consumer Insight ─────────────────────────────────────
     st.markdown(_sv_header("02", "Consumer Insight", "What people are actually saying"),
@@ -4419,7 +4512,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
     else:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
-    # ── Section 03 — The Competitive Current ──────────────────────────────
+    # ── Section 03 — The Competitive Current ── (blue block) ──────────────
+    _blk3 = _sv_blue_block(); _blk3.__enter__()
     st.markdown(_sv_header("03", "The Competitive Current", "What everyone else is doing"),
                 unsafe_allow_html=True)
     if _res:
@@ -4447,6 +4541,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
     else:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
+    _blk3.__exit__(None, None, None)
+
     # ── Section 04 — Cultural Tensions ────────────────────────────────────
     st.markdown(_sv_header("04", "Cultural Tensions", "The contradictions people are living inside"),
                 unsafe_allow_html=True)
@@ -4471,7 +4567,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
     elif not _res:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
-    # ── Section 05 — Cliché language to avoid ─────────────────────────────
+    # ── Section 05 — Cliché language to avoid ── (blue block) ─────────────
+    _blk5 = _sv_blue_block(); _blk5.__enter__()
     st.markdown(_sv_header("05", "Cliché language to avoid", "Words that put you back in the current"),
                 unsafe_allow_html=True)
     st.markdown('<div class="sv-lead">Copy-deck poison. If a line lands in a deck with any of these words, '
@@ -4490,6 +4587,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
         st.markdown(f'<div class="sv-lang-table">{_lang_rows}</div>', unsafe_allow_html=True)
     elif not _res:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
+
+    _blk5.__exit__(None, None, None)
 
     # ── Section 06 — Cliché images to avoid ───────────────────────────────
     st.markdown(_sv_header("06", "Cliché images to avoid", "Visual territory already burnt"),
@@ -4510,7 +4609,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
     elif not _res:
         st.markdown('<div class="sv-empty">Waiting for a scan…</div>', unsafe_allow_html=True)
 
-    # ── Section 07 — The Lighthouse Test ──────────────────────────────────
+    # ── Section 07 — The Lighthouse Test ── (blue block) ──────────────────
+    _blk7 = _sv_blue_block(); _blk7.__enter__()
     st.markdown(_sv_header("07", "The Lighthouse Test", "Test your hypothesis"),
                 unsafe_allow_html=True)
     # Two side-by-side boxes: left = your hunch (input) · right = the reading
@@ -4584,6 +4684,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
                 st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:{_ink};'
                             f'line-height:1.5;margin-bottom:7px;"><b>✗ Challenges</b> · {e(_it.get("reason",""))}{_lk}</div>',
                             unsafe_allow_html=True)
+
+    _blk7.__exit__(None, None, None)
 
     # ── Section 08 — Countercurrent Thought Starters ──────────────────────
     st.markdown(_sv_header("08", "Countercurrent Thought Starters", "Provocations to take into the room"),
