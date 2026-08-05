@@ -4026,7 +4026,8 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .qhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
        margin-bottom:14px;}
 .qsrc{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
-      font-weight:700;color:#ffffff;}
+      font-weight:700;color:#ffffff;display:inline-flex;align-items:center;gap:8px;}
+.qlogo svg{height:15px;width:auto;display:block;}
 .qhandle{font-size:12px;color:rgba(255,255,255,.85);text-align:right;}
 .qtext{font-size:15px;font-weight:700;font-style:italic;line-height:1.5;
        color:#ffffff;flex:1;}
@@ -4129,7 +4130,8 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             txt = (s.get("content") or s.get("title") or "")[:260]
             u = s.get("url","")
             lk = f' <a href="{e(u)}" target="_blank">↗</a>' if u else ""
-            H.append(f'<div class="qc"><div class="qhead"><span class="qsrc">{e(net)}</span>'
+            H.append(f'<div class="qc"><div class="qhead">'
+                     f'<span class="qsrc">{e(net)}{_sv_logo(net, on_blue=(mode=="screen"))}</span>'
                      f'<span class="qhandle">{e(q.get("handle",""))}</span></div>'
                      f'<div class="qtext">&ldquo;{e(txt)}&rdquo;</div><div class="qdiv"></div>'
                      f'<div class="qctx">{e(q.get("context",""))}</div>'
@@ -4220,11 +4222,69 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
     return html, h
 
 
+def _sv_logo(network: str, on_blue: bool = True) -> str:
+    """Inline the network mark for a quote card, if we have the asset.
+
+    Export the marks from the Figma file as SVG and drop them in `assets/` as
+    logo-reddit.svg, logo-tiktok.svg, logo-x.svg, logo-instagram.svg,
+    logo-youtube.svg. They're inlined automatically; until then the card falls
+    back to the network name in tracked caps, which is what ships today.
+    """
+    key = (network or "").strip().lower().split()[0] if network else ""
+    key = {"x/twitter": "x", "twitter": "x"}.get(key, key)
+    if not key:
+        return ""
+    try:
+        svg = open(f"assets/logo-{key}.svg", encoding="utf-8").read()
+    except Exception:
+        return ""
+    # strip XML prolog, force currentColor so it inherits the card's type colour
+    svg = _re_global.sub(r"<\?xml.*?\?>", "", svg, flags=_re_global.DOTALL)
+    svg = _re_global.sub(r'\s(width|height)="[^"]*"', "", svg, count=2)
+    svg = _re_global.sub(r'fill="(?!none)[^"]*"', 'fill="currentColor"', svg)
+    return (f'<span class="qlogo" style="color:{"#ffffff" if on_blue else "#000000"}">'
+            f'{svg}</span>')
+
+
+def _sv_font_css() -> str:
+    """Font loading for the brief.
+
+    Telegraf (Pangram Pangram) is NOT free for commercial use — it needs a
+    purchased Webfont licence. Drop the licensed .woff2 files into `fonts/` as
+    Telegraf-Regular.woff2 / Telegraf-Medium.woff2 / Telegraf-Bold.woff2 and
+    they're embedded automatically, no other change needed.
+
+    Until then we fall back to Space Grotesk — a free grotesque with the same
+    slightly technical character, close enough to hold the art direction.
+    """
+    import base64, glob, os as _os
+    faces, found = "", False
+    weights = {"Regular": 400, "Medium": 500, "SemiBold": 600, "Bold": 700, "Black": 800}
+    for path in sorted(glob.glob("fonts/Telegraf-*.woff2")):
+        style = _os.path.basename(path).split("-", 1)[1].rsplit(".", 1)[0]
+        w = weights.get(style)
+        if not w:
+            continue
+        try:
+            b64 = base64.b64encode(open(path, "rb").read()).decode()
+        except Exception:
+            continue
+        faces += (f"@font-face{{font-family:'Telegraf';font-style:normal;font-weight:{w};"
+                  f"font-display:swap;src:url(data:font/woff2;base64,{b64}) format('woff2');}}\n")
+        found = True
+    if found:
+        return faces
+    # Interim: free stand-in from Google Fonts
+    return ("@import url('https://fonts.googleapis.com/css2?"
+            "family=Space+Grotesk:wght@400;500;600;700&display=swap');\n")
+
+
 def _sv_css(mode: str) -> str:
     """Theme the shared stylesheet. Print drops the blue blocks — a solid blue
     page is a wall of ink on paper."""
-    sans = "'Telegraf', 'Helvetica Neue', Helvetica, Arial, sans-serif"
-    css = (_SV_CSS.replace("__SANS__", sans).replace("__PAPER__", "#ffffff")
+    sans = ("'Telegraf', 'Space Grotesk', 'Helvetica Neue', Helvetica, "
+            "Arial, sans-serif")
+    css = (_sv_font_css() + _SV_CSS.replace("__SANS__", sans).replace("__PAPER__", "#ffffff")
                   .replace("__INK__", "#000000").replace("__BLUE__", "#0000ff")
                   .replace("__BODY__", "#222222").replace("__META__", "#666666")
                   .replace("__HAIR__", "#dddddd").replace("__RED__", "#ff383c"))
