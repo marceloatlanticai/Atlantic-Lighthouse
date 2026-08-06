@@ -4118,7 +4118,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             H.append(f'<div class="card"><div class="clabel">Current</div>'
                      f'<div class="ctitle">{e(t.get("title",""))}</div>'
                      f'<div class="cbody">{e(t.get("summary",""))}</div>{st_}{dd}</div>')
-        H.append('</div></section>'); h += 560
+        H.append('</div></section>'); h += 700
 
     if "02" in which:
         H.append(open_sec("02") + head("02", "Consumer Insight", "What people are actually saying"))
@@ -4138,7 +4138,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                      f'<div class="qtext">&ldquo;{e(txt)}&rdquo;</div><div class="qdiv"></div>'
                      f'<div class="qctx">{e(q.get("context",""))}</div>'
                      f'<div><span class="qeng">{e(q.get("engagement",""))}{lk}</span></div></div>')
-        H.append('</div></section>'); h += 880
+        H.append('</div></section>'); h += 1040
 
     if "03" in which:
         H.append(open_sec("03") + head("03", "The Competitive Current", "What everyone else is doing"))
@@ -4153,7 +4153,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 H.append(f'<div class="trow tcomp"><div class="cn">{e(c.get("name",""))}</div>'
                          f'<div><div class="cm">{e(c.get("move",""))}</div>'
                          f'<div class="cd">{e(c.get("detail",""))}</div></div>{cl}</div>')
-            H.append('</div>'); h += len(comps) * 130
+            H.append('</div>'); h += len(comps) * 165
         if res.get("cliche_map"):
             items = "".join(f'<div class="mapitem">✕ &nbsp;{e(m)}</div>' for m in res["cliche_map"][:6])
             H.append(f'<div class="map"><div class="maptitle">Category clichés — '
@@ -4173,7 +4173,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             H.append(f'<div class="card"><div class="ctitle">{e(t.get("title",""))}</div>'
                      f'<div class="tside">{e(t.get("side_a",""))}</div>'
                      f'<div class="tside">{e(t.get("side_b",""))}</div>{op}</div>')
-        H.append('</div></section>'); h += 700
+        H.append('</div></section>'); h += 900
 
     if "05" in which:
         H.append(open_sec("05") + head("05", "Cliché language to avoid",
@@ -4189,7 +4189,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                          f'<div><div class="mlabel">Why</div><div class="mbody">{e(l.get("why",""))}</div></div>'
                          f'<div><div class="mlabel">Instead</div>'
                          f'<div class="mbody" style="color:#0000ff">{e(l.get("instead",""))}</div></div></div>')
-            H.append('</div>'); h += len(langs) * 118
+            H.append('</div>'); h += len(langs) * 155
         H.append('</section>'); h += 240
 
     if "06" in which:
@@ -4201,7 +4201,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             H.append(f'<div class="card"><div class="dns">✕ Do not shoot</div>'
                      f'<div class="ctitle" style="font-size:15.5px">{e(im.get("title",""))}</div>'
                      f'<div class="cbody" style="font-size:12.5px">{e(im.get("why",""))}</div></div>')
-        H.append('</div></section>'); h += 560
+        H.append('</div></section>'); h += 700
 
     if "08" in which:
         H.append(open_sec("08") + head("08", "Countercurrent Thought Starters",
@@ -4217,10 +4217,41 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                      f'<div class="mbody" style="margin-bottom:12px">{e(p.get("cuts_against",""))}</div>'
                      f'<div class="mlabel">The move</div>'
                      f'<div class="mbody">{e(p.get("the_move",""))}</div></div>')
-        H.append('</div></section>'); h += 760
+        H.append('</div></section>'); h += 1000
 
+    # Auto-fit: components.v1.html needs a fixed height, and any estimate is
+    # eventually wrong — long copy got clipped in 05 and 08. Streamlit renders
+    # the component with srcdoc, so the iframe is same-origin and can measure
+    # itself and resize its own frame. The estimate below is only the fallback
+    # for the first paint (and for the rare case scripts don't run).
+    fit = ""
+    if mode == "screen":
+        fit = """
+<script>
+(function () {
+  function fit() {
+    var h = Math.ceil(document.documentElement.getBoundingClientRect().height) + 8;
+    var f = window.frameElement;
+    if (!f) return;
+    f.style.height = h + "px";
+    f.height = h;
+    var w = f.parentElement;              // Streamlit's fixed-height wrapper
+    while (w && w !== document.body) {
+      if (w.style && w.style.height) w.style.height = h + "px";
+      w = w.parentElement;
+    }
+  }
+  fit();
+  new ResizeObserver(fit).observe(document.documentElement);
+  // fonts and <details> toggles both change the height
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+  document.addEventListener("toggle", fit, true);
+  [80, 300, 900].forEach(function (t) { setTimeout(fit, t); });
+})();
+</script>"""
     html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
-            f'<style>{_sv_css(mode)}</style></head><body>' + "".join(H) + '</body></html>')
+            f'<style>{_sv_css(mode)}</style></head><body>'
+            + "".join(H) + fit + '</body></html>')
     return html, h
 
 
@@ -4302,19 +4333,28 @@ def _sv_font_css() -> str:
     """
     import base64, glob, os as _os
     faces, found = "", False
-    weights = {"Regular": 400, "Medium": 500, "SemiBold": 600, "Bold": 700, "Black": 800}
-    for path in sorted(glob.glob("fonts/Telegraf-*.woff2")):
-        style = _os.path.basename(path).split("-", 1)[1].rsplit(".", 1)[0]
-        w = weights.get(style)
-        if not w:
-            continue
-        try:
-            b64 = base64.b64encode(open(path, "rb").read()).decode()
-        except Exception:
-            continue
-        faces += (f"@font-face{{font-family:'Telegraf';font-style:normal;font-weight:{w};"
-                  f"font-display:swap;src:url(data:font/woff2;base64,{b64}) format('woff2');}}\n")
-        found = True
+    weights = {"Regular": 400, "Book": 400, "Medium": 500, "SemiBold": 600,
+               "Semibold": 600, "Bold": 700, "Black": 800, "Ultrabold": 800}
+    # woff2 first — if both formats are present the smaller one wins
+    fmt = {".woff2": ("font/woff2", "woff2"), ".woff": ("font/woff", "woff"),
+           ".otf": ("font/otf", "opentype"), ".ttf": ("font/ttf", "truetype")}
+    seen_styles = set()
+    for ext in (".woff2", ".woff", ".otf", ".ttf"):
+        for path in sorted(glob.glob("fonts/Telegraf-*" + ext)):
+            style = _os.path.basename(path).split("-", 1)[1].rsplit(".", 1)[0]
+            w = weights.get(style)
+            if not w or style in seen_styles:
+                continue
+            try:
+                b64 = base64.b64encode(open(path, "rb").read()).decode()
+            except Exception:
+                continue
+            mime, fmt_name = fmt[ext]
+            faces += (f"@font-face{{font-family:'Telegraf';font-style:normal;font-weight:{w};"
+                      f"font-display:swap;src:url(data:{mime};base64,{b64}) "
+                      f"format('{fmt_name}');}}\n")
+            seen_styles.add(style)
+            found = True
     if found:
         return faces
     # Interim: free stand-in from Google Fonts
@@ -4652,6 +4692,31 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
 [data-testid="stTextArea"] textarea {{
   background:#ffffff !important; color:{_ink} !important; border-color:{_line} !important;
   font-family:{_sans} !important; }}
+
+/* ── Rounded corners on the Streamlit-rendered pieces ──
+   The brief's cards are rounded inside the HTML component, but the widgets
+   Streamlit draws itself (inputs, the section 07 boxes, buttons) kept their
+   default square-ish corners. Round them to the same radius so the two
+   rendering paths look like one page. baseweb sets radii on the wrapper, so
+   both the wrapper and the inner field need it. */
+[data-testid="stTextInput"] [data-baseweb="input"],
+[data-testid="stTextInput"] [data-baseweb="base-input"],
+[data-testid="stTextArea"] [data-baseweb="textarea"],
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea,
+[data-baseweb="select"] > div {{
+  border-radius:{_rad} !important;
+}}
+/* bordered containers — the "Your hunch" / "Lighthouse reading" boxes */
+[data-testid="stVerticalBlockBorderWrapper"] {{
+  border-radius:{_rad} !important;
+}}
+/* every button, primary or not */
+[data-testid="stBaseButton-secondary"], button[kind="secondary"],
+[data-testid="stBaseButton-primary"], button[kind="primary"],
+[data-testid="stDownloadButton"] button, [data-testid="stForm"] button {{
+  border-radius:{_rad} !important;
+}}
 
 /* ══════════════════════════════════════════════════════════════════════════
    ART DIRECTION — Jul 2026
