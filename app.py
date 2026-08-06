@@ -3996,6 +3996,8 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
 .slabel{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
         color:__INK__;font-weight:700;margin-bottom:14px;}
 .sec.blue .slabel{color:#ffffff;}
+.sec:not(.blue) .slabel{color:__BLUE__;}
+.sec:not(.blue) .q{color:__BLUE__;}
 .q{font-size:40px;font-weight:700;letter-spacing:-.022em;line-height:1.08;color:__INK__;}
 .lead{font-size:17.5px;font-weight:700;font-style:italic;line-height:1.6;
       color:__BODY__;max-width:780px;margin-bottom:26px;}
@@ -4007,7 +4009,12 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
 .sec:not(.blue) .card .cbody,
 .sec:not(.blue) .card .tside,
 .sec:not(.blue) .card .mbody{color:#ffffff;}
-.sec:not(.blue) .card .clabel{color:#ffffff;}
+.sec:not(.blue) .card .clabel,
+.sec:not(.blue) .card .slbl,
+.sec:not(.blue) .card .sq,
+.sec:not(.blue) .card .mlabel,
+.sec:not(.blue) .card .stat{color:#ffffff;}
+.sec:not(.blue) .card .hair{border-top-color:rgba(255,255,255,.5);}
 .clabel{font-size:10px;letter-spacing:.18em;text-transform:uppercase;
         color:__BLUE__;font-weight:600;margin-bottom:10px;}
 .ctitle{font-size:18px;font-weight:700;line-height:1.28;margin-bottom:9px;color:__INK__;}
@@ -4041,10 +4048,10 @@ details .src a{color:__BLUE__;text-decoration:none;}
       border:1px solid rgba(255,255,255,.85);border-radius:10.5px;padding:5px 14px;}
 .qeng a{color:#ffffff;text-decoration:none;}
 /* competitor + language tables */
-.tbl{background:#ffffff;overflow:hidden;max-width:1120px;}
-.sec:not(.blue) .tbl{border:1.5px solid __INK__;}
-.trow{display:grid;gap:26px;padding:22px 26px;border-bottom:1.5px solid __INK__;}
-.trow:last-child{border-bottom:none;}
+.tbl{max-width:1120px;}
+
+.trow{display:grid;gap:0;background:#ffffff;margin-bottom:14px;padding:26px 28px;}
+.trow > * + *{border-left:1px solid __INK__;padding-left:28px;margin-left:28px;}
 .tcomp{grid-template-columns:200px 1.35fr 1.25fr;}
 .tlang{grid-template-columns:1fr 1.4fr 1.4fr;}
 /* 05 — three separate white cards with a chevron between them */
@@ -4074,13 +4081,21 @@ details .src a{color:__BLUE__;text-decoration:none;}
           color:__RED__;font-weight:700;margin-bottom:12px;}
 .mapitem{font-size:13.5px;line-height:2;color:__INK__;}
 /* tensions */
-.tside{font-size:13px;line-height:1.5;color:__BODY__;padding-left:16px;
-       position:relative;margin-bottom:8px;}
-.tside::before{content:"\\25C6";position:absolute;left:0;top:3px;font-size:8px;color:__BLUE__;}
-.topen{border-top:1px solid __HAIR__;margin-top:12px;padding-top:12px;}
+.tsides{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:16px;}
+.tside{font-size:13px;line-height:1.45;color:__BODY__;padding-left:14px;position:relative;}
+.tside::before{content:"\\00B7";position:absolute;left:0;top:-3px;font-size:18px;}
+.topen{border-top:1px solid currentColor;margin-top:20px;padding-top:16px;
+       display:grid;grid-template-columns:150px 1fr;gap:0;align-items:start;}
+.topen .tlbl{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+             font-weight:700;line-height:1.4;}
+.topen .ttxt{font-size:13px;line-height:1.5;border-left:1px solid currentColor;
+             padding-left:26px;}
+@media(max-width:820px){.tsides,.topen{grid-template-columns:1fr;}
+                        .topen .ttxt{border-left:none;padding-left:0;margin-top:10px;}}
 /* image clichés + starters */
-.dns{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
-     color:__RED__;font-weight:700;margin-bottom:8px;}
+.dnschip{display:inline-block;background:#ffffff;color:__RED__;font-size:9.5px;
+         letter-spacing:.12em;text-transform:uppercase;font-weight:700;
+         padding:5px 9px;margin-bottom:14px;}
 .slbl{font-size:10px;letter-spacing:.16em;text-transform:uppercase;
       color:__META__;font-weight:700;margin-bottom:12px;}
 .sq{font-size:22px;font-weight:700;letter-spacing:-.01em;line-height:1.2;
@@ -4559,11 +4574,11 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
 
 
 def _sv_header(num: str, label: str, question: str) -> str:
-    """Two-column editorial section header: number+label rail | big headline."""
-    return (f'<div class="sv-section"><div class="sv-sec-grid">'
-            f'<div class="sv-sec-left"><div class="sv-num">{e(num)}</div>'
-            f'<div class="sv-seclabel">{e(label)}</div></div>'
-            f'<div class="sv-q">{e(question)}</div></div></div>')
+    """Section header, matching the HTML component: small tracked label stacked
+    above a large headline. The design dropped the big section numbers, so
+    `num` is kept only for call-site readability."""
+    return (f'<div class="sv-section"><div class="sv-seclabel">{e(label)}</div>'
+            f'<div class="sv-q">{e(question)}</div></div>')
 
 
 def render_simple_view():
@@ -4770,16 +4785,10 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
 /* Section 07 is a blue block in the design. Its controls are Streamlit
    widgets, so the blue is painted on a wrapper here and the label becomes an
    inverted chip — white plate, blue type — exactly as in the file. */
-.sv-boxlbl {{ display:inline-block; font-family:{_sans}; font-size:13px;
-  letter-spacing:.06em; text-transform:uppercase; color:{_blue};
-  background:#ffffff; padding:6px 12px; font-weight:700; }}
-.sv-07 {{ background:{_blue}; padding:44px 46px 48px;
-  width:100vw; margin-left:calc(-50vw + 50%); margin-right:calc(-50vw + 50%); }}
-.sv-07 .sv-q, .sv-07 .sv-seclabel, .sv-07 .sv-lead {{ color:#ffffff !important; }}
-.sv-07 .sv-q {{ text-transform:uppercase; letter-spacing:-.01em; }}
-.sv-07-rule {{ border-top:1.5px solid #ffffff; margin:22px 0 30px; }}
-.sv-07-desc {{ font-family:{_sans}; font-size:13px; line-height:1.5;
-  color:#ffffff; margin:14px 0 22px; max-width:640px; }}
+.sv-boxlbl {{ display:inline-block; font-family:{_sans}; font-size:12px;
+  letter-spacing:.08em; text-transform:uppercase; color:#ffffff;
+  background:{_blue}; padding:6px 12px; font-weight:700; }}
+
 .sv-quote-handle, .sv-quote-ctx {{ opacity:.85; }}
 .sv-quote-divider {{ border-top:1px solid rgba(255,255,255,.55) !important; }}
 /* engagement becomes an outlined pill */
@@ -4819,6 +4828,16 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 @media (max-width: 820px) {{
   .sv-masthead {{ grid-template-columns:1fr; gap:18px; }}
 }}
+
+/* Section header on the Streamlit-rendered sections (07, 09) — mirrors the
+   component: blue tracked label, blue headline, on white. */
+.sv-section {{ border-top:none; margin-top:4.5rem; padding-top:0; }}
+.sv-seclabel {{ font-family:{_sans}; font-size:11px; letter-spacing:.16em;
+  text-transform:uppercase; color:{_blue}; font-weight:700; margin-bottom:14px; }}
+.sv-q {{ font-family:{_sans}; font-size:40px; font-weight:700; letter-spacing:-.022em;
+  line-height:1.08; color:{_blue}; margin-bottom:18px; }}
+.sv-lead {{ color:{_ink} !important; font-style:normal !important; font-weight:400 !important;
+  font-size:15px !important; }}
 </style>
 <div class="sv-masthead">
   <div class="sv-wm">{_sv_wordmark()}</div>
