@@ -4275,13 +4275,16 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
     f.style.height = h + "px";
     f.style.minHeight = h + "px";
     f.setAttribute("height", h);
-    // Ancestors keep the height Streamlit assigned up front. Left alone the
-    // frame overflows its box and paints over whatever follows — so release
-    // them to size themselves around the frame.
-    var w = f.parentElement, i = 0;
-    while (w && i < 4) {
-      if (w.style) { w.style.height = "auto"; w.style.maxHeight = "none"; }
-      w = w.parentElement; i++;
+    // Only the component's OWN wrapper may be released — walking further up
+    // reaches Streamlit's app shell, whose height drives page scrolling, and
+    // clearing it freezes the whole page.
+    var p = f.parentElement;
+    if (p && p.style) {
+      var id = (p.getAttribute && p.getAttribute("data-testid")) || "";
+      var cn = (typeof p.className === "string" ? p.className : "");
+      if (/stElementContainer|stCustomComponent|stIFrame|element-container/i.test(id + " " + cn)) {
+        p.style.height = "auto";
+      }
     }
   }
   fit();
