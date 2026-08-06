@@ -4008,6 +4008,8 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
 .sec:not(.blue) .card .ctitle,
 .sec:not(.blue) .card .cbody,
 .sec:not(.blue) .card .tside,
+.sec:not(.blue) .card .tlbl,
+.sec:not(.blue) .card .ttxt,
 .sec:not(.blue) .card .mbody{color:#ffffff;}
 .sec:not(.blue) .card .clabel,
 .sec:not(.blue) .card .slbl,
@@ -4271,11 +4273,15 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
     var f = window.frameElement;
     if (!f) return;
     f.style.height = h + "px";
-    f.height = h;
-    var w = f.parentElement;              // Streamlit's fixed-height wrapper
-    while (w && w !== document.body) {
-      if (w.style && w.style.height) w.style.height = h + "px";
-      w = w.parentElement;
+    f.style.minHeight = h + "px";
+    f.setAttribute("height", h);
+    // Ancestors keep the height Streamlit assigned up front. Left alone the
+    // frame overflows its box and paints over whatever follows — so release
+    // them to size themselves around the frame.
+    var w = f.parentElement, i = 0;
+    while (w && i < 4) {
+      if (w.style) { w.style.height = "auto"; w.style.maxHeight = "none"; }
+      w = w.parentElement; i++;
     }
   }
   fit();
