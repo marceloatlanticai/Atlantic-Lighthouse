@@ -3992,18 +3992,22 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
 .sec{padding:56px 60px 64px;}
 .sec.blue{background:__BLUE__;}
 .sec.blue .q,.sec.blue .num,.sec.blue .slabel,.sec.blue .lead{color:#ffffff;}
-.grid{display:grid;grid-template-columns:210px 1fr;gap:32px;align-items:start;
-      margin-bottom:26px;max-width:1120px;}
-.num{font-size:44px;font-weight:800;color:__BLUE__;line-height:.9;}
-.slabel{font-size:11px;letter-spacing:.22em;text-transform:uppercase;
-        color:__META__;font-weight:700;margin-top:12px;}
+.shead{max-width:1120px;margin-bottom:22px;}
+.slabel{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+        color:__INK__;font-weight:700;margin-bottom:14px;}
+.sec.blue .slabel{color:#ffffff;}
 .q{font-size:40px;font-weight:700;letter-spacing:-.022em;line-height:1.08;color:__INK__;}
 .lead{font-size:17.5px;font-weight:700;font-style:italic;line-height:1.6;
       color:__BODY__;max-width:780px;margin-bottom:26px;}
 .row3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;max-width:1120px;}
 .row2{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;max-width:1120px;}
-.card{background:#ffffff;padding:20px 22px;}
-.sec:not(.blue) .card{border:1.5px solid __INK__;}
+.card{background:#ffffff;padding:22px 24px;}
+.sec:not(.blue) .card{background:__BLUE__;}
+.sec:not(.blue) .card .ctitle,
+.sec:not(.blue) .card .cbody,
+.sec:not(.blue) .card .tside,
+.sec:not(.blue) .card .mbody{color:#ffffff;}
+.sec:not(.blue) .card .clabel{color:#ffffff;}
 .clabel{font-size:10px;letter-spacing:.18em;text-transform:uppercase;
         color:__BLUE__;font-weight:600;margin-bottom:10px;}
 .ctitle{font-size:18px;font-weight:700;line-height:1.28;margin-bottom:9px;color:__INK__;}
@@ -4022,7 +4026,7 @@ details .src a{color:__BLUE__;text-decoration:none;}
 /* quote cards — solid blue, white type */
 .qc{background:__BLUE__;padding:22px 24px;
     display:flex;flex-direction:column;}
-.sec.blue .qc{background:#ffffff;}
+
 .qhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
        margin-bottom:14px;}
 .qsrc{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
@@ -4043,6 +4047,20 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .trow:last-child{border-bottom:none;}
 .tcomp{grid-template-columns:200px 1.35fr 1.25fr;}
 .tlang{grid-template-columns:1fr 1.4fr 1.4fr;}
+/* 05 — three separate white cards with a chevron between them */
+.lrow{display:grid;grid-template-columns:1fr 34px 1.55fr 34px 1.55fr;
+      align-items:stretch;margin-bottom:16px;max-width:1120px;}
+.lcard{background:#ffffff;padding:18px 20px;}
+.chev{display:flex;align-items:center;justify-content:center;
+      color:#ffffff;font-size:26px;font-weight:300;line-height:1;}
+.lavoid{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+        color:__RED__;font-weight:700;margin-bottom:12px;}
+.lword{font-size:17px;font-weight:700;color:__INK__;text-decoration:line-through;line-height:1.25;}
+.llbl{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+      color:__INK__;font-weight:700;margin-bottom:12px;}
+.ltxt{font-size:13px;line-height:1.5;color:__INK__;}
+.ltxt.blue{color:__BLUE__;}
+@media(max-width:820px){.lrow{grid-template-columns:1fr;}.chev{display:none;}}
 .cn{font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:__BLUE__;}
 .cm{font-size:17px;font-weight:700;line-height:1.3;color:__INK__;}
 .cd{font-size:13px;line-height:1.5;color:__BODY__;margin-top:6px;}
@@ -4092,11 +4110,12 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         try: return sigs[int(i)]
         except Exception: return None
     def head(num, label, q):
-        return (f'<div class="grid"><div><div class="num">{e(num)}</div>'
-                f'<div class="slabel">{e(label)}</div></div>'
+        # The design dropped the big section numbers and the two-column rail:
+        # a small tracked label sits directly above the headline, left-aligned.
+        return (f'<div class="shead"><div class="slabel">{e(label)}</div>'
                 f'<div class="q">{e(q)}</div></div>')
     def open_sec(num):
-        blue = mode == "screen" and num in ("01", "03", "05", "08")
+        blue = mode == "screen" and num in ("01", "03", "05", "07")
         return f'<section class="sec{" blue" if blue else ""}">'
 
     H, h = [], 0
@@ -4168,11 +4187,11 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                  'what they distrust.</div>')
         H.append('<div class="row2">')
         for t in (res.get("tensions") or [])[:4]:
-            op = (f'<div class="topen"><div class="mlabel" style="color:#0000ff">Countercurrent opening</div>'
-                  f'<div class="mbody" style="color:#000">{e(t.get("opening",""))}</div></div>') if t.get("opening") else ""
+            op = (f'<div class="topen"><div class="tlbl">Countercurrent<br>opening</div>'
+                  f'<div class="ttxt">{e(t.get("opening",""))}</div></div>') if t.get("opening") else ""
             H.append(f'<div class="card"><div class="ctitle">{e(t.get("title",""))}</div>'
-                     f'<div class="tside">{e(t.get("side_a",""))}</div>'
-                     f'<div class="tside">{e(t.get("side_b",""))}</div>{op}</div>')
+                     f'<div class="tsides"><div class="tside">{e(t.get("side_a",""))}</div>'
+                     f'<div class="tside">{e(t.get("side_b",""))}</div></div>{op}</div>')
         H.append('</div></section>'); h += 900
 
     if "05" in which:
@@ -4181,15 +4200,18 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         H.append('<div class="lead">Copy-deck poison. If a line lands in a deck with any of '
                  'these words, send it back — each one signals a brand swimming with the school.</div>')
         langs = (res.get("cliche_language") or [])[:6]
-        if langs:
-            H.append('<div class="tbl">')
-            for l in langs:
-                H.append(f'<div class="trow tlang">'
-                         f'<div><div class="mlabel">Avoid</div><span class="strike">{e(l.get("avoid",""))}</span></div>'
-                         f'<div><div class="mlabel">Why</div><div class="mbody">{e(l.get("why",""))}</div></div>'
-                         f'<div><div class="mlabel">Instead</div>'
-                         f'<div class="mbody" style="color:#0000ff">{e(l.get("instead",""))}</div></div></div>')
-            H.append('</div>'); h += len(langs) * 155
+        for l in langs:
+            H.append('<div class="lrow">'
+                     f'<div class="lcard"><div class="lavoid">✕ Avoid</div>'
+                     f'<div class="lword">{e(l.get("avoid",""))}</div></div>'
+                     '<div class="chev">&#8250;</div>'
+                     f'<div class="lcard"><div class="llbl">Why</div>'
+                     f'<div class="ltxt">{e(l.get("why",""))}</div></div>'
+                     '<div class="chev">&#8250;</div>'
+                     f'<div class="lcard"><div class="llbl">Instead</div>'
+                     f'<div class="ltxt blue">{e(l.get("instead",""))}</div></div>'
+                     '</div>')
+        h += len(langs) * 155
         H.append('</section>'); h += 240
 
     if "06" in which:
@@ -4198,7 +4220,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                  'like the ninth can on the shelf — not the countercurrent.</div>')
         H.append('<div class="row3">')
         for im in (res.get("cliche_images") or [])[:6]:
-            H.append(f'<div class="card"><div class="dns">✕ Do not shoot</div>'
+            H.append(f'<div class="card"><div class="dnschip">✕ Do not shoot</div>'
                      f'<div class="ctitle" style="font-size:15.5px">{e(im.get("title",""))}</div>'
                      f'<div class="cbody" style="font-size:12.5px">{e(im.get("why",""))}</div></div>')
         H.append('</div></section>'); h += 700
@@ -4745,10 +4767,19 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
   padding:22px 24px;
 }}
 .sv-quote-src, .sv-quote-handle, .sv-quote-text, .sv-quote-ctx {{ color:#ffffff !important; }}
-/* Label for the Streamlit-rendered boxes in section 07 — must NOT inherit the
-   white-on-blue quote-card treatment above, or it vanishes on white. */
-.sv-boxlbl {{ font-family:{_sans}; font-size:10.5px; letter-spacing:.14em;
-  text-transform:uppercase; color:{_ink}; font-weight:700; }}
+/* Section 07 is a blue block in the design. Its controls are Streamlit
+   widgets, so the blue is painted on a wrapper here and the label becomes an
+   inverted chip — white plate, blue type — exactly as in the file. */
+.sv-boxlbl {{ display:inline-block; font-family:{_sans}; font-size:13px;
+  letter-spacing:.06em; text-transform:uppercase; color:{_blue};
+  background:#ffffff; padding:6px 12px; font-weight:700; }}
+.sv-07 {{ background:{_blue}; padding:44px 46px 48px;
+  width:100vw; margin-left:calc(-50vw + 50%); margin-right:calc(-50vw + 50%); }}
+.sv-07 .sv-q, .sv-07 .sv-seclabel, .sv-07 .sv-lead {{ color:#ffffff !important; }}
+.sv-07 .sv-q {{ text-transform:uppercase; letter-spacing:-.01em; }}
+.sv-07-rule {{ border-top:1.5px solid #ffffff; margin:22px 0 30px; }}
+.sv-07-desc {{ font-family:{_sans}; font-size:13px; line-height:1.5;
+  color:#ffffff; margin:14px 0 22px; max-width:640px; }}
 .sv-quote-handle, .sv-quote-ctx {{ opacity:.85; }}
 .sv-quote-divider {{ border-top:1px solid rgba(255,255,255,.55) !important; }}
 /* engagement becomes an outlined pill */
@@ -4892,7 +4923,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 
 
     # ── Section 07 — The Lighthouse Test ─────────────────────────
-    st.markdown(_sv_header("07", "The Lighthouse Test", "Test your hypothesis"),
+    st.markdown(_sv_header("07", "The Lighthouse Test", "TEST THE CURRENTS"),
                 unsafe_allow_html=True)
     # Two side-by-side boxes: left = your hunch (input) · right = the reading
     _tcol1, _tcol2 = st.columns(2, gap="large")
