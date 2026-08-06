@@ -3962,6 +3962,26 @@ def _sv_fmt_date(iso: str) -> str:
         return str(iso)[:16].replace("T", " · ")
 
 
+def _sv_load_brief_by_id(rid: str):
+    """Load one archived brief by its dispatch id — this is what the Archive's
+    'Open ↗' links resolve, so a past report can be opened in its own tab."""
+    if not rid:
+        return None
+    try:
+        for rec in _db.load_all_dispatches():
+            full = rec.get("full") or {}
+            if not full.get("_overview"):
+                continue
+            if (rec.get("dispatch_id") or full.get("saved_at", "")) == rid:
+                return {"result": full.get("sv_result") or {},
+                        "signals": full.get("sv_signals") or [],
+                        "saved_at": full.get("saved_at", ""),
+                        "client": full.get("_client", "")}
+    except Exception as _exc:
+        print(f"[overview] load-by-id error: {_exc}")
+    return None
+
+
 def _sv_load_brief(active: str):
     """Return the most recent saved Overview brief for a client, or None."""
     try:
@@ -4910,6 +4930,23 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     _res  = st.session_state.get("sv_result") if st.session_state.get("sv_client") == _active else None
     _sigs = st.session_state.get("sv_signals", []) if st.session_state.get("sv_client") == _active else []
     _saved_at = st.session_state.get("sv_saved_at", "") if st.session_state.get("sv_client") == _active else ""
+
+    # ?report=<id> — an Archive link opened in its own tab. It wins over the
+    # session so the tab always shows the report that was asked for.
+    _req_id = st.query_params.get("report", "")
+    if _req_id and st.session_state.get("sv_report_id") != _req_id:
+        _one = _sv_load_brief_by_id(_req_id)
+        if _one and _one.get("result"):
+            _res      = _one["result"]
+            _sigs     = _one["signals"]
+            _saved_at = _one.get("saved_at", "")
+            st.session_state["sv_result"]    = _res
+            st.session_state["sv_signals"]   = _sigs
+            st.session_state["sv_client"]    = _active
+            st.session_state["sv_saved_at"]  = _saved_at
+            st.session_state["sv_report_id"] = _req_id
+            st.session_state.pop("sv_hunch_result", None)
+
     if _res is None and _is_guest:
         _loaded = _sv_load_brief(_active)
         if _loaded and _loaded.get("result"):
@@ -5032,6 +5069,21 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         st.components.v1.html(_html_b, height=_h_b, scrolling=False)
 
 
+    # ── Export — download the full brief as a print-ready PDF ──────────────
+    if _res:
+        st.markdown('<div style="border-top:3px solid ' + _line + ';margin-top:4rem;padding-top:1.6rem;"></div>',
+                    unsafe_allow_html=True)
+        _export_html = _sv_export_html(_res, _disp_brand, _tagline, _brief_date, _competitors, _sigs)
+        _ec1, _ec2, _ec3 = st.columns([2, 1.4, 2])
+        with _ec2:
+            st.download_button(
+                "⬇  Export brief as PDF",
+                data=_export_html, file_name=f"lighthouse-{_disp_brand.lower().replace(' ','-')}-brief.html",
+                mime="text/html", use_container_width=True, key="sv_export",
+                help="Downloads the full brief. Open it and choose Print → Save as PDF (it opens the print dialog automatically).",
+            )
+
+
     # ── Section 09 — Archive (every past report, reopenable at zero cost) ──
     st.markdown(_sv_header("09", "Report Archive", "Every brief we've run"),
                 unsafe_allow_html=True)
@@ -5061,13 +5113,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 st.markdown(f'<div style="font-family:{_sans};font-size:13px;color:{_faint};'
                             f'padding-top:8px;">{e(_a.get("count", 0))}</div>', unsafe_allow_html=True)
             with _c4:
-                if st.button("Open", key=f"sv_arch_{_ai}", use_container_width=True):
-                    st.session_state["sv_result"]   = _a["result"]
-                    st.session_state["sv_signals"]  = _a["signals"]
-                    st.session_state["sv_client"]   = _active
-                    st.session_state["sv_saved_at"] = _a["saved_at"]
-                    st.session_state.pop("sv_hunch_result", None)
-                    st.rerun()
+                # A link, not a button — opens the report in its own tab via
+                # ?report=<id>, so comparing two runs side by side is just two
+                # tabs. target=_blank needs a real anchor; st.button can't.
+                _rid = urllib.parse.quote(str(_a.get("id", "")), safe="")
+                st.markdown(
+                    f'<a href="?view=overview&report={_rid}" target="_blank" rel="noopener" '
+                    f'style="display:block;text-align:center;font-family:{_sans};font-size:12px;'
+                    f'font-weight:700;letter-spacing:.06em;text-transform:uppercase;'
+                    f'color:#ffffff;background:{_blue};border-radius:{_rad};'
+                    f'padding:9px 0;text-decoration:none;margin-top:2px;">Open ↗</a>',
+                    unsafe_allow_html=True)
             st.markdown(f'<div style="border-bottom:1px solid #dddddd;margin:2px 0 8px;"></div>',
                         unsafe_allow_html=True)
         if _res:
@@ -5080,21 +5136,6 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     else:
         st.markdown('<div class="sv-empty">No reports archived yet — your first run will appear here.</div>',
                     unsafe_allow_html=True)
-
-    # ── Export — download the full brief as a print-ready PDF ──────────────
-    if _res:
-        st.markdown('<div style="border-top:3px solid ' + _line + ';margin-top:4rem;padding-top:1.6rem;"></div>',
-                    unsafe_allow_html=True)
-        _export_html = _sv_export_html(_res, _disp_brand, _tagline, _brief_date, _competitors, _sigs)
-        _ec1, _ec2, _ec3 = st.columns([2, 1.4, 2])
-        with _ec2:
-            st.download_button(
-                "⬇  Export brief as PDF",
-                data=_export_html, file_name=f"lighthouse-{_disp_brand.lower().replace(' ','-')}-brief.html",
-                mime="text/html", use_container_width=True, key="sv_export",
-                help="Downloads the full brief. Open it and choose Print → Save as PDF (it opens the print dialog automatically).",
-            )
-
 
 # ── Top-level navigation: Trends / Dispatch / Projects / Road Map ──────────
 # One-page layout: hero masthead always visible above the nav bar.
