@@ -4002,7 +4002,7 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
       color:__BODY__;max-width:780px;margin-bottom:26px;}
 .row3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;max-width:1120px;}
 .row2{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;max-width:1120px;}
-.card{background:#ffffff;border-radius:10.5px;padding:20px 22px;}
+.card{background:#ffffff;padding:20px 22px;}
 .sec:not(.blue) .card{border:1.5px solid __INK__;}
 .clabel{font-size:10px;letter-spacing:.18em;text-transform:uppercase;
         color:__BLUE__;font-weight:600;margin-bottom:10px;}
@@ -4020,7 +4020,7 @@ details[open]>summary::after{content:"–";}
 details .src{font-size:11.5px;line-height:1.6;color:__BODY__;margin-top:10px;}
 details .src a{color:__BLUE__;text-decoration:none;}
 /* quote cards — solid blue, white type */
-.qc{background:__BLUE__;border-radius:10.5px;padding:22px 24px;
+.qc{background:__BLUE__;padding:22px 24px;
     display:flex;flex-direction:column;}
 .sec.blue .qc{background:#ffffff;}
 .qhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
@@ -4034,10 +4034,10 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .qdiv{border-top:1px solid rgba(255,255,255,.55);margin:16px 0 12px;}
 .qctx{font-size:11.5px;line-height:1.45;color:rgba(255,255,255,.85);margin-bottom:10px;}
 .qeng{display:inline-block;font-size:11.5px;color:#ffffff;
-      border:1px solid rgba(255,255,255,.85);border-radius:999px;padding:5px 14px;}
+      border:1px solid rgba(255,255,255,.85);border-radius:10.5px;padding:5px 14px;}
 .qeng a{color:#ffffff;text-decoration:none;}
 /* competitor + language tables */
-.tbl{background:#ffffff;border-radius:10.5px;overflow:hidden;max-width:1120px;}
+.tbl{background:#ffffff;overflow:hidden;max-width:1120px;}
 .sec:not(.blue) .tbl{border:1.5px solid __INK__;}
 .trow{display:grid;gap:26px;padding:22px 26px;border-bottom:1.5px solid __INK__;}
 .trow:last-child{border-bottom:none;}
@@ -4050,7 +4050,7 @@ details .src a{color:__BLUE__;text-decoration:none;}
         color:__META__;font-weight:700;margin-bottom:6px;}
 .mbody{font-size:13px;line-height:1.5;color:__BODY__;}
 .strike{font-size:16px;font-weight:700;color:__RED__;text-decoration:line-through;}
-.map{background:#ffffff;border-radius:10.5px;padding:20px 24px;margin-top:22px;max-width:1120px;}
+.map{background:#ffffff;padding:20px 24px;margin-top:22px;max-width:1120px;}
 .sec:not(.blue) .map{border:1.5px solid __INK__;}
 .maptitle{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
           color:__RED__;font-weight:700;margin-bottom:12px;}
@@ -4731,9 +4731,11 @@ button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="base
    text. Parked until the brief is rendered as one HTML component, where the
    background is ours to control. Type stays readable in the meantime. */
 
-/* ── Cards: white, softer corner ── */
+/* ── Cards: white, SQUARE corners ──
+   The design draws content containers as hard rectangles; only controls and
+   the engagement pill are rounded. Keep that split. */
 .sv-card, .sv-tension, .sv-img, .sv-comp-table, .sv-lang-table {{
-  background:#ffffff; border-radius:{_rad};
+  background:#ffffff; border-radius:0;
 }}
 .sv-card, .sv-tension, .sv-img {{ border:1.5px solid {_line}; }}
 
