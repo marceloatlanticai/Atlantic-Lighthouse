@@ -3891,7 +3891,15 @@ Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
 }}
 
 Rules:
-- EXACTLY 3 trends. EXACTLY 6 insight_quotes chosen for authentic human voice and spanning MULTIPLE networks (mix Reddit, TikTok, X, Instagram, YouTube — not all from one). 4-5 competitors (the named ones plus any real player you spot in the signals). 4-6 cliche_map entries.
+- EXACTLY 3 trends. 4-5 competitors (the named ones plus any real player you spot in the signals). 4-6 cliche_map entries.
+- EXACTLY 6 insight_quotes, and NETWORK BALANCE IS A HARD REQUIREMENT, not a preference:
+  · they must come from AT LEAST 3 different networks;
+  · no single network may supply more than 2 of the 6.
+  If one network dominates the signals, still pick the best available quote from
+  the quieter ones — a brief that is all X or all TikTok misrepresents the
+  conversation, even when that network happens to have the punchiest lines.
+  Prefer an authentic, ordinary voice from an under-represented network over a
+  sharper line from one already used twice.
 - 4 tensions (real contradictions consumers hold), 5-6 cliche_language entries, 5-6 cliche_images entries, EXACTLY 4 provocations (bold 'What if...' openings for {brand}).
 - signal_index / signal_indexes must reference real indexes from the list above.
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
@@ -4068,6 +4076,35 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .qctx{font-size:11.5px;line-height:1.45;color:rgba(255,255,255,.85);margin-bottom:10px;}
 .qeng{display:inline-block;font-size:11.5px;color:#ffffff;
       border:1px solid rgba(255,255,255,.85);border-radius:10.5px;padding:5px 14px;}
+/* 02 — the quote is trimmed on the card; the disclosure carries it whole */
+.qc details{margin-top:14px;border-top:1px solid rgba(255,255,255,.4);padding-top:10px;}
+.qc details>summary{color:#ffffff;font-size:9.5px;letter-spacing:.12em;}
+.qc details .full{font-size:12.5px;line-height:1.55;color:#ffffff;margin-top:10px;}
+.qc details .full a{color:#ffffff;text-decoration:underline;}
+/* network filter — the quote mix skews toward whichever platform was loudest,
+   so let the reader isolate one and see what that network alone is saying */
+.qfilter{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 20px;max-width:1120px;}
+.qfilter button{font-family:inherit;font-size:10px;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;padding:7px 14px;border:1.5px solid __BLUE__;background:#ffffff;
+  color:__BLUE__;cursor:pointer;border-radius:10.5px;transition:background .12s,color .12s;}
+.qfilter button:hover{background:rgba(0,0,255,.08);}
+.qfilter button.on{background:__BLUE__;color:#ffffff;}
+.qc.hide,.qmore .v.hide{display:none;}
+.qempty{display:none;font-size:13px;color:__BODY__;padding:18px 0;}
+.qempty.show{display:block;}
+/* the voices that didn't make the cut — compact, so the six keep their weight */
+.qmore{max-width:1120px;margin-top:26px;border-top:1.5px solid __INK__;padding-top:16px;}
+.qmore>summary{list-style:none;cursor:pointer;font-size:10px;font-weight:700;
+  letter-spacing:.14em;text-transform:uppercase;color:__BLUE__;
+  display:flex;justify-content:space-between;align-items:center;}
+.qmore>summary::-webkit-details-marker{display:none;}
+.qmore>summary::after{content:"+";font-size:14px;}
+.qmore[open]>summary::after{content:"–";}
+.qmore .v{font-size:12.5px;line-height:1.65;color:__BODY__;padding:5px 0;
+  border-bottom:1px solid __HAIR__;}
+.qmore .v b{color:__INK__;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  margin-right:9px;}
+.qmore .v a{color:__BLUE__;text-decoration:none;}
 .qeng a{color:#ffffff;text-decoration:none;}
 /* competitor + language tables */
 .tbl{max-width:1120px;}
@@ -4180,21 +4217,69 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         H.append(open_sec("02") + head("02", "Consumer Insight", "What people are actually saying"))
         if res.get("insights_summary"):
             H.append(f'<div class="lead">{e(res["insights_summary"])}</div>')
+        # Chips are built from the networks that actually turned up, so the
+        # reader can isolate one when the mix skews to a single platform.
+        _qs = [q for q in (res.get("insight_quotes") or [])[:6] if sig(q.get("signal_index"))]
+        _counts = {}
+        for q in _qs:
+            k = str((sig(q.get("signal_index")) or {}).get("source", "") or "").lower() or "other"
+            _counts[k] = _counts.get(k, 0) + 1
+        if mode == "screen" and len(_counts) > 1:
+            chips = (f'<button data-net="all" class="on">All ({len(_qs)})</button>')
+            for k, c in sorted(_counts.items(), key=lambda x: -x[1]):
+                chips += f'<button data-net="{e(k)}">{e(SRC.get(k, k.title()))} ({c})</button>'
+            H.append(f'<div class="qfilter">{chips}</div>')
         H.append('<div class="row3">')
+        used = set()
         for q in (res.get("insight_quotes") or [])[:6]:
-            s = sig(q.get("signal_index"))
-            if not s: continue
-            net = q.get("network") or SRC.get(s.get("source",""), "")
-            txt = (s.get("content") or s.get("title") or "")[:260]
-            u = s.get("url","")
+            s_ = sig(q.get("signal_index"))
+            if not s_: continue
+            used.add(q.get("signal_index"))
+            net = q.get("network") or SRC.get(s_.get("source",""), "")
+            full = (s_.get("content") or s_.get("title") or "")
+            txt = full[:260]
+            u = s_.get("url","")
             lk = f' <a href="{e(u)}" target="_blank">↗</a>' if u else ""
-            H.append(f'<div class="qc"><div class="qhead">'
+            # Only offer the disclosure when there is genuinely more to read —
+            # the card trims at 260 characters and often lands mid-sentence.
+            more = ""
+            if mode == "screen" and (len(full) > 260 or u):
+                body = f'<div class="full">{e(full)}'
+                if u: body += f' <a href="{e(u)}" target="_blank">open the post ↗</a>'
+                body += '</div>'
+                more = f'<details><summary>Dig deeper</summary>{body}</details>'
+            _net_key = str(s_.get("source", "") or "").lower() or "other"
+            H.append(f'<div class="qc" data-net="{e(_net_key)}"><div class="qhead">'
                      f'<span class="qsrc">{e(net)}{_sv_logo(net, on_blue=(mode=="screen"))}</span>'
                      f'<span class="qhandle">{e(q.get("handle",""))}</span></div>'
                      f'<div class="qtext">&ldquo;{e(txt)}&rdquo;</div><div class="qdiv"></div>'
                      f'<div class="qctx">{e(q.get("context",""))}</div>'
-                     f'<div><span class="qeng">{e(q.get("engagement",""))}{lk}</span></div></div>')
-        H.append('</div></section>'); h += 1040
+                     f'<div><span class="qeng">{e(q.get("engagement",""))}{lk}</span></div>'
+                     f'{more}</div>')
+        H.append('</div>')
+        # Everything else we heard, kept compact so the curated six keep their
+        # weight. Social and community sources only — news and web belong to 03.
+        if mode == "screen":
+            VOICE = {"reddit","tiktok","instagram","twitter","youtube"}
+            rest = [(i2, sg) for i2, sg in enumerate(sigs)
+                    if i2 not in used and str(sg.get("source","")).lower() in VOICE
+                    and (sg.get("title") or sg.get("content"))]
+            if rest:
+                rows = ""
+                for _i2, sg in rest[:25]:
+                    lbl = SRC.get(sg.get("source",""), str(sg.get("source","")).title())
+                    t2 = (sg.get("title") or sg.get("content") or "")[:110]
+                    u2 = sg.get("url","")
+                    a2 = f' <a href="{e(u2)}" target="_blank">↗</a>' if u2 else ""
+                    _k2 = str(sg.get("source", "") or "").lower()
+                    rows += f'<div class="v" data-net="{e(_k2)}"><b>{e(lbl)}</b>{e(t2)}{a2}</div>'
+                H.append(f'<details class="qmore"><summary>More voices '
+                         f'({len(rest)})</summary>{rows}</details>')
+                h += 90
+            # shown by the filter when a network has no curated quote of its own
+            H.append('<div class="qempty">No curated quote from this network — '
+                     'open <b>More voices</b> above to see what it did say.</div>')
+        H.append('</section>'); h += 1040
 
     if "03" in which:
         H.append(open_sec("03") + head("03", "The Competitive Current", "What everyone else is doing"))
@@ -4307,6 +4392,32 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
       }
     }
   }
+  // Network filter for section 02. Runs inside the document, so switching is
+  // instant — no Streamlit rerun, no re-scan, no cost.
+  var bar = document.querySelector(".qfilter");
+  if (bar) {
+    bar.addEventListener("click", function (ev) {
+      var b = ev.target.closest("button[data-net]");
+      if (!b) return;
+      var net = b.getAttribute("data-net");
+      bar.querySelectorAll("button").forEach(function (x) {
+        x.classList.toggle("on", x === b);
+      });
+      var shown = 0;
+      document.querySelectorAll(".qc[data-net]").forEach(function (c) {
+        var hit = net === "all" || c.getAttribute("data-net") === net;
+        c.classList.toggle("hide", !hit);
+        if (hit) shown++;
+      });
+      document.querySelectorAll(".qmore .v[data-net]").forEach(function (v) {
+        v.classList.toggle("hide", !(net === "all" || v.getAttribute("data-net") === net));
+      });
+      var empty = document.querySelector(".qempty");
+      if (empty) empty.classList.toggle("show", shown === 0);
+      fit();
+    });
+  }
+
   fit();
   new ResizeObserver(fit).observe(document.documentElement);
   // fonts and <details> toggles both change the height
