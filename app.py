@@ -3747,8 +3747,10 @@ else:
 # ── Footer (factored out so both the client view and the full page can use it) ─
 
 def render_footer():
+    # .lh-footer is the hook that puts the footer on the same 1120px column as
+    # the brief — see the measure rule in render_simple_view.
     st.markdown(f"""
-<div style="border-top:3px double #071828;margin-top:3rem;padding:24px 0 48px;
+<div class="lh-footer" style="border-top:3px double #071828;margin-top:3rem;padding:24px 0 48px;
      font-family:'JetBrains Mono',monospace;font-size:11px;color:#274d68;
      text-transform:uppercase;letter-spacing:.06em;
      display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;">
@@ -4798,6 +4800,14 @@ def render_simple_view():
     _rad   = "10.5px"    # corner radius
     _beacon = _gold      # back-compat alias
 
+    # Everything Streamlit draws itself (masthead, the Brand/Category row, the
+    # export button, the archive) sits in .block-container, which is full width.
+    # The brief's own content is on a 1120px centred column, so these were
+    # running edge to edge while the sections were not. Two keyed containers put
+    # them on the same measure. __enter__/__exit__ instead of `with` keeps the
+    # existing block un-indented — the same pattern used for the tabs above.
+    _svtop = st.container(key="svtop"); _svtop.__enter__()
+
     st.markdown(f"""
 <style>
 .sv-eyebrow {{ text-align:center; font-family:{_sans}; font-size:11px;
@@ -5044,6 +5054,23 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 .sv-lead {{ color:{_ink} !important; font-style:normal !important; font-weight:400 !important;
   font-size:15px !important; }}
 
+/* ══ Shared measure for the Streamlit-drawn pieces ════════════════════════
+   Same formula as .sec inside the component, so the masthead, the input row,
+   the export button, the archive and the footer land on the identical 1120px
+   column as the brief. Only the blue backgrounds are meant to bleed.
+
+   .block-container sits 0.5rem inside the components (which were pulled out by
+   that much), so the two are centred on the same axis — the columns line up
+   exactly on wide screens. Below ~1240px both fall back to a flat inset. */
+.st-key-svtop, .st-key-svbot, .lh-footer {{
+  padding-left:max(60px, calc((100% - 1120px) / 2)) !important;
+  padding-right:max(60px, calc((100% - 1120px) / 2)) !important;
+}}
+@media (max-width: 820px) {{
+  .st-key-svtop, .st-key-svbot, .lh-footer {{
+    padding-left:20px !important; padding-right:20px !important; }}
+}}
+
 /* ══ Section 07 · Test the currents ═══════════════════════════════════════
    Built from Figma "Lighthouse-Brief-Mockup 4": a full-bleed blue band, the
    headline at 70px/60px in white, a 2px white rule, a white YOUR HUNCH chip
@@ -5055,9 +5082,22 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 
    Bleeding: box-shadow + clip-path, NOT width:100vw. 100vw counts the
    scrollbar, so the page gains a horizontal scroll; the shadow paints past the
-   container without touching layout width. */
-.st-key-sv07 {{
-  background:{_blue}; margin:4.5rem 0 0;
+   container without touching layout width.
+
+   WHY THE !important AND THE DOUBLED SELECTOR: a global rule near the top of
+   this file sets
+       [data-testid="stMarkdownContainer"], [data-testid="stVerticalBlock"]
+       {{ background-color: transparent !important; }}
+   st.container() renders AS a stVerticalBlock, so that rule wins over a plain
+   `.st-key-sv07 {{ background:blue }}` and the band comes out white. Repeating
+   the selector as [data-testid="stVerticalBlock"].st-key-sv07 raises the
+   specificity so it wins regardless of injection order. This is almost
+   certainly what killed the earlier :has() attempt too — the selector may have
+   been matching all along and the background was simply being overridden. */
+.st-key-sv07,
+[data-testid="stVerticalBlock"].st-key-sv07 {{
+  background:{_blue} !important; background-color:{_blue} !important;
+  margin:4.5rem 0 0;
   /* same rule as .sec inside the component: band full width, content on the
      1120px Figma measure, centred */
   padding:46px max(60px, calc((100% - 1120px) / 2)) 56px;
@@ -5085,8 +5125,10 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
   text-transform:uppercase; padding:5px 11px; margin:0 0 14px; }}
 .sv07-sub {{ font-family:{_sans}; font-size:12px; line-height:13px; color:#ffffff;
   max-width:467px; margin:0 0 18px; }}
-/* the white panel around the textarea */
-.st-key-sv07panel {{ background:#ffffff; padding:19px; }}
+/* the white panel around the textarea — same override problem as the band */
+.st-key-sv07panel,
+[data-testid="stVerticalBlock"].st-key-sv07panel {{
+  background:#ffffff !important; background-color:#ffffff !important; padding:19px; }}
 /* black hairline on the field, per the mockup */
 .st-key-sv07panel [data-testid="stTextArea"] textarea {{
   border:1.5px solid {_ink} !important; border-radius:0 !important;
@@ -5228,6 +5270,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         try: return _sigs[int(idx)]
         except Exception: return None
 
+    _svtop.__exit__(None, None, None)   # components below run full-bleed
+
     # ── Sections 01–06 — rendered as ONE HTML component ───────────────────
     # A single document is what makes the alternating full-bleed blue blocks
     # possible; Streamlit's per-widget DOM can't hold a background across
@@ -5330,6 +5374,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             st.components.v1.html(_html_b, height=_h_b, scrolling=False)
 
 
+    _svbot = st.container(key="svbot"); _svbot.__enter__()
+
     # ── Export — download the full brief as a print-ready PDF ──────────────
     if _res:
         st.markdown('<div style="border-top:3px solid ' + _line + ';margin-top:4rem;padding-top:1.6rem;"></div>',
@@ -5397,6 +5443,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     else:
         st.markdown('<div class="sv-empty">No reports archived yet — your first run will appear here.</div>',
                     unsafe_allow_html=True)
+
+    _svbot.__exit__(None, None, None)
 
 # ── Top-level navigation: Trends / Dispatch / Projects / Road Map ──────────
 # One-page layout: hero masthead always visible above the nav bar.
