@@ -4411,9 +4411,14 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
   // fit long copy but never shrink back — so an over-generous Python estimate
   // stayed as a block of dead white space above the next section. A plain div
   // always sizes to its content, so this shrinks as well as grows.
+  // When Streamlit sizes the frame itself (st.iframe / height="content") this
+  // is dead weight, and two scripts fighting over the same height only causes
+  // flicker. It stays alive only on the fallback path, where the frame is
+  // pinned to a Python estimate.
+  var AUTOFIT = __AUTOFIT__;
   var root = document.getElementById("lh-root");
   function fit() {
-    if (!root) return;
+    if (!AUTOFIT || !root) return;
     var h = Math.ceil(root.getBoundingClientRect().height) + 8;
     var f = window.frameElement;
     if (!f) return;
@@ -4462,18 +4467,46 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
   }
 
   fit();
-  if (root) new ResizeObserver(fit).observe(root);
+  if (AUTOFIT && root) new ResizeObserver(fit).observe(root);
   // fonts and <details> toggles both change the height
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
   document.addEventListener("toggle", fit, true);
   [80, 300, 900].forEach(function (t) { setTimeout(fit, t); });
 })();
 </script>"""
+    fit = fit.replace("__AUTOFIT__", "false" if hasattr(st, "iframe") else "true")
+
     # #lh-root is what the auto-fit script measures — see the comment there.
     html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
             f'<style>{_sv_css(mode)}</style></head><body><div id="lh-root">'
             + "".join(H) + '</div>' + fit + '</body></html>')
     return html, h
+
+
+def _sv_embed(html: str, est_height: int) -> None:
+    """Render a brief section as an iframe and let STREAMLIT size it.
+
+    Why this replaced components.v1.html(height=<estimate>):
+
+    Passing an explicit height makes Streamlit reserve exactly that many pixels
+    on the element wrapper. Our own script could resize the <iframe>, but not
+    that reservation — so when the estimate overshot (which it started doing as
+    soon as the cards got wider and the copy wrapped less) the surplus stayed on
+    screen as a block of white above section 07.
+
+    st.iframe defaults to height="content", which flips `use_content` on the
+    element and makes Streamlit inject its own measuring script — body
+    getBoundingClientRect plus scrollHeight, re-run by a MutationObserver and on
+    resize/load — then set the frame to the measured height. It shrinks as well
+    as grows, which an estimate never can.
+
+    components.v1.html stays as the fallback for older builds. It is deprecated
+    (scheduled for removal after 2026-06-01) and warns on every call.
+    """
+    if hasattr(st, "iframe"):
+        st.iframe(html)
+    else:
+        st.components.v1.html(html, height=est_height, scrolling=False)
 
 
 # Tracks which heavy logo symbols have already been written into the current
@@ -5292,7 +5325,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
                                      ("01", "02", "03", "04", "05", "06"), "screen")
         with st.container(key="svfullA"):
-            st.components.v1.html(_html_a, height=_h_a, scrolling=False)
+            _sv_embed(_html_a, _h_a)
     else:
         st.markdown(_sv_header("01", "The Currents", f"What is trending in {_disp_cat}"),
                     unsafe_allow_html=True)
@@ -5382,7 +5415,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     if _res:
         _html_b, _h_b = _sv_sections(_res, _sigs, _disp_cat, ("08",), "screen")
         with st.container(key="svfullB"):
-            st.components.v1.html(_html_b, height=_h_b, scrolling=False)
+            _sv_embed(_html_b, _h_b)
 
 
     _svbot = st.container(key="svbot"); _svbot.__enter__()
