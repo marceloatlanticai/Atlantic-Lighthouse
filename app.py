@@ -4041,8 +4041,11 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
 .sec:not(.blue) .slabel{color:__BLUE__;}
 .sec:not(.blue) .q{color:__BLUE__;}
 .q{font-size:40px;font-weight:700;letter-spacing:-.022em;line-height:1.08;color:__INK__;}
-.lead{font-size:17.5px;font-weight:700;font-style:italic;line-height:1.6;
-      color:__BODY__;max-width:780px;margin-bottom:26px;}
+/* Lead paragraph. Regular upright, not bold italic: the family we license has
+   no true Italic, so the old style was a browser-faked oblique of a faked bold
+   — two synthesised layers on top of each other. Regular is the real cut. */
+.lead{font-size:16.5px;font-weight:400;font-style:normal;line-height:1.45;
+      color:__BODY__;max-width:780px;margin-bottom:22px;}
 .row3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;max-width:1120px;}
 .row2{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;max-width:1120px;}
 .card{background:#ffffff;padding:22px 24px;}
@@ -4619,7 +4622,8 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
   .num {{ font-size:40px; font-weight:800; color:{GOLD}; line-height:.9; }}
   .slabel {{ font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:{FAINT}; font-weight:700; margin-top:10px; }}
   .q {{ font-size:34px; font-weight:700; letter-spacing:-.02em; line-height:1.1; }}
-  .lead {{ font-style:italic; font-weight:700; color:{MUTED}; font-size:16px; max-width:760px; margin:0 0 22px; }}
+  .lead {{ font-style:normal; font-weight:400; color:{MUTED}; font-size:15px;
+           line-height:1.45; max-width:760px; margin:0 0 20px; }}
   .cards {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }}
   .cards2 {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
   .card {{ border:1.5px solid {INK}; border-radius:4px; padding:16px 18px; break-inside:avoid; }}
