@@ -335,6 +335,9 @@ st.markdown("""
 <style>
 #MainMenu, header, footer { visibility: hidden; }
 /* Hide Streamlit's floating chrome: running-status widget, toolbar, deploy/manage button */
+/* the 1px iframe that carries the badge-hiding script — takes no space */
+.st-key-lhbadgekill { height:0 !important; min-height:0 !important; overflow:hidden !important;
+  margin:0 !important; padding:0 !important; }
 [data-testid="stStatusWidget"], [data-testid="stToolbar"], [data-testid="stDecoration"],
 .stDeployButton, [data-testid="stAppDeployButton"], [data-testid="manage-app-button"] {
   display: none !important; visibility: hidden !important; }
@@ -721,6 +724,95 @@ div[data-baseweb="popover"],
 }
 </style>
 """, unsafe_allow_html=True)
+
+
+def _hide_cloud_badge() -> None:
+    """Hide the Community Cloud viewer badge on phones.
+
+    The CSS above did not reach it, which points at the badge living inside a
+    shadow root — page stylesheets do not cross that boundary. This runs a
+    script instead, from inside a component iframe: srcdoc + allow-same-origin
+    means it is same-origin with the app, so it can reach window.parent.document
+    (the auto-fit script already relies on that same access).
+
+    It sweeps the light DOM and recurses into every open shadow root. Two
+    guards keep it cheap and safe:
+      · the sweep is debounced, because a MutationObserver on the Streamlit app
+        fires on every rerender and walking the whole tree each time is costly;
+      · only the matched node and a parent that also looks like part of the
+        badge are hidden, so a stray match can never blank a real container.
+
+    Phone detection is width OR touch: a phone set to "request desktop site"
+    reports a ~1000px viewport, which is exactly the case a plain media query
+    misses.
+    """
+    js = """<script>
+(function () {
+  var d, w;
+  try { w = window.parent; d = w.document; } catch (e) { return; }
+  if (!d) return;
+
+  var SEL = ['[class*="viewerBadge"]', '[class*="_profileContainer_"]',
+             '[class*="_profilePreview_"]', '[data-testid="stAppViewerBadge"]',
+             '.stAppHostedBadge', 'a[href*="streamlit.io"]'];
+  var BADGEISH = /viewerBadge|_profileContainer_|_profilePreview_|HostedBadge/;
+
+  function isPhone() {
+    try { return w.innerWidth <= 820 || ('ontouchstart' in w) || w.navigator.maxTouchPoints > 0; }
+    catch (e) { return false; }
+  }
+  function kill(el) {
+    el.style.setProperty('display', 'none', 'important');
+    var p = el.parentElement;
+    if (p && p !== d.body && BADGEISH.test(p.className || '')) {
+      p.style.setProperty('display', 'none', 'important');
+    }
+  }
+  function sweep(root, depth) {
+    if (depth > 6) return;
+    SEL.forEach(function (s) {
+      var found;
+      try { found = root.querySelectorAll(s); } catch (e) { return; }
+      Array.prototype.forEach.call(found, kill);
+    });
+    var all;
+    try { all = root.querySelectorAll('*'); } catch (e) { return; }
+    Array.prototype.forEach.call(all, function (el) {
+      if (el.shadowRoot) sweep(el.shadowRoot, depth + 1);
+    });
+  }
+
+  var pending = null;
+  function run() {
+    if (!isPhone()) return;
+    sweep(d, 0);
+  }
+  function schedule() {
+    if (pending) return;
+    pending = setTimeout(function () { pending = null; run(); }, 250);
+  }
+
+  run();
+  try { new w.MutationObserver(schedule).observe(d.body, { childList: true, subtree: true }); }
+  catch (e) {}
+  try { w.addEventListener('resize', schedule); } catch (e) {}
+  [300, 1200, 3000].forEach(function (t) { setTimeout(run, t); });
+})();
+</script>"""
+    try:
+        # Collapsed to zero height rather than display:none — a hidden container
+        # is not a reliable place to expect an iframe's script to run, and this
+        # one only exists to run its script.
+        with st.container(key="lhbadgekill"):
+            if hasattr(st, "iframe"):
+                st.iframe(js, height=1)
+            else:
+                st.components.v1.html(js, height=0)
+    except Exception:
+        pass
+
+
+_hide_cloud_badge()
 
 # ── Dispatch archive helpers (defined early — called inside sidebar) ───────────
 
