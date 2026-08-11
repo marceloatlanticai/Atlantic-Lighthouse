@@ -4044,7 +4044,11 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
 /* Lead paragraph. Regular upright, not bold italic: the family we license has
    no true Italic, so the old style was a browser-faked oblique of a faked bold
    — two synthesised layers on top of each other. Regular is the real cut. */
-.lead{font-size:17.5px;font-weight:400;font-style:normal;line-height:1.45;
+/* Lead paragraph — read straight off "Lighthouse-Brief-Mockup 4":
+   Telegraf SemiBold, 17.5px, line-height 20px (= 1.143). Not bold, not italic:
+   the family has no true Italic, so the old style was a faked oblique layered
+   on a faked bold. 600 is a real cut, now that the full family is licensed. */
+.lead{font-size:17.5px;font-weight:600;font-style:normal;line-height:1.143;
       color:__BODY__;max-width:780px;margin-bottom:22px;}
 .row3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;max-width:1120px;}
 .row2{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;max-width:1120px;}
@@ -4622,8 +4626,8 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
   .num {{ font-size:40px; font-weight:800; color:{GOLD}; line-height:.9; }}
   .slabel {{ font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:{FAINT}; font-weight:700; margin-top:10px; }}
   .q {{ font-size:34px; font-weight:700; letter-spacing:-.02em; line-height:1.1; }}
-  .lead {{ font-style:normal; font-weight:400; color:{MUTED}; font-size:16px;
-           line-height:1.45; max-width:760px; margin:0 0 20px; }}
+  .lead {{ font-style:normal; font-weight:600; color:{MUTED}; font-size:16px;
+           line-height:1.25; max-width:760px; margin:0 0 20px; }}
   .cards {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }}
   .cards2 {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
   .card {{ border:1.5px solid {INK}; border-radius:4px; padding:16px 18px; break-inside:avoid; }}
