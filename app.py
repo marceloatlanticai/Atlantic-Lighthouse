@@ -339,6 +339,31 @@ st.markdown("""
 .stDeployButton, [data-testid="stAppDeployButton"], [data-testid="manage-app-button"] {
   display: none !important; visibility: hidden !important; }
 
+/* ── Community Cloud viewer badge (the coral origami mark, bottom-right) ──
+   On phones it lands right on top of the content, so hide it there.
+
+   Streamlit builds this badge with CSS-module class names that carry a build
+   hash — .viewerBadge_container__1QSob one release, ._profileContainer_gzau3_53
+   the next — so matching a fixed class name breaks on every upgrade. Hence
+   three overlapping strategies: the stable substrings, the test id, and the
+   badge's own link, which always points at streamlit.io. The app itself has no
+   streamlit.io links, so that last selector can't catch anything of ours.
+
+   Note: this only reaches the badge if it is drawn INSIDE the app document.
+   If Streamlit ever moves it to the hosting page, no CSS from in here can
+   touch it and the real fix is the move off Community Cloud. */
+@media (max-width: 820px) {
+  [class*="viewerBadge"],
+  [class*="_profileContainer_"],
+  [class*="_profilePreview_"],
+  [data-testid="stAppViewerBadge"],
+  .stAppHostedBadge,
+  a[href*="streamlit.io"],
+  div:has(> a[href*="streamlit.io"]) {
+    display: none !important; visibility: hidden !important;
+    opacity: 0 !important; pointer-events: none !important; }
+}
+
 /* ── Global CSS variable override — force light theme vars so Streamlit
    elements that inherit --background-color don't render dark-on-dark ── */
 :root {
