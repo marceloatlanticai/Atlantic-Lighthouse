@@ -4031,7 +4031,13 @@ _SV_CSS = """
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:__SANS__;background:__PAPER__;color:__INK__;
      -webkit-font-smoothing:antialiased;}
-.sec{padding:56px 60px 64px;}
+/* The section is full width so the blue background reaches both screen edges,
+   but its padding grows to keep the CONTENT on the Figma measure: 1120px, the
+   same 73px-margin column the 1280px mockup uses, centred. Below ~1240px the
+   max() falls back to the flat 60px inset, so narrow screens are unaffected.
+   Doing it with padding means no child needs its own max-width — that is why
+   the old `max-width:1120px` on .row2/.row3/.tbl/.map and friends is gone. */
+.sec{padding:56px max(60px, calc((100% - 1120px) / 2)) 64px;}
 .sec.blue{background:__BLUE__;}
 .sec.blue .q,.sec.blue .num,.sec.blue .slabel,.sec.blue .lead{color:#ffffff;}
 .shead{margin-bottom:22px;}
@@ -5051,7 +5057,10 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
    scrollbar, so the page gains a horizontal scroll; the shadow paints past the
    container without touching layout width. */
 .st-key-sv07 {{
-  background:{_blue}; padding:46px 60px 56px; margin:4.5rem 0 0;
+  background:{_blue}; margin:4.5rem 0 0;
+  /* same rule as .sec inside the component: band full width, content on the
+     1120px Figma measure, centred */
+  padding:46px max(60px, calc((100% - 1120px) / 2)) 56px;
   box-shadow:0 0 0 100vmax {_blue}; clip-path:inset(0 -100vmax);
 }}
 
