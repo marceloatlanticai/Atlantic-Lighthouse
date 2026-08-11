@@ -4034,7 +4034,7 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
 .sec{padding:56px 60px 64px;}
 .sec.blue{background:__BLUE__;}
 .sec.blue .q,.sec.blue .num,.sec.blue .slabel,.sec.blue .lead{color:#ffffff;}
-.shead{max-width:1120px;margin-bottom:22px;}
+.shead{margin-bottom:22px;}
 .slabel{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
         color:__INK__;font-weight:700;margin-bottom:14px;}
 .sec.blue .slabel{color:#ffffff;}
@@ -4050,8 +4050,8 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
    on a faked bold. 600 is a real cut, now that the full family is licensed. */
 .lead{font-size:17.5px;font-weight:600;font-style:normal;line-height:1.143;
       color:__BODY__;max-width:780px;margin-bottom:22px;}
-.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;max-width:1120px;}
-.row2{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;max-width:1120px;}
+.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+.row2{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;}
 .card{background:#ffffff;padding:22px 24px;}
 .sec:not(.blue) .card{background:__BLUE__;}
 .sec:not(.blue) .card .ctitle,
@@ -4066,6 +4066,10 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
 .sec:not(.blue) .card .mlabel,
 .sec:not(.blue) .card .stat{color:#ffffff;}
 .sec:not(.blue) .card .hair{border-top-color:rgba(255,255,255,.5);}
+/* .topen draws its rule with `currentColor`. Its children (.tlbl/.ttxt) are
+   whitened above, but .topen itself was not — so it inherited the card's ink
+   and the horizontal rule came out black while the vertical one was white. */
+.sec:not(.blue) .card .topen{color:#ffffff;}
 .clabel{font-size:10px;letter-spacing:.18em;text-transform:uppercase;
         color:__BLUE__;font-weight:600;margin-bottom:10px;}
 .ctitle{font-size:18px;font-weight:700;line-height:1.28;margin-bottom:9px;color:__INK__;}
@@ -4104,7 +4108,7 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .qc details .full a{color:#ffffff;text-decoration:underline;}
 /* network filter — the quote mix skews toward whichever platform was loudest,
    so let the reader isolate one and see what that network alone is saying */
-.qfilter{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 20px;max-width:1120px;}
+.qfilter{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 20px;}
 .qfilter button{font-family:inherit;font-size:10px;font-weight:700;letter-spacing:.12em;
   text-transform:uppercase;padding:7px 14px;border:1.5px solid __BLUE__;background:#ffffff;
   color:__BLUE__;cursor:pointer;border-radius:10.5px;transition:background .12s,color .12s;}
@@ -4114,7 +4118,7 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .qempty{display:none;font-size:13px;color:__BODY__;padding:18px 0;}
 .qempty.show{display:block;}
 /* the voices that didn't make the cut — compact, so the six keep their weight */
-.qmore{max-width:1120px;margin-top:26px;border-top:1.5px solid __INK__;padding-top:16px;}
+.qmore{margin-top:26px;border-top:1.5px solid __INK__;padding-top:16px;}
 .qmore>summary{list-style:none;cursor:pointer;font-size:10px;font-weight:700;
   letter-spacing:.14em;text-transform:uppercase;color:__BLUE__;
   display:flex;justify-content:space-between;align-items:center;}
@@ -4128,7 +4132,7 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .qmore .v a{color:__BLUE__;text-decoration:none;}
 .qeng a{color:#ffffff;text-decoration:none;}
 /* competitor + language tables */
-.tbl{max-width:1120px;}
+.tbl{}
 
 .trow{display:grid;gap:0;background:#ffffff;margin-bottom:14px;padding:26px 28px;}
 .trow > * + *{border-left:1px solid __INK__;padding-left:28px;margin-left:28px;}
@@ -4136,7 +4140,7 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .tlang{grid-template-columns:1fr 1.4fr 1.4fr;}
 /* 05 — three separate white cards with a chevron between them */
 .lrow{display:grid;grid-template-columns:1fr 34px 1.55fr 34px 1.55fr;
-      align-items:stretch;margin-bottom:16px;max-width:1120px;}
+      align-items:stretch;margin-bottom:16px;}
 .lcard{background:#ffffff;padding:18px 20px;}
 .chev{display:flex;align-items:center;justify-content:center;
       color:#ffffff;font-size:26px;font-weight:300;line-height:1;}
@@ -4155,7 +4159,7 @@ details .src a{color:__BLUE__;text-decoration:none;}
         color:__META__;font-weight:700;margin-bottom:6px;}
 .mbody{font-size:13px;line-height:1.5;color:__BODY__;}
 .strike{font-size:16px;font-weight:700;color:__RED__;text-decoration:line-through;}
-.map{background:#ffffff;padding:20px 24px;margin-top:22px;max-width:1120px;}
+.map{background:#ffffff;padding:20px 24px;margin-top:22px;}
 .sec:not(.blue) .map{border:1.5px solid __INK__;}
 .maptitle{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
           color:__RED__;font-weight:700;margin-bottom:12px;}
@@ -5033,6 +5037,74 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
   line-height:1.08; color:{_blue}; margin-bottom:18px; }}
 .sv-lead {{ color:{_ink} !important; font-style:normal !important; font-weight:400 !important;
   font-size:15px !important; }}
+
+/* ══ Section 07 · Test the currents ═══════════════════════════════════════
+   Built from Figma "Lighthouse-Brief-Mockup 4": a full-bleed blue band, the
+   headline at 70px/60px in white, a 2px white rule, a white YOUR HUNCH chip
+   with blue type, the brief in white, then a white panel holding the textarea.
+
+   The band is hooked with st.container(key="sv07") → Streamlit emits a stable
+   `.st-key-sv07` class. This replaces the old :has() selector, which guessed at
+   a DOM nesting Streamlit does not guarantee and silently stopped matching.
+
+   Bleeding: box-shadow + clip-path, NOT width:100vw. 100vw counts the
+   scrollbar, so the page gains a horizontal scroll; the shadow paints past the
+   container without touching layout width. */
+.st-key-sv07 {{
+  background:{_blue}; padding:46px 60px 56px; margin:4.5rem 0 0;
+  box-shadow:0 0 0 100vmax {_blue}; clip-path:inset(0 -100vmax);
+}}
+
+/* ══ Full-bleed for the two HTML components ═══════════════════════════════
+   In Figma only four rectangles cross the frame edge — sections 01, 03, 05
+   and 07 — and those live inside the components. The components sit in
+   .block-container, which carries 0.5rem of side padding, leaving an 8px white
+   sliver down each edge of the blue.
+
+   Cancelling exactly that padding is safer than width:100vw. 100vw counts the
+   scrollbar (horizontal scroll) and ignores the sidebar (the band would slide
+   under it). A negative margin of the known padding does neither. */
+.st-key-svfullA, .st-key-svfullB {{
+  margin-left:-0.5rem !important; margin-right:-0.5rem !important;
+  width:calc(100% + 1rem) !important;
+}}
+.sv07-q {{ font-family:{_sans}; font-size:70px; line-height:60px; font-weight:700;
+  letter-spacing:-.022em; color:#ffffff; margin:0 0 26px; }}
+.sv07-rule {{ border-top:2px solid #ffffff; margin:0 0 32px; }}
+.sv07-chip {{ display:inline-block; background:#ffffff; color:{_blue};
+  font-family:{_sans}; font-size:20px; font-weight:700; letter-spacing:.10em;
+  text-transform:uppercase; padding:5px 11px; margin:0 0 14px; }}
+.sv07-sub {{ font-family:{_sans}; font-size:12px; line-height:13px; color:#ffffff;
+  max-width:467px; margin:0 0 18px; }}
+/* the white panel around the textarea */
+.st-key-sv07panel {{ background:#ffffff; padding:19px; }}
+/* black hairline on the field, per the mockup */
+.st-key-sv07panel [data-testid="stTextArea"] textarea {{
+  border:1.5px solid {_ink} !important; border-radius:0 !important;
+  font-size:12.5px !important; color:{_ink} !important; }}
+.st-key-sv07panel [data-testid="stTextArea"] textarea::placeholder {{ color:#666666 !important; }}
+/* white type for everything the band renders through Streamlit */
+.st-key-sv07 .sv07-reading, .st-key-sv07 .sv07-reading b {{ color:#ffffff; }}
+.sv07-reading {{ font-family:{_sans}; font-size:12.5px; line-height:1.5;
+  color:#ffffff; margin:0 0 7px; }}
+.sv07-verdict {{ font-family:{_sans}; font-size:17.5px; font-weight:600; line-height:1.143;
+  color:#ffffff; margin:26px 0 14px; max-width:780px; }}
+.sv07-await {{ font-family:{_sans}; font-size:12.5px; line-height:1.5;
+  color:rgba(255,255,255,.72); margin:24px 0 0; }}
+.sv07-reading a {{ color:#ffffff; }}
+/* The primary button is blue — on the blue band it would vanish. Invert it. */
+.st-key-sv07 button[kind="primary"], .st-key-sv07 [data-testid="stBaseButton-primary"] {{
+  background-color:#ffffff !important; border-color:#ffffff !important; color:{_blue} !important; }}
+.st-key-sv07 button[kind="primary"] p, .st-key-sv07 button[kind="primary"] div,
+.st-key-sv07 button[kind="primary"] span,
+.st-key-sv07 [data-testid="stBaseButton-primary"] p,
+.st-key-sv07 [data-testid="stBaseButton-primary"] div,
+.st-key-sv07 [data-testid="stBaseButton-primary"] span {{
+  color:{_blue} !important; -webkit-text-fill-color:{_blue} !important; }}
+@media (max-width: 820px) {{
+  .sv07-q {{ font-size:40px; line-height:36px; }}
+  .st-key-sv07 {{ padding:30px 20px; }}
+}}
 </style>
 <div class="sv-masthead">
   <div class="sv-wm">{_sv_wordmark()}</div>
@@ -5155,7 +5227,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     if _res:
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
                                      ("01", "02", "03", "04", "05", "06"), "screen")
-        st.components.v1.html(_html_a, height=_h_a, scrolling=False)
+        with st.container(key="svfullA"):
+            st.components.v1.html(_html_a, height=_h_a, scrolling=False)
     else:
         st.markdown(_sv_header("01", "The Currents", f"What is trending in {_disp_cat}"),
                     unsafe_allow_html=True)
@@ -5163,30 +5236,31 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     unsafe_allow_html=True)
 
 
-    # ── Section 07 — The Lighthouse Test ─────────────────────────
-    st.markdown(_sv_header("07", "The Lighthouse Test", "TEST THE CURRENTS"),
-                unsafe_allow_html=True)
-    # Two side-by-side boxes: left = your hunch (input) · right = the reading
-    _tcol1, _tcol2 = st.columns(2, gap="large")
-    with _tcol1:
-        with st.container(border=True):
-            st.markdown('<div class="sv-boxlbl" style="margin-bottom:10px;">Your hunch</div>'
-                        '<div class="sv-comp-detail" style="margin-bottom:14px;">Describe a potential '
-                        'countercurrent move. The Lighthouse weighs it against the currents above and tells '
-                        'you if it truly cuts against the grain — or if it\'s swimming with the school.</div>',
-                        unsafe_allow_html=True)
+    # ── Section 07 — Test the currents ───────────────────────────
+    # One full-width blue band, matching Figma. The old two-column layout
+    # ("Your hunch" | "Lighthouse reading" side by side) is gone: the mockup
+    # runs the field full width and puts the reading underneath.
+    with st.container(key="sv07"):
+        st.markdown(
+            '<div class="sv07-q">TEST THE CURRENTS</div>'
+            '<div class="sv07-rule"></div>'
+            '<div><span class="sv07-chip">Your hunch</span></div>'
+            '<div class="sv07-sub">Describe a potential countercurrent move. The Lighthouse '
+            'weighs it against the currents above and tells you if it truly cuts against the '
+            'grain — or if it\'s swimming with the school.</div>',
+            unsafe_allow_html=True)
+        with st.container(key="sv07panel"):
             _hunch = st.text_area("Hunch", label_visibility="collapsed", height=130,
                                   placeholder=f"e.g. {_active} positions as the only sparkling water that says "
                                               f"nothing about health — just water, from a specific place, in a "
                                               f"specific glass, at a specific moment.",
                                   key="sv_hunch")
+        # Button centred at roughly the mockup's 287px, via a spacer column
+        _b1, _b2, _b3 = st.columns([1, 0.9, 1])
+        with _b2:
             _test = st.button("Test against the currents", use_container_width=True,
                               type="primary", key="sv_test")
-    with _tcol2:
-        with st.container(border=True):
-            st.markdown('<div class="sv-boxlbl" style="margin-bottom:12px;">Lighthouse reading</div>',
-                        unsafe_allow_html=True)
-            _reading_slot = st.empty()
+        _reading_slot = st.empty()
 
     if _test and _hunch.strip():
         if not _sigs:
@@ -5218,31 +5292,33 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # Render the reading into the right-hand box
     _hres = st.session_state.get("sv_hunch_result")
     with _reading_slot.container():
+        # On the blue band everything is white. Supports/Challenges are told
+        # apart by the ✓ / ✕ marker, not by colour — blue-on-blue was the old
+        # cue and it disappears here.
         if not _hres:
-            st.markdown('<div class="sv-comp-detail" style="font-style:italic;">Awaiting a hypothesis. '
+            st.markdown('<div class="sv07-await">Awaiting a hypothesis. '
                         'The lighthouse can only judge a direction once you point at one.</div>',
                         unsafe_allow_html=True)
         else:
-            st.markdown(f'<div class="sv-comp-move" style="margin-bottom:14px;">{e(_hres.get("verdict",""))}</div>',
+            st.markdown(f'<div class="sv07-verdict">{e(_hres.get("verdict",""))}</div>',
                         unsafe_allow_html=True)
             for _it in _hres.get("supports", [])[:4]:
                 _s = _sig(_it.get("index"))
                 _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
-                st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:#0000ff;'
-                            f'line-height:1.5;margin-bottom:7px;"><b>✓ Supports</b> · {e(_it.get("reason",""))}{_lk}</div>',
-                            unsafe_allow_html=True)
+                st.markdown(f'<div class="sv07-reading"><b>✓ Supports</b> · '
+                            f'{e(_it.get("reason",""))}{_lk}</div>', unsafe_allow_html=True)
             for _it in _hres.get("challenges", [])[:4]:
                 _s = _sig(_it.get("index"))
                 _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
-                st.markdown(f'<div style="font-family:{_sans};font-size:12.5px;color:{_ink};'
-                            f'line-height:1.5;margin-bottom:7px;"><b>✗ Challenges</b> · {e(_it.get("reason",""))}{_lk}</div>',
-                            unsafe_allow_html=True)
+                st.markdown(f'<div class="sv07-reading"><b>✕ Challenges</b> · '
+                            f'{e(_it.get("reason",""))}{_lk}</div>', unsafe_allow_html=True)
 
 
     # ── Section 08 — rendered as an HTML component (blue block) ───────────
     if _res:
         _html_b, _h_b = _sv_sections(_res, _sigs, _disp_cat, ("08",), "screen")
-        st.components.v1.html(_html_b, height=_h_b, scrolling=False)
+        with st.container(key="svfullB"):
+            st.components.v1.html(_html_b, height=_h_b, scrolling=False)
 
 
     # ── Export — download the full brief as a print-ready PDF ──────────────
@@ -5329,7 +5405,11 @@ if st.query_params.get("view") == "overview":
   [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"],
   #lh-topnav { display:none !important; }
   .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], .main, section.main { background:#ffffff !important; }
-  .block-container { max-width:1120px !important; padding-top:1.4rem !important; }
+  /* Same measure as the in-app tab. This used to cap at 1120px, which boxed
+     the full-bleed blue sections in and left wide white margins — the public
+     link and the internal page disagreed about the design. */
+  .block-container { max-width:100% !important; padding-top:1.4rem !important;
+                     padding-left:0.5rem !important; padding-right:0.5rem !important; }
   /* no sticky-nav offset needed on the clean brief */
   [id^="lh-sec-"] { scroll-margin-top:0 !important; }
 </style>
