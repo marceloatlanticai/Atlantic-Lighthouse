@@ -4406,23 +4406,33 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         fit = """
 <script>
 (function () {
+  // Measure a WRAPPER DIV, never document.documentElement. <html> can report
+  // the iframe viewport rather than its content, which makes the frame grow to
+  // fit long copy but never shrink back — so an over-generous Python estimate
+  // stayed as a block of dead white space above the next section. A plain div
+  // always sizes to its content, so this shrinks as well as grows.
+  var root = document.getElementById("lh-root");
   function fit() {
-    var h = Math.ceil(document.documentElement.getBoundingClientRect().height) + 8;
+    if (!root) return;
+    var h = Math.ceil(root.getBoundingClientRect().height) + 8;
     var f = window.frameElement;
     if (!f) return;
     f.style.height = h + "px";
     f.style.minHeight = h + "px";
     f.setAttribute("height", h);
-    // Only the component's OWN wrapper may be released — walking further up
-    // reaches Streamlit's app shell, whose height drives page scrolling, and
-    // clearing it freezes the whole page.
+    // Streamlit reserves the estimated height on the component's own wrapper,
+    // so releasing the iframe alone is not enough. Walk at most two levels and
+    // only through nodes that identify themselves as component wrappers —
+    // going further reaches the app shell, whose height drives page scrolling,
+    // and clearing that froze the whole page once before.
     var p = f.parentElement;
-    if (p && p.style) {
+    for (var i = 0; i < 2 && p && p.style; i++) {
       var id = (p.getAttribute && p.getAttribute("data-testid")) || "";
       var cn = (typeof p.className === "string" ? p.className : "");
-      if (/stElementContainer|stCustomComponent|stIFrame|element-container/i.test(id + " " + cn)) {
-        p.style.height = "auto";
-      }
+      if (!/stElementContainer|stCustomComponent|stIFrame|element-container/i.test(id + " " + cn)) break;
+      p.style.height = "auto";
+      p.style.minHeight = "0";
+      p = p.parentElement;
     }
   }
   // Network filter for section 02. Runs inside the document, so switching is
@@ -4452,16 +4462,17 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
   }
 
   fit();
-  new ResizeObserver(fit).observe(document.documentElement);
+  if (root) new ResizeObserver(fit).observe(root);
   // fonts and <details> toggles both change the height
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
   document.addEventListener("toggle", fit, true);
   [80, 300, 900].forEach(function (t) { setTimeout(fit, t); });
 })();
 </script>"""
+    # #lh-root is what the auto-fit script measures — see the comment there.
     html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
-            f'<style>{_sv_css(mode)}</style></head><body>'
-            + "".join(H) + fit + '</body></html>')
+            f'<style>{_sv_css(mode)}</style></head><body><div id="lh-root">'
+            + "".join(H) + '</div>' + fit + '</body></html>')
     return html, h
 
 
