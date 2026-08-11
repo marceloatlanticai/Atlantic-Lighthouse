@@ -49,6 +49,20 @@ USERS = {
     "Stacia":  os.environ.get("PASS_STACIA",   "Stacia123"),
 }
 
+# ── Scanning kill switch ───────────────────────────────────────────────────────
+# The Apify credits are exhausted while the paid plan is being arranged. With
+# this ON the Run Lighthouse button is disabled, so nobody burns credits we do
+# not have. Everything else keeps working: the archive, every saved brief, the
+# export and the public link.
+#
+# To switch scanning back on, either flip the default below to "0" or — better,
+# no code change — add this line to the Streamlit secrets:  SCAN_PAUSED = "0"
+SCAN_PAUSED = os.environ.get("SCAN_PAUSED", "1").strip().lower() not in ("0", "false", "no", "off", "")
+SCAN_PAUSED_MSG = os.environ.get(
+    "SCAN_PAUSED_MSG",
+    "The Apify allowance for this cycle is used up and the paid plan is being "
+    "arranged. Saved briefs, the archive and the export all still work.")
+
 # User avatar colors
 USER_COLORS = {
     "Marcelo": "#0a7d8c",
@@ -4868,9 +4882,33 @@ def render_simple_view():
   color:{_faint}; font-weight:700; margin-bottom:5px; }}
 .sv-starter-txt {{ font-family:{_sans}; font-size:13px; color:{_muted}; line-height:1.5; margin-bottom:13px; }}
 .sv-empty {{ text-align:center; padding:2.2rem; color:{_faint}; font-family:{_sans}; font-size:14px; }}
-/* Blue buttons (single accent) */
+/* Blue buttons (single accent).
+   Streamlit wraps the label in its own <p>/<div>/<span>, and those inherit a
+   colour of their own — setting `color` on the <button> alone leaves the text
+   dark. The label elements have to be targeted explicitly. */
 button[kind="primary"], [data-testid="stBaseButton-primary"], [data-testid="baseButton-primary"] {{
   background-color:{_gold} !important; border-color:{_gold} !important; color:#ffffff !important; }}
+button[kind="primary"] p, button[kind="primary"] div, button[kind="primary"] span,
+[data-testid="stBaseButton-primary"] p, [data-testid="stBaseButton-primary"] div,
+[data-testid="stBaseButton-primary"] span,
+[data-testid="baseButton-primary"] p, [data-testid="baseButton-primary"] div,
+[data-testid="baseButton-primary"] span {{
+  color:#ffffff !important; -webkit-text-fill-color:#ffffff !important; }}
+/* Paused: the button must read as unavailable, not just dimmed */
+button[kind="primary"]:disabled, [data-testid="stBaseButton-primary"]:disabled,
+[data-testid="baseButton-primary"]:disabled {{
+  background-color:#f2f2f2 !important; border-color:#cccccc !important;
+  color:{_faint} !important; opacity:1 !important; cursor:not-allowed !important; }}
+button[kind="primary"]:disabled p, button[kind="primary"]:disabled div,
+button[kind="primary"]:disabled span,
+[data-testid="stBaseButton-primary"]:disabled p,
+[data-testid="stBaseButton-primary"]:disabled div,
+[data-testid="stBaseButton-primary"]:disabled span {{
+  color:{_faint} !important; -webkit-text-fill-color:{_faint} !important; }}
+/* Credits notice — red is the reserved negative marker in this design */
+.sv-paused {{ font-family:{_sans}; font-size:12.5px; line-height:1.55; color:{_muted};
+  background:#ffffff; border-left:3px solid {_red}; padding:9px 13px; margin:2px 0 16px; }}
+.sv-paused b {{ color:{_ink}; font-weight:700; }}
 [data-testid="stDownloadButton"] button, .stDownloadButton button {{
   background-color:{_gold} !important; border-color:{_gold} !important; color:#ffffff !important; }}
 /* Inputs: white field, black text/border on the grey ground */
@@ -5017,8 +5055,18 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                  label_visibility="collapsed", key="sv_prod")
     with _ic4:
         st.markdown('<div class="sv-input-lbl">&nbsp;</div>', unsafe_allow_html=True)
-        _run = st.button("Run Lighthouse", use_container_width=True, type="primary", key="sv_scan")
-    if _run:
+        # Label stays put — the column is narrow and any suffix wraps to three
+        # lines. The grey disabled state plus the notice below carry the message.
+        _run = st.button("Run Lighthouse", use_container_width=True, type="primary",
+                         key="sv_scan", disabled=SCAN_PAUSED,
+                         help=("Paused — no credits. " + SCAN_PAUSED_MSG) if SCAN_PAUSED else None)
+    if SCAN_PAUSED:
+        st.markdown(
+            f'<div class="sv-paused"><b>Scanning paused — no credits.</b> {e(SCAN_PAUSED_MSG)}</div>',
+            unsafe_allow_html=True)
+    # `disabled` already blocks the click; the second guard is belt and braces
+    # so no future rerun path can fire a scan while the switch is on.
+    if _run and not SCAN_PAUSED:
         _search = " ".join(dict.fromkeys(f"{_in_cat} {_in_prod}".split())).strip() or _prof["search"]
         with st.spinner("🗼 Scanning the currents…"):
             _signals = _sv_gather(_search, _active)
@@ -5375,6 +5423,13 @@ with _fd_col_in:
 with _fd_col_btn:
     _fd_run = st.button("Search →", key="fd_run", use_container_width=True, type="primary")
 
+if SCAN_PAUSED:
+    # The Feed still runs — the free sources cost nothing. Only the three Apify
+    # ones are skipped, and saying so beats them silently returning zero.
+    st.warning("⚠️ **No Apify credits.** TikTok, Instagram and X/Twitter are "
+               "skipped for now. Reddit, YouTube, RSS, GDELT, Hacker News and "
+               "Web search still work normally.")
+
 # ── Feed: source selector ───────────────────────────────────────────────────
 _fd_src_options = ["Reddit", "YouTube", "RSS", "GDELT", "Hacker News", "TikTok", "Instagram", "X/Twitter", "Web (Firecrawl)"]
 with st.expander("Sources", expanded=False):
@@ -5473,7 +5528,7 @@ if _fd_run and _fd_query.strip():
                                         "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
                                         "source": "youtube", "url": s.url, "timestamp": s.timestamp})
 
-        if "TikTok" in _fd_sources_sel and _fd_apify_key:
+        if "TikTok" in _fd_sources_sel and _fd_apify_key and not SCAN_PAUSED:
             _fd_set_status(f"[TikTok] Searching '{_fd_search}' via Apify")
             for s in scrape_tiktok(_fd_search, api_token=_fd_apify_key, n=12,
                                    fetch_comments=False, callback=_fd_cb):
@@ -5481,14 +5536,14 @@ if _fd_run and _fd_query.strip():
                                 "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
                                 "source": "tiktok", "url": s.url, "timestamp": s.timestamp})
 
-        if "Instagram" in _fd_sources_sel and _fd_apify_key:
+        if "Instagram" in _fd_sources_sel and _fd_apify_key and not SCAN_PAUSED:
             _fd_set_status(f"[Instagram] Searching '{_fd_search}' via Apify")
             for s in scrape_instagram(_fd_search, api_token=_fd_apify_key, n=12, callback=_fd_cb):
                 _fd_raw.append({"title": s.title, "content": s.content,
                                 "thumbnail": (s.raw_meta or {}).get("thumbnail", ""),
                                 "source": "instagram", "url": s.url, "timestamp": s.timestamp})
 
-        if "X/Twitter" in _fd_sources_sel and _fd_apify_key:
+        if "X/Twitter" in _fd_sources_sel and _fd_apify_key and not SCAN_PAUSED:
             # Capture every Twitter callback line so we can surface a persistent
             # diagnostic when 0 results come back (the status spinner clears).
             _fd_twitter_log: list[str] = []
