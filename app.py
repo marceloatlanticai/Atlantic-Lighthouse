@@ -4510,17 +4510,23 @@ def _sv_font_css() -> str:
     """
     import base64, glob, os as _os
     faces, found = "", False
-    weights = {"Regular": 400, "Book": 400, "Medium": 500, "SemiBold": 600,
-               "Semibold": 600, "Bold": 700, "Black": 800, "Ultrabold": 800}
+    # Keys are lower-cased before lookup, so Pangram's "UltraBold" and a
+    # hand-typed "Ultrabold" both resolve. Getting this wrong silently drops
+    # the face and the browser fakes the weight instead.
+    weights = {"ultralight": 200, "thin": 200, "light": 300, "regular": 400,
+               "book": 400, "medium": 500, "semibold": 600, "demibold": 600,
+               "bold": 700, "ultrabold": 800, "extrabold": 800, "black": 900}
     # woff2 first — if both formats are present the smaller one wins
     fmt = {".woff2": ("font/woff2", "woff2"), ".woff": ("font/woff", "woff"),
            ".otf": ("font/otf", "opentype"), ".ttf": ("font/ttf", "truetype")}
-    seen_styles = set()
+    seen_weights = set()
     for ext in (".woff2", ".woff", ".otf", ".ttf"):
         for path in sorted(glob.glob("fonts/Telegraf-*" + ext)):
             style = _os.path.basename(path).split("-", 1)[1].rsplit(".", 1)[0]
-            w = weights.get(style)
-            if not w or style in seen_styles:
+            w = weights.get(style.strip().lower())
+            # Dedupe on the WEIGHT, not the filename: two files claiming 700
+            # would otherwise both be embedded and the second would win.
+            if not w or w in seen_weights:
                 continue
             try:
                 b64 = base64.b64encode(open(path, "rb").read()).decode()
@@ -4530,7 +4536,7 @@ def _sv_font_css() -> str:
             faces += (f"@font-face{{font-family:'Telegraf';font-style:normal;font-weight:{w};"
                       f"font-display:swap;src:url(data:{mime};base64,{b64}) "
                       f"format('{fmt_name}');}}\n")
-            seen_styles.add(style)
+            seen_weights.add(w)
             found = True
     if found:
         return faces
@@ -4576,7 +4582,10 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
     # the brief prints white with blue accents; red stays for negative markers.
     INK, GOLD, PAPER, CARD, MUTED, FAINT, RED = ("#000000", "#0000ff", "#ffffff",
                                                  "#ffffff", "#222222", "#666666", "#ff383c")
-    SANS = "'Telegraf', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+    # Space Grotesk sits between Telegraf and Helvetica: if the licensed files
+    # are missing the layout still holds its geometric character.
+    SANS = ("'Telegraf', 'Space Grotesk', 'Helvetica Neue', Helvetica, "
+            "Arial, sans-serif")
 
     def _sec(num, label, q):
         return (f'<div class="sec"><div class="grid"><div><div class="num">{num}</div>'
@@ -4745,7 +4754,7 @@ def render_simple_view():
     # NOTE: single quotes on purpose. This value is interpolated into inline
     # style="..." attributes as well as CSS blocks — double quotes would close
     # the HTML attribute early and silently drop every following declaration.
-    _sans  = "'Telegraf', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+    _sans  = "'Telegraf', 'Space Grotesk', 'Helvetica Neue', Helvetica, Arial, sans-serif"
     _ink   = "#000000"   # black text
     _gold  = "#0000ff"   # blue — accent AND section-block background
     _blue  = "#0000ff"
