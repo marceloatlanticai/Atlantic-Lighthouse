@@ -5543,16 +5543,11 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             st.session_state["sv_report_id"] = _req_id
             st.session_state.pop("sv_hunch_result", None)
 
-    if _res is None and _is_guest:
-        _loaded = _sv_load_brief(_active)
-        if _loaded and _loaded.get("result"):
-            _res      = _loaded["result"]
-            _sigs     = _loaded["signals"]
-            _saved_at = _loaded.get("saved_at", "")
-            st.session_state["sv_result"]   = _res
-            st.session_state["sv_signals"]  = _sigs
-            st.session_state["sv_client"]   = _active
-            st.session_state["sv_saved_at"] = _saved_at
+    # The bare public link used to auto-load the last saved brief. It no longer
+    # does: EVERY arrival gets a clean sheet, so nobody walks into somebody
+    # else's run and mistakes it for their own. Sharing a specific brief still
+    # works — the Archive's "Open ↗" builds ?report=<id>, handled just above,
+    # and that link keeps working forever.
     if _saved_at:
         st.markdown(f'<div style="text-align:center;font-family:{_sans};font-size:10.5px;'
                     f'color:{_faint};letter-spacing:.06em;margin-bottom:6px;">'
@@ -5580,98 +5575,103 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         with st.container(key="svfullA"):
             _sv_embed(_html_a, _h_a)
     else:
-        st.markdown(_sv_header("01", "The Currents", f"What is trending in {_disp_cat}"),
-                    unsafe_allow_html=True)
-        st.markdown('<div class="sv-empty">Press ⚡ Run Lighthouse to fill this page.</div>',
-                    unsafe_allow_html=True)
+        # Empty state: no fake section header, no scaffolding. Whoever opens the
+        # page gets a clean sheet and one instruction — never someone else's run.
+        st.markdown('<div class="sv-empty">Set the brand, category and product '
+                    'above, then press Run Lighthouse.</div>', unsafe_allow_html=True)
 
 
     # ── Section 07 — Test the currents ───────────────────────────
     # One full-width blue band, matching Figma. The old two-column layout
     # ("Your hunch" | "Lighthouse reading" side by side) is gone: the mockup
     # runs the field full width and puts the reading underneath.
-    with st.container(key="sv07"):
-        st.markdown(
-            '<div class="sv07-q">TEST THE CURRENTS</div>'
-            '<div class="sv07-rule"></div>'
-            '<div><span class="sv07-chip">Your hunch</span></div>'
-            '<div class="sv07-sub">Describe a potential countercurrent move. The Lighthouse '
-            'weighs it against the currents above and tells you if it truly cuts against the '
-            'grain — or if it\'s swimming with the school.</div>',
-            unsafe_allow_html=True)
-        with st.container(key="sv07panel"):
-            _hunch = st.text_area("Hunch", label_visibility="collapsed", height=130,
-                                  placeholder=f"e.g. {_active} positions as the only sparkling water that says "
-                                              f"nothing about health — just water, from a specific place, in a "
-                                              f"specific glass, at a specific moment.",
-                                  key="sv_hunch")
-        # Button centred at roughly the mockup's 287px, via a spacer column
-        _b1, _b2, _b3 = st.columns([1, 0.9, 1])
-        with _b2:
-            _test = st.button("Test against the currents", use_container_width=True,
-                              type="primary", key="sv_test")
-        _reading_slot = st.empty()
+    #
+    # Only rendered once there is a brief: the hypothesis is tested AGAINST the
+    # signals from a run, so on an empty page the field would take a hunch it
+    # has nothing to weigh.
+    if _res:
+        with st.container(key="sv07"):
+            st.markdown(
+                '<div class="sv07-q">TEST THE CURRENTS</div>'
+                '<div class="sv07-rule"></div>'
+                '<div><span class="sv07-chip">Your hunch</span></div>'
+                '<div class="sv07-sub">Describe a potential countercurrent move. The Lighthouse '
+                'weighs it against the currents above and tells you if it truly cuts against the '
+                'grain — or if it\'s swimming with the school.</div>',
+                unsafe_allow_html=True)
+            with st.container(key="sv07panel"):
+                _hunch = st.text_area("Hunch", label_visibility="collapsed", height=130,
+                                      placeholder=f"e.g. {_active} positions as the only sparkling water that says "
+                                                  f"nothing about health — just water, from a specific place, in a "
+                                                  f"specific glass, at a specific moment.",
+                                      key="sv_hunch")
+            # Button centred at roughly the mockup's 287px, via a spacer column
+            _b1, _b2, _b3 = st.columns([1, 0.9, 1])
+            with _b2:
+                _test = st.button("Test against the currents", use_container_width=True,
+                                  type="primary", key="sv_test")
+            _reading_slot = st.empty()
 
-    if _test and _hunch.strip():
-        if not _sigs:
-            st.warning("Run ⚡ Scan the currents first — the hypothesis is tested against those signals.")
-        else:
-            _api = os.environ.get("ANTHROPIC_API_KEY", "")
-            if _api:
-                import anthropic as _ant
-                _cl = _ant.Anthropic(api_key=_api)
-                _batch = _sigs[:40]
-                _stext = "\n\n".join(f"[{i}] [{s['source']}] {s['title'][:100]}\n{s['content'][:200]}"
-                                     for i, s in enumerate(_batch))
-                _hprompt = (f'Hypothesis: "{_hunch}"\n\nSignals:\n{_stext}\n\n'
-                            'Classify each relevant signal as SUPPORTS or CHALLENGES the hypothesis '
-                            '(skip irrelevant ones). Respond ONLY with JSON:\n'
-                            '{"verdict": "one sentence overall read", '
-                            '"supports": [{"index": 0, "reason": "short reason"}], '
-                            '"challenges": [{"index": 4, "reason": "short reason"}]}')
-                with st.spinner("Testing against the signals…"):
-                    try:
-                        # Same trap as the main synthesis: 1200 was sized for
-                        # Haiku's terser output and Sonnet runs past it, leaving
-                        # JSON cut mid-string. json.loads() on that raises
-                        # "Expecting ',' delimiter", which is a parser message,
-                        # not something a user can act on. Bigger ceiling, and
-                        # _extract_json instead of a raw parse so a slightly
-                        # short response is repaired rather than thrown away.
-                        _hr = _cl.messages.create(model=CLAUDE_MODEL, max_tokens=4000,
-                                                  messages=[{"role": "user", "content": _hprompt}])
-                        _hraw = _msg_text(_hr)
-                        _hjson = _extract_json(_hraw)
-                        if not _hjson.get("verdict"):
-                            raise ValueError("no verdict in the response")
-                        st.session_state["sv_hunch_result"] = _hjson
-                    except Exception as _hexc:
-                        st.error(f"The test didn't come back cleanly — press "
-                                 f"'Test against the currents' again. ({_hexc})")
+        if _test and _hunch.strip():
+            if not _sigs:
+                st.warning("Run ⚡ Scan the currents first — the hypothesis is tested against those signals.")
+            else:
+                _api = os.environ.get("ANTHROPIC_API_KEY", "")
+                if _api:
+                    import anthropic as _ant
+                    _cl = _ant.Anthropic(api_key=_api)
+                    _batch = _sigs[:40]
+                    _stext = "\n\n".join(f"[{i}] [{s['source']}] {s['title'][:100]}\n{s['content'][:200]}"
+                                         for i, s in enumerate(_batch))
+                    _hprompt = (f'Hypothesis: "{_hunch}"\n\nSignals:\n{_stext}\n\n'
+                                'Classify each relevant signal as SUPPORTS or CHALLENGES the hypothesis '
+                                '(skip irrelevant ones). Respond ONLY with JSON:\n'
+                                '{"verdict": "one sentence overall read", '
+                                '"supports": [{"index": 0, "reason": "short reason"}], '
+                                '"challenges": [{"index": 4, "reason": "short reason"}]}')
+                    with st.spinner("Testing against the signals…"):
+                        try:
+                            # Same trap as the main synthesis: 1200 was sized for
+                            # Haiku's terser output and Sonnet runs past it, leaving
+                            # JSON cut mid-string. json.loads() on that raises
+                            # "Expecting ',' delimiter", which is a parser message,
+                            # not something a user can act on. Bigger ceiling, and
+                            # _extract_json instead of a raw parse so a slightly
+                            # short response is repaired rather than thrown away.
+                            _hr = _cl.messages.create(model=CLAUDE_MODEL, max_tokens=4000,
+                                                      messages=[{"role": "user", "content": _hprompt}])
+                            _hraw = _msg_text(_hr)
+                            _hjson = _extract_json(_hraw)
+                            if not _hjson.get("verdict"):
+                                raise ValueError("no verdict in the response")
+                            st.session_state["sv_hunch_result"] = _hjson
+                        except Exception as _hexc:
+                            st.error(f"The test didn't come back cleanly — press "
+                                     f"'Test against the currents' again. ({_hexc})")
 
-    # Render the reading into the right-hand box
-    _hres = st.session_state.get("sv_hunch_result")
-    with _reading_slot.container():
-        # On the blue band everything is white. Supports/Challenges are told
-        # apart by the ✓ / ✕ marker, not by colour — blue-on-blue was the old
-        # cue and it disappears here.
-        if not _hres:
-            st.markdown('<div class="sv07-await">Awaiting a hypothesis. '
-                        'The lighthouse can only judge a direction once you point at one.</div>',
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="sv07-verdict">{e(_hres.get("verdict",""))}</div>',
-                        unsafe_allow_html=True)
-            for _it in _hres.get("supports", [])[:4]:
-                _s = _sig(_it.get("index"))
-                _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
-                st.markdown(f'<div class="sv07-reading"><b>✓ Supports</b> · '
-                            f'{e(_it.get("reason",""))}{_lk}</div>', unsafe_allow_html=True)
-            for _it in _hres.get("challenges", [])[:4]:
-                _s = _sig(_it.get("index"))
-                _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
-                st.markdown(f'<div class="sv07-reading"><b>✕ Challenges</b> · '
-                            f'{e(_it.get("reason",""))}{_lk}</div>', unsafe_allow_html=True)
+        # Render the reading into the right-hand box
+        _hres = st.session_state.get("sv_hunch_result")
+        with _reading_slot.container():
+            # On the blue band everything is white. Supports/Challenges are told
+            # apart by the ✓ / ✕ marker, not by colour — blue-on-blue was the old
+            # cue and it disappears here.
+            if not _hres:
+                st.markdown('<div class="sv07-await">Awaiting a hypothesis. '
+                            'The lighthouse can only judge a direction once you point at one.</div>',
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="sv07-verdict">{e(_hres.get("verdict",""))}</div>',
+                            unsafe_allow_html=True)
+                for _it in _hres.get("supports", [])[:4]:
+                    _s = _sig(_it.get("index"))
+                    _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
+                    st.markdown(f'<div class="sv07-reading"><b>✓ Supports</b> · '
+                                f'{e(_it.get("reason",""))}{_lk}</div>', unsafe_allow_html=True)
+                for _it in _hres.get("challenges", [])[:4]:
+                    _s = _sig(_it.get("index"))
+                    _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
+                    st.markdown(f'<div class="sv07-reading"><b>✕ Challenges</b> · '
+                                f'{e(_it.get("reason",""))}{_lk}</div>', unsafe_allow_html=True)
 
 
     # ── Section 08 — rendered as an HTML component (blue block) ───────────
