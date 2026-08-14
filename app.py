@@ -284,7 +284,7 @@ Return ONLY valid JSON (no markdown fences):
   "source_label": "publication or domain name"
 }}"""
     msg = _ant_client.messages.create(
-        model=CLAUDE_MODEL,
+        model=CLAUDE_MODEL_FAST,
         max_tokens=512,
         temperature=0.3,
         system="Extract webpage content as a structured current. Return only raw JSON.",
@@ -1656,6 +1656,12 @@ def save_dispatch(content: dict, topic: str):
 #   Staging  → "claude-sonnet-4-6"           (~$0.042/call, ~120 calls per $5)
 #   Client   → "claude-opus-4-5"             (~$0.070/call,  ~70 calls per $5)
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+# The cheap model, for the mechanical calls: extracting a page into fields,
+# classifying signals, one-line synopses. These are not the product — the brief
+# is — and paying Sonnet rates to turn a webpage into four keys buys nothing.
+# Override with CLAUDE_MODEL_FAST in the secrets if you ever want them matched.
+CLAUDE_MODEL_FAST = os.environ.get("CLAUDE_MODEL_FAST", "claude-haiku-4-5-20251001")
 
 # ── Claude generation ──────────────────────────────────────────────────────────
 
@@ -4102,7 +4108,24 @@ Rules:
 - signal_index / signal_indexes must reference real indexes from the list above.
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
-- Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly." """
+- Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly."
+
+LENGTH — these are HARD CEILINGS, NOT TARGETS. Do not write up to them. Most
+fields should land well under, and a field that comes in at half its ceiling is
+a better field, not a lazy one. Never pad a line to reach a number.
+  · trend title max 8 words · summary max 32 words · stat max 10 words
+  · insights_summary and competitors_summary max 55 words each
+  · quote context max 12 words
+  · competitor move max 8 words · detail max 16 words · cliche max 8 words
+  · cliche_map entries max 6 words
+  · tension title max 7 words · side_a and side_b max 14 words each · opening max 20 words
+  · cliche_language avoid max 5 words · why max 12 words · instead max 12 words
+  · cliche_images title max 9 words · why max 12 words
+  · provocation starter max 16 words · cuts_against max 10 words · the_move max 20 words
+  The sharpest line is almost always the shortest one that still makes the
+  argument. "What if Rambler refused to launch a single flavor, ever?" beats the
+  same thought stretched to twice the length. Cut every word that is not doing
+  work. """
     # 8000 was sized for Haiku. Sonnet writes a fuller brief and ran out of room
     # mid-JSON, and because _extract_json SALVAGES truncated responses the app
     # rendered a half-empty page instead of failing: section 01 had cards, every
@@ -6012,7 +6035,7 @@ if _fd_run and _fd_query.strip():
             _fd_client = _ant_fd.Anthropic(api_key=_fd_api_key)
             _fd_titles = "\n".join(f"- {s.get('title','')[:100]}" for s in _fd_raw[:20])
             _fd_synopsis_resp = _fd_client.messages.create(
-                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                model=CLAUDE_MODEL_FAST,
                 max_tokens=120,
                 messages=[{"role": "user", "content":
                     f"You are a concise cultural analyst. In 1-2 sentences (max 40 words total), "
@@ -7470,7 +7493,7 @@ Respond ONLY with a valid JSON array like:
 Include all {len(_ev_batch)} entries."""
 
             _ev_resp = _ev_client.messages.create(
-                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                model=CLAUDE_MODEL_FAST,
                 max_tokens=2048,
                 messages=[{"role": "user", "content": _ev_prompt}],
             )
@@ -7950,7 +7973,7 @@ if _tr_fetch and _tr_topic.strip():
             import anthropic as _ant_tr0
             _tr_set_status(f"Claude expanding search terms for '{_tr_topic}'…")
             _tr_exp_resp = _ant_tr0.Anthropic(api_key=_tr_ant_key).messages.create(
-                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                model=CLAUDE_MODEL_FAST,
                 max_tokens=200,
                 messages=[{"role": "user", "content":
                     f'Give 4 closely related search terms for "{_tr_topic}" '
@@ -8211,7 +8234,7 @@ SIGNALS:
 {_tr_sig_txt}"""
 
             _tr_resp = _tr_client.messages.create(
-                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                model=CLAUDE_MODEL_FAST,
                 max_tokens=7000,
                 messages=[{"role": "user", "content": _tr_prompt}],
             )
@@ -8416,7 +8439,7 @@ SIGNALS:
 {_hn_sig_txt}"""
 
             _hn_resp = _ant_hn.Anthropic(api_key=_hn_ant_key).messages.create(
-                model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
+                model=CLAUDE_MODEL_FAST,
                 max_tokens=5000,
                 messages=[{"role": "user", "content": _hn_prompt}],
             )
