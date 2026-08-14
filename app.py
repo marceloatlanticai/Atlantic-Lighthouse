@@ -77,6 +77,27 @@ def e(text) -> str:
     return html_mod.escape(str(text))
 
 
+def _msg_text(resp) -> str:
+    """Pull the text out of a Messages API response.
+
+    `resp.content` is a LIST OF BLOCKS, and content[0] is not guaranteed to be
+    the text one. A model can lead with a thinking block, a tool_use block, or
+    a citation block, and indexing blindly raises
+
+        AttributeError: 'ThinkingBlock' object has no attribute 'text'
+
+    which is exactly what broke the brief when we moved from Haiku to Sonnet.
+    Concatenating every text block is correct for all of them.
+    """
+    parts = []
+    for block in (getattr(resp, "content", None) or []):
+        if getattr(block, "type", None) == "text" or hasattr(block, "text"):
+            txt = getattr(block, "text", "") or ""
+            if txt:
+                parts.append(txt)
+    return "\n".join(parts).strip()
+
+
 def _extract_json(raw: str) -> dict:
     """Parse a Claude JSON response, tolerating markdown fences and the
     occasional truncated/odd-character response.
@@ -225,7 +246,7 @@ Return ONLY valid JSON (no markdown fences):
         system="Extract webpage content as a structured current. Return only raw JSON.",
         messages=[{"role": "user", "content": extraction_prompt}],
     )
-    data = _extract_json(msg.content[0].text)
+    data = _extract_json(_msg_text(msg))
 
     title   = data.get("title", url[:80])
     summary = data.get("summary", "")
@@ -1714,7 +1735,7 @@ For the "url" field in each voice: use the exact URL from the SIGNAL context abo
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = msg.content[0].text.strip()
+        raw = _msg_text(msg)
         # Strip accidental markdown fences
         if "```" in raw:
             start = raw.find("{")
@@ -4040,7 +4061,7 @@ Rules:
 - Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly." """
     resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=8000,
                                   messages=[{"role": "user", "content": prompt}])
-    raw = resp.content[0].text.strip()
+    raw = _msg_text(resp)
     # _extract_json tolerates markdown fences AND truncated/cut-off responses
     try:
         return _extract_json(raw)
@@ -5497,7 +5518,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     try:
                         _hr = _cl.messages.create(model=CLAUDE_MODEL, max_tokens=1200,
                                                   messages=[{"role": "user", "content": _hprompt}])
-                        _hraw = _hr.content[0].text.strip()
+                        _hraw = _msg_text(_hr)
                         _hs, _he = _hraw.find("{"), _hraw.rfind("}") + 1
                         st.session_state["sv_hunch_result"] = json.loads(_hraw[_hs:_he])
                     except Exception as _hexc:
@@ -5896,7 +5917,7 @@ if _fd_run and _fd_query.strip():
                     f"describe what these signals collectively suggest about '{_fd_query}'. "
                     f"Be factual and sharp. No recommendations.\n\nSignals:\n{_fd_titles}"}],
             )
-            _fd_synopsis = _fd_synopsis_resp.content[0].text.strip()
+            _fd_synopsis = _msg_text(_fd_synopsis_resp)
         except Exception:
             pass
 
@@ -6539,7 +6560,7 @@ Return ONLY valid JSON with this exact structure:
                                 system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
                                 messages=[{"role": "user", "content": _tp_prompt}],
                             )
-                            _tp_raw = _tp_msg.content[0].text.strip()
+                            _tp_raw = _msg_text(_tp_msg)
                             if "project_thought_partner" not in st.session_state:
                                 st.session_state["project_thought_partner"] = {}
                             st.session_state["project_thought_partner"][_sel_proj_id] = _extract_json(_tp_raw)
@@ -6605,7 +6626,7 @@ Return ONLY valid JSON with this exact structure:
                             st.markdown(f"""
 <div class="sugg" style="margin-top:12px;">
   <span class="tag">response</span>
-  <span class="sugg-text"> {e(_ask_msg.content[0].text)}</span>
+  <span class="sugg-text"> {e(_msg_text(_ask_msg))}</span>
 </div>""", unsafe_allow_html=True)
             else:
                 st.caption('Click "Explore tensions & angles" to get started.')
@@ -6758,7 +6779,7 @@ Write a tight, actionable creative brief. Return ONLY valid JSON with this exact
                                 system="You are an elite advertising strategist. Return only raw JSON, no markdown fences.",
                                 messages=[{"role": "user", "content": brief_prompt}],
                             )
-                            raw = msg.content[0].text.strip()
+                            raw = _msg_text(msg)
                             brief_data = _extract_json(raw)
                             st.session_state["generated_brief"] = brief_data
 
@@ -6904,7 +6925,7 @@ Return ONLY valid JSON with this exact structure:
                                 system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
                                 messages=[{"role": "user", "content": tp_prompt}],
                             )
-                            raw = msg.content[0].text.strip()
+                            raw = _msg_text(msg)
                             st.session_state["thought_partner"] = _extract_json(raw)
 
                     except json.JSONDecodeError as ex:
@@ -7052,7 +7073,7 @@ Return ONLY valid JSON with this exact structure:
                                     system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
                                     messages=[{"role": "user", "content": tp_prompt}],
                                 )
-                                raw = msg.content[0].text.strip()
+                                raw = _msg_text(msg)
                                 if "project_thought_partner" not in st.session_state:
                                     st.session_state["project_thought_partner"] = {}
                                 st.session_state["project_thought_partner"][tp_folder_id] = _extract_json(raw)
@@ -7351,7 +7372,7 @@ Include all {len(_ev_batch)} entries."""
                 max_tokens=2048,
                 messages=[{"role": "user", "content": _ev_prompt}],
             )
-            _ev_txt = _ev_resp.content[0].text.strip()
+            _ev_txt = _msg_text(_ev_resp)
             # Extract JSON array
             _ev_json_start = _ev_txt.find("[")
             _ev_json_end   = _ev_txt.rfind("]") + 1
@@ -7834,7 +7855,7 @@ if _tr_fetch and _tr_topic.strip():
                     f'(brand, products, competitors, culture). '
                     f'JSON array of strings only, no explanation.'}],
             )
-            _tr_exp_txt = _tr_exp_resp.content[0].text.strip()
+            _tr_exp_txt = _msg_text(_tr_exp_resp)
             _tr_exp_js  = _tr_exp_txt[_tr_exp_txt.find("["):_tr_exp_txt.rfind("]")+1]
             _tr_expanded_terms += json.loads(_tr_exp_js)
         except Exception:
@@ -8020,7 +8041,7 @@ SIGNALS:
                 max_tokens=900,
                 messages=[{"role": "user", "content": _ov_prompt}],
             )
-            _ov_txt = _ov_resp.content[0].text.strip()
+            _ov_txt = _msg_text(_ov_resp)
             _ov_start = _ov_txt.find("{")
             _ov_end   = _ov_txt.rfind("}") + 1
             if _ov_start != -1 and _ov_end > _ov_start:
@@ -8092,7 +8113,7 @@ SIGNALS:
                 max_tokens=3500,
                 messages=[{"role": "user", "content": _tr_prompt}],
             )
-            _tr_txt = _tr_resp.content[0].text.strip()
+            _tr_txt = _msg_text(_tr_resp)
             # Strip markdown code fences
             _tr_txt = _re_global.sub(r'^```(?:json)?\s*', '', _tr_txt, flags=_re_global.MULTILINE)
             _tr_txt = _re_global.sub(r'\s*```\s*$', '', _tr_txt, flags=_re_global.MULTILINE)
@@ -8297,7 +8318,7 @@ SIGNALS:
                 max_tokens=2500,
                 messages=[{"role": "user", "content": _hn_prompt}],
             )
-            _hn_txt = _hn_resp.content[0].text.strip()
+            _hn_txt = _msg_text(_hn_resp)
 
             # ── Robust JSON extraction ────────────────────────────────────────
             # Strip markdown code fences Claude sometimes adds
