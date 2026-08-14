@@ -114,8 +114,18 @@ def _extract_json(raw: str) -> dict:
             raw = raw[4:]
         raw = raw.strip()
     start, end = raw.find("{"), raw.rfind("}")
+    # Fast path: trim any prose around the object and parse it whole.
     if start != -1 and end != -1:
-        raw = raw[start:end + 1]
+        try:
+            return json.loads(raw[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    # Repair runs on the text from the first '{' TO THE END — not on the
+    # right-trimmed version. On a truncated response the last '}' belongs to
+    # some inner object, so trimming there throws away the outer structure and
+    # the salvage below can only ever recover an empty {}.
+    if start != -1:
+        raw = raw[start:]
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -151,6 +161,40 @@ def _extract_json(raw: str) -> dict:
         if not stack and not in_str:
             continue  # already balanced — wouldn't have failed at full length
         closer = ('"' if in_str else "") + "".join("}" if c == "{" else "]" for c in reversed(stack))
+        try:
+            return json.loads(candidate + closer)
+        except json.JSONDecodeError:
+            continue
+
+    # The loop above drops whole LINES, which does nothing when the model
+    # answered on a single line — and the short prompts (hypothesis test,
+    # classification) always do. Retry at character level, but only at
+    # structural boundaries: every '}' or ']', walking backwards. That keeps it
+    # to one parse per bracket instead of one per character.
+    cuts = [i for i, ch in enumerate(raw) if ch in "}]"]
+    for idx in reversed(cuts):
+        candidate = raw[:idx + 1]
+        stack: list = []
+        in_str = False
+        esc = False
+        for ch in candidate:
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch in "{[":
+                stack.append(ch)
+            elif ch in "}]":
+                if stack:
+                    stack.pop()
+        if in_str:
+            continue                      # cut landed inside a string
+        closer = "".join("}" if c == "{" else "]" for c in reversed(stack))
         try:
             return json.loads(candidate + closer)
         except json.JSONDecodeError:
@@ -4680,6 +4724,100 @@ def _sv_wordmark() -> str:
     return svg
 
 
+def _sv_loader_html(rest: str = "#777777", period: int = 2800, arc: int = 140,
+                    width: float = 0.36, sweep: float = 0.65,
+                    hold: float = 0.34, full: float = 1.0) -> str:
+    """The scanning animation: a lighthouse beam sweeping the wordmark.
+
+    The lamp sits off-frame to the left of the L. The blue impression is always
+    present in `rest` grey; the beam COLOURS it in as it passes, and holds the
+    mark complete — identical to the static logo — at the moment it faces front.
+
+    Rotation is on the Y axis, so position and width both derive from one angle:
+    tan() for the projected position (slow at centre, fast at the edges) and
+    cos() for the foreshortening. That is why this is scripted rather than a
+    CSS keyframe — the two have to stay in sync.
+
+    Defaults are the settings signed off in lighthouse-loading-beam-3.html.
+    Returns "" if the asset is missing, so the caller can skip the loader.
+    """
+    try:
+        svg = open("assets/lighthouse.svg", encoding="utf-8").read()
+    except Exception:
+        return ""
+    paths = _re_global.findall(r"<path[^>]*?/>", svg)
+
+    def _fill(p: str) -> str:
+        m = _re_global.search(r'fill="([^"]*)"', p)
+        return (m.group(1) if m else "").lower()
+
+    black = "".join(p for p in paths if _fill(p) == "black")
+    # the blue layer is recoloured by CSS, so its inline fill has to go
+    blue = "".join(_re_global.sub(r'\s*fill="[^"]*"', "", p)
+                   for p in paths if _fill(p) == "#0000ff")
+    if not black or not blue:
+        return ""
+
+    def _mk(cls: str, inner: str) -> str:
+        return (f'<svg class="mk {cls}" viewBox="0 0 757 68" '
+                f'xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">'
+                f'{inner}</svg>')
+
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:transparent;overflow:hidden}}
+.wrap{{position:relative;width:100%;max-width:520px;margin:0 auto;
+  display:flex;align-items:center;justify-content:center;padding:6px 0}}
+.mk{{width:100%;height:auto;display:block}}
+.rest,.lit{{position:absolute;inset:6px 0;display:flex;align-items:center;justify-content:center}}
+.lit{{will-change:mask-image}}
+.rest .mk path{{fill:{rest}}}
+.lit  .mk path{{fill:#0000FF}}
+@media (prefers-reduced-motion: reduce){{ .lit{{display:none}} }}
+</style></head><body>
+<div class="wrap">
+  {_mk("base", black)}
+  <div class="rest">{_mk("off", blue)}</div>
+  <div class="lit" id="lit">{_mk("on", blue)}</div>
+</div>
+<script>
+(function(){{
+  var lit=document.getElementById('lit');
+  var PER={period}, ARC={arc}, SWEEP={sweep}, HOLD={hold}, FULL={full};
+  var wMax={width}, wMin={width}*0.42, t0=performance.now();
+  var EMPTY='linear-gradient(90deg,transparent 0%,transparent 100%)';
+  function clamp(v,a,b){{return Math.max(a,Math.min(b,v));}}
+  function remap(u,h){{                       // the dwell at dead centre
+    var hh=clamp(h,0,0.9)/2, k=0.5-hh;
+    if(k<=0) return 0.5;
+    if(u<k)   return u/k*0.5;
+    if(u>1-k) return 0.5+(u-(1-k))/k*0.5;
+    return 0.5;
+  }}
+  function frame(now){{
+    var phase=((now-t0)%PER)/PER;
+    if(phase>SWEEP){{
+      lit.style.webkitMaskImage=EMPTY; lit.style.maskImage=EMPTY;
+    }} else {{
+      var u=remap(phase/SWEEP,HOLD);
+      var ang=-ARC/2+ARC*u, rad=ang*Math.PI/180;
+      var t=Math.tan(rad)/Math.tan(ARC/2*Math.PI/180);
+      var p=(0.5+t*0.72)*100, fore=Math.cos(rad);
+      var half=(wMin+(wMax-wMin)*fore)*100;
+      var soft=half*0.35;
+      var core=soft+(55-soft)*FULL*Math.pow(fore,3);
+      var g='linear-gradient(90deg,transparent '+(p-core-half*0.65)+'%,'
+          + '#000 '+(p-core)+'%,#000 '+(p+core)+'%,'
+          + 'transparent '+(p+core+half*0.65)+'%)';
+      lit.style.webkitMaskImage=g; lit.style.maskImage=g;
+    }}
+    requestAnimationFrame(frame);
+  }}
+  requestAnimationFrame(frame);
+}})();
+</script></body></html>"""
+
+
 def _sv_logo(network: str, on_blue: bool = True) -> str:
     """Inline the network mark for a quote card, if we have the asset.
 
@@ -5392,10 +5530,23 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # so no future rerun path can fire a scan while the switch is on.
     if _run and not SCAN_PAUSED:
         _search = " ".join(dict.fromkeys(f"{_in_cat} {_in_prod}".split())).strip() or _prof["search"]
+        # The animation is written into a placeholder BEFORE the blocking calls.
+        # Streamlit streams each element to the browser as it is produced, so it
+        # paints and keeps running while the scrapers and the model work — the
+        # spinner's line sits underneath it. Cleared as soon as the run ends.
+        _loader = st.empty()
+        _loader_html = _sv_loader_html()
+        if _loader_html:
+            with _loader.container():
+                if hasattr(st, "iframe"):
+                    st.iframe(_loader_html, height=100)
+                else:
+                    st.components.v1.html(_loader_html, height=100)
         with st.spinner("🗼 Scanning the currents…"):
             _signals = _sv_gather(_search, _active)
             _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
                                      _competitors, _in_brand or _active) if _signals else {}
+        _loader.empty()
         # A salvaged, truncated response is still a truthy dict — it just has
         # the later sections missing. Check the keys the page actually renders
         # rather than trusting truthiness, so an incomplete brief is reported
@@ -5542,13 +5693,23 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                             '"challenges": [{"index": 4, "reason": "short reason"}]}')
                 with st.spinner("Testing against the signals…"):
                     try:
-                        _hr = _cl.messages.create(model=CLAUDE_MODEL, max_tokens=1200,
+                        # Same trap as the main synthesis: 1200 was sized for
+                        # Haiku's terser output and Sonnet runs past it, leaving
+                        # JSON cut mid-string. json.loads() on that raises
+                        # "Expecting ',' delimiter", which is a parser message,
+                        # not something a user can act on. Bigger ceiling, and
+                        # _extract_json instead of a raw parse so a slightly
+                        # short response is repaired rather than thrown away.
+                        _hr = _cl.messages.create(model=CLAUDE_MODEL, max_tokens=4000,
                                                   messages=[{"role": "user", "content": _hprompt}])
                         _hraw = _msg_text(_hr)
-                        _hs, _he = _hraw.find("{"), _hraw.rfind("}") + 1
-                        st.session_state["sv_hunch_result"] = json.loads(_hraw[_hs:_he])
+                        _hjson = _extract_json(_hraw)
+                        if not _hjson.get("verdict"):
+                            raise ValueError("no verdict in the response")
+                        st.session_state["sv_hunch_result"] = _hjson
                     except Exception as _hexc:
-                        st.error(f"Test failed: {_hexc}")
+                        st.error(f"The test didn't come back cleanly — press "
+                                 f"'Test against the currents' again. ({_hexc})")
 
     # Render the reading into the right-hand box
     _hres = st.session_state.get("sv_hunch_result")
@@ -8064,7 +8225,7 @@ SIGNALS:
 {_ov_sig_txt}"""
             _ov_resp = _ant_ov.Anthropic(api_key=_tr_ant_key).messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=900,
+                max_tokens=2000,
                 messages=[{"role": "user", "content": _ov_prompt}],
             )
             _ov_txt = _msg_text(_ov_resp)
@@ -8136,7 +8297,7 @@ SIGNALS:
 
             _tr_resp = _tr_client.messages.create(
                 model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
-                max_tokens=3500,
+                max_tokens=7000,
                 messages=[{"role": "user", "content": _tr_prompt}],
             )
             _tr_txt = _msg_text(_tr_resp)
@@ -8341,7 +8502,7 @@ SIGNALS:
 
             _hn_resp = _ant_hn.Anthropic(api_key=_hn_ant_key).messages.create(
                 model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5"),
-                max_tokens=2500,
+                max_tokens=5000,
                 messages=[{"role": "user", "content": _hn_prompt}],
             )
             _hn_txt = _msg_text(_hn_resp)
