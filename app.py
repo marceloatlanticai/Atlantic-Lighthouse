@@ -4724,100 +4724,6 @@ def _sv_wordmark() -> str:
     return svg
 
 
-def _sv_loader_html(rest: str = "#777777", period: int = 2800, arc: int = 140,
-                    width: float = 0.36, sweep: float = 0.65,
-                    hold: float = 0.34, full: float = 1.0) -> str:
-    """The scanning animation: a lighthouse beam sweeping the wordmark.
-
-    The lamp sits off-frame to the left of the L. The blue impression is always
-    present in `rest` grey; the beam COLOURS it in as it passes, and holds the
-    mark complete — identical to the static logo — at the moment it faces front.
-
-    Rotation is on the Y axis, so position and width both derive from one angle:
-    tan() for the projected position (slow at centre, fast at the edges) and
-    cos() for the foreshortening. That is why this is scripted rather than a
-    CSS keyframe — the two have to stay in sync.
-
-    Defaults are the settings signed off in lighthouse-loading-beam-3.html.
-    Returns "" if the asset is missing, so the caller can skip the loader.
-    """
-    try:
-        svg = open("assets/lighthouse.svg", encoding="utf-8").read()
-    except Exception:
-        return ""
-    paths = _re_global.findall(r"<path[^>]*?/>", svg)
-
-    def _fill(p: str) -> str:
-        m = _re_global.search(r'fill="([^"]*)"', p)
-        return (m.group(1) if m else "").lower()
-
-    black = "".join(p for p in paths if _fill(p) == "black")
-    # the blue layer is recoloured by CSS, so its inline fill has to go
-    blue = "".join(_re_global.sub(r'\s*fill="[^"]*"', "", p)
-                   for p in paths if _fill(p) == "#0000ff")
-    if not black or not blue:
-        return ""
-
-    def _mk(cls: str, inner: str) -> str:
-        return (f'<svg class="mk {cls}" viewBox="0 0 757 68" '
-                f'xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">'
-                f'{inner}</svg>')
-
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:transparent;overflow:hidden}}
-.wrap{{position:relative;width:100%;max-width:520px;margin:0 auto;
-  display:flex;align-items:center;justify-content:center;padding:6px 0}}
-.mk{{width:100%;height:auto;display:block}}
-.rest,.lit{{position:absolute;inset:6px 0;display:flex;align-items:center;justify-content:center}}
-.lit{{will-change:mask-image}}
-.rest .mk path{{fill:{rest}}}
-.lit  .mk path{{fill:#0000FF}}
-@media (prefers-reduced-motion: reduce){{ .lit{{display:none}} }}
-</style></head><body>
-<div class="wrap">
-  {_mk("base", black)}
-  <div class="rest">{_mk("off", blue)}</div>
-  <div class="lit" id="lit">{_mk("on", blue)}</div>
-</div>
-<script>
-(function(){{
-  var lit=document.getElementById('lit');
-  var PER={period}, ARC={arc}, SWEEP={sweep}, HOLD={hold}, FULL={full};
-  var wMax={width}, wMin={width}*0.42, t0=performance.now();
-  var EMPTY='linear-gradient(90deg,transparent 0%,transparent 100%)';
-  function clamp(v,a,b){{return Math.max(a,Math.min(b,v));}}
-  function remap(u,h){{                       // the dwell at dead centre
-    var hh=clamp(h,0,0.9)/2, k=0.5-hh;
-    if(k<=0) return 0.5;
-    if(u<k)   return u/k*0.5;
-    if(u>1-k) return 0.5+(u-(1-k))/k*0.5;
-    return 0.5;
-  }}
-  function frame(now){{
-    var phase=((now-t0)%PER)/PER;
-    if(phase>SWEEP){{
-      lit.style.webkitMaskImage=EMPTY; lit.style.maskImage=EMPTY;
-    }} else {{
-      var u=remap(phase/SWEEP,HOLD);
-      var ang=-ARC/2+ARC*u, rad=ang*Math.PI/180;
-      var t=Math.tan(rad)/Math.tan(ARC/2*Math.PI/180);
-      var p=(0.5+t*0.72)*100, fore=Math.cos(rad);
-      var half=(wMin+(wMax-wMin)*fore)*100;
-      var soft=half*0.35;
-      var core=soft+(55-soft)*FULL*Math.pow(fore,3);
-      var g='linear-gradient(90deg,transparent '+(p-core-half*0.65)+'%,'
-          + '#000 '+(p-core)+'%,#000 '+(p+core)+'%,'
-          + 'transparent '+(p+core+half*0.65)+'%)';
-      lit.style.webkitMaskImage=g; lit.style.maskImage=g;
-    }}
-    requestAnimationFrame(frame);
-  }}
-  requestAnimationFrame(frame);
-}})();
-</script></body></html>"""
-
-
 def _sv_logo(network: str, on_blue: bool = True) -> str:
     """Inline the network mark for a quote card, if we have the asset.
 
@@ -5264,6 +5170,17 @@ button[kind="primary"]:disabled span,
 [data-testid="stBaseButton-primary"]:disabled div,
 [data-testid="stBaseButton-primary"]:disabled span {{
   color:{_faint} !important; -webkit-text-fill-color:{_faint} !important; }}
+/* Scanning indicator — an indeterminate bar in the accent blue. Square ends,
+   like everything in the content layer; the rounded radius is for controls. */
+.sv-load {{ position:relative; height:3px; background:#ececec; overflow:hidden;
+  margin:4px 0 14px; max-width:780px; }}
+.sv-load::after {{ content:""; position:absolute; top:0; left:0; height:100%;
+  width:32%; background:{_blue}; animation:sv-load-run 1.15s cubic-bezier(.62,.03,.35,1) infinite; }}
+@keyframes sv-load-run {{ 0% {{ left:-32%; }} 100% {{ left:100%; }} }}
+@media (prefers-reduced-motion: reduce) {{
+  .sv-load::after {{ animation:none; left:0; width:100%; opacity:.35; }}
+}}
+
 /* Credits notice — red is the reserved negative marker in this design */
 .sv-paused {{ font-family:{_sans}; font-size:12.5px; line-height:1.55; color:{_muted};
   background:#ffffff; border-left:3px solid {_red}; padding:9px 13px; margin:2px 0 16px; }}
@@ -5530,18 +5447,16 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # so no future rerun path can fire a scan while the switch is on.
     if _run and not SCAN_PAUSED:
         _search = " ".join(dict.fromkeys(f"{_in_cat} {_in_prod}".split())).strip() or _prof["search"]
-        # The animation is written into a placeholder BEFORE the blocking calls.
-        # Streamlit streams each element to the browser as it is produced, so it
-        # paints and keeps running while the scrapers and the model work — the
-        # spinner's line sits underneath it. Cleared as soon as the run ends.
+        # Written into a placeholder BEFORE the blocking calls: Streamlit streams
+        # each element to the browser as it is produced, so the bar paints and
+        # keeps moving while the scrapers and the model work. The spinner's line
+        # sits underneath it. Cleared as soon as the run ends.
+        #
+        # Pure CSS, no component iframe — Streamlit strips inline JS from
+        # st.markdown but leaves @keyframes alone, so an indeterminate bar costs
+        # one div instead of a whole embedded document.
         _loader = st.empty()
-        _loader_html = _sv_loader_html()
-        if _loader_html:
-            with _loader.container():
-                if hasattr(st, "iframe"):
-                    st.iframe(_loader_html, height=100)
-                else:
-                    st.components.v1.html(_loader_html, height=100)
+        _loader.markdown('<div class="sv-load"></div>', unsafe_allow_html=True)
         with st.spinner("🗼 Scanning the currents…"):
             _signals = _sv_gather(_search, _active)
             _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
