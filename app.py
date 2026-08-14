@@ -4059,9 +4059,20 @@ Rules:
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
 - Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly." """
-    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=8000,
+    # 8000 was sized for Haiku. Sonnet writes a fuller brief and ran out of room
+    # mid-JSON, and because _extract_json SALVAGES truncated responses the app
+    # rendered a half-empty page instead of failing: section 01 had cards, every
+    # section after it was blank. Output tokens are billed as produced, not as
+    # reserved, so a bigger ceiling costs nothing unless it is used.
+    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=16000,
                                   messages=[{"role": "user", "content": prompt}])
     raw = _msg_text(resp)
+    # Silent salvage is what disguised the bug. If the model was cut off, say so.
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        print("[overview] synthesis hit max_tokens — brief will be incomplete")
+        st.session_state["sv_truncated"] = True
+    else:
+        st.session_state.pop("sv_truncated", None)
     # _extract_json tolerates markdown fences AND truncated/cut-off responses
     try:
         return _extract_json(raw)
@@ -5385,6 +5396,21 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _signals = _sv_gather(_search, _active)
             _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
                                      _competitors, _in_brand or _active) if _signals else {}
+        # A salvaged, truncated response is still a truthy dict — it just has
+        # the later sections missing. Check the keys the page actually renders
+        # rather than trusting truthiness, so an incomplete brief is reported
+        # instead of quietly drawing blank sections.
+        _expected = ("trends", "insights_summary", "insight_quotes", "competitors",
+                     "tensions", "cliche_language", "cliche_images", "provocations")
+        _missing = [k for k in _expected if not (_result or {}).get(k)]
+        if _result and _missing:
+            st.warning(
+                "⚠️ The brief came back incomplete — these sections are empty: "
+                + ", ".join(_missing)
+                + (". The model ran out of output room; press Run Lighthouse again."
+                   if st.session_state.get("sv_truncated")
+                   else ". Press Run Lighthouse again to retry.")
+            )
         if _result:
             _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
                                 "product": _in_prod}
