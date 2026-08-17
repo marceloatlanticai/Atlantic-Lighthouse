@@ -396,6 +396,44 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Public brief route, decided FIRST ──────────────────────────────────────
+# The ?view=overview branch that actually renders lives near the bottom of this
+# file, because it needs render_simple_view() to be defined. But the CSS that
+# hides the app chrome has to arrive BEFORE anything is drawn.
+#
+# Streamlit streams elements to the browser as it produces them. With the style
+# injected at the bottom, the sidebar and the top nav painted first and were
+# hidden a beat later — the one-second flash of the old layout. A stylesheet at
+# the top applies to elements that have not arrived yet, so they never appear.
+#
+# This does not stop them being BUILT (the sidebar block is 245 lines and
+# defines 17 names the rest of the script uses, so skipping it would break
+# things). It stops them being SEEN, which is the visible problem.
+IS_OVERVIEW = st.query_params.get("view") == "overview"
+if IS_OVERVIEW:
+    st.markdown("""
+<style>
+  [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"],
+  #lh-topnav, [data-testid="stSidebarCollapsedControl"] { display:none !important; }
+  .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"],
+  .main, section.main { background:#ffffff !important; }
+  .block-container { max-width:100% !important; padding-top:1.4rem !important;
+                     padding-left:0.5rem !important; padding-right:0.5rem !important; }
+  [id^="lh-sec-"] { scroll-margin-top:0 !important; }
+  /* Hold the first paint back for a moment — on a slow connection even the
+     correct stylesheet can lose the race with the first frame.
+
+     The reveal is a CSS ANIMATION, not JavaScript and not a Python line. That
+     matters: if the script raised before reaching the route, a JS- or
+     Python-driven reveal would leave a permanently blank page, which is far
+     worse than the flash we are fixing. This way the page always comes back
+     after 2.5s no matter what broke, and the route below reveals it instantly
+     in the normal case. */
+  .stApp { visibility:hidden; animation:lh-reveal 0s linear 2.5s forwards; }
+  @keyframes lh-reveal { to { visibility:visible; } }
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <style>
 #MainMenu, header, footer { visibility: hidden; }
@@ -999,10 +1037,58 @@ def show_login():
                             st.error("Incorrect password.")
 
 
+def _overview_gate() -> bool:
+    """Password wall for the public ?view=overview link. Returns True if open.
+
+    OFF by default. Set OVERVIEW_PASSWORD in the secrets to switch it on — the
+    password lives there and NEVER in this file, unlike the PASS_* defaults.
+    With it unset the share link behaves exactly as before, so turning this on
+    is a deliberate act and does not surprise anyone mid-demo.
+
+    One prompt, no username: the link is shared as a whole, so a second field
+    would be friction without adding protection.
+    """
+    pwd = os.environ.get("OVERVIEW_PASSWORD", "")
+    if not pwd:
+        return True                               # not configured → stays open
+    if st.session_state.get("_overview_ok"):
+        return True
+
+    st.markdown("""<style>
+      /* This screen renders long before the route that reveals the app, so it
+         has to lift the hold itself — otherwise the password prompt would sit
+         invisible for the 2.5s of the failsafe. */
+      .stApp { visibility:visible !important; animation:none !important; }
+      [data-testid="stSidebar"], header, [data-testid="stToolbar"] { display:none !important; }
+      .ov-gate { max-width:360px; margin:14vh auto 0; text-align:center; }
+      .ov-gate h1 { font-family:'Telegraf','Space Grotesk',Helvetica,sans-serif;
+        font-size:30px; font-weight:700; letter-spacing:-.02em; color:#0000ff; margin:0 0 6px; }
+      .ov-gate p { font-family:'Telegraf','Space Grotesk',Helvetica,sans-serif;
+        font-size:13px; color:#666; margin:0 0 22px; }
+    </style>
+    <div class="ov-gate"><h1>The Lighthouse</h1>
+    <p>Enter the password to view this brief.</p></div>""", unsafe_allow_html=True)
+
+    _g1, _g2, _g3 = st.columns([1, 1.4, 1])
+    with _g2:
+        with st.form("ov_gate", clear_on_submit=False):
+            _try = st.text_input("Password", type="password", label_visibility="collapsed",
+                                 placeholder="Password")
+            if st.form_submit_button("View brief", use_container_width=True):
+                if _try == pwd:
+                    st.session_state["_overview_ok"] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+    return False
+
+
 if "logged_in_user" not in st.session_state:
-    # Public share link (?view=overview) skips the login wall and runs as a
+    # Public share link (?view=overview) skips the team login and runs as a
     # read-only guest. Every other route still requires a password.
     if st.query_params.get("view") == "overview":
+        if not _overview_gate():
+            st.stop()
         st.session_state.logged_in_user = "guest"
         st.session_state.user_role = "internal"
         st.session_state["_is_guest"] = True
@@ -1087,6 +1173,26 @@ CLIENTS = {
 }
 
 # First client in the dict is the default shown on load.
+# ── Markets ───────────────────────────────────────────────────────────────────
+# One selector feeds three different APIs, each with its own idea of a country
+# code, which is why this is a table and not a single string:
+#   gdelt   → the `sourcecountry:` operator (FIPS-ish codes or the full name)
+#   youtube → regionCode, ISO 3166-1 alpha-2
+#   trends  → pytrends geo, also alpha-2 ("" means worldwide)
+MARKETS = {
+    "United States":  {"gdelt": "US", "youtube": "US", "trends": "US"},
+    "United Kingdom": {"gdelt": "UK", "youtube": "GB", "trends": "GB"},
+    "Brazil":         {"gdelt": "BR", "youtube": "BR", "trends": "BR"},
+    "Canada":         {"gdelt": "CA", "youtube": "CA", "trends": "CA"},
+    "Australia":      {"gdelt": "AS", "youtube": "AU", "trends": "AU"},
+    "Portugal":       {"gdelt": "PO", "youtube": "PT", "trends": "PT"},
+    "Spain":          {"gdelt": "SP", "youtube": "ES", "trends": "ES"},
+    "France":         {"gdelt": "FR", "youtube": "FR", "trends": "FR"},
+    "Germany":        {"gdelt": "GM", "youtube": "DE", "trends": "DE"},
+    "Worldwide":      {"gdelt": "",   "youtube": "US", "trends": ""},
+}
+DEFAULT_MARKET = "United States"
+
 DEFAULT_CLIENT = next(iter(CLIENTS))   # → "Rambler"
 
 def get_active_client() -> dict:
@@ -3957,12 +4063,14 @@ def render_footer():
 
 _SV_PROFILES = {
     "Rambler": {
+        "market":   "United States",
         "category": "mineral sparkling water",
         "product":  "Sparkling Water",
         "tagline":  "Monitoring the currents of the mineral sparkling water category so Rambler can build the countercurrent.",
         "search":   "sparkling water mineral water",
     },
     "Heinz": {
+        "market":   "United Kingdom",
         "category": "comfort food & soup",
         "product":  "Soup",
         "tagline":  "Monitoring the currents of Britain's lunch culture so Heinz can build the countercurrent.",
@@ -3975,8 +4083,100 @@ _SV_SRC_LABEL = {"reddit": "Reddit", "gdelt": "News", "hacker_news": "HN", "yout
                  "web": "Web", "rss": "RSS", "db": "Archive"}
 
 
-def _sv_gather(search_terms: str, active: str) -> list:
-    """Collect signals across sources (cost-aware caps) + saved DB signals."""
+@st.cache_data(ttl=86400, show_spinner=False)
+def _sv_trade_outlets(category: str, market: str) -> list:
+    """Ask the cheap model which trade publications matter for this category.
+
+    The model PROPOSES; GDELT DISPOSES. Nothing here is trusted: every domain is
+    queried in _sv_gather_trade, and one that published nothing simply never
+    reaches the brief. That is the guard against an invented outlet — we do not
+    need the model to be right, only to be a useful starting list.
+
+    Cached for a day per (category, market): the trade press of a category does
+    not change hourly, and this way a second scan the same day costs nothing.
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return []
+    try:
+        import anthropic
+        cl = anthropic.Anthropic(api_key=key)
+        prompt = (
+            f"List the trade publications a strategist would read to follow the "
+            f"{category} industry in {market}. Trade press only — the outlets people "
+            f"IN the industry read: business, manufacturing, retail and distribution "
+            f"titles. NOT consumer magazines, NOT general news, NOT blogs.\n\n"
+            "Respond ONLY with JSON:\n"
+            '{"outlets": [{"name": "BevNET", "domain": "bevnet.com", '
+            '"covers": "beverage industry news, launches, distribution"}]}\n\n'
+            "Rules: 6 to 10 outlets. Bare domains — no https://, no www. "
+            "If you are unsure a domain is exact, leave the outlet out; a wrong "
+            "domain returns nothing and wastes the slot."
+        )
+        r = cl.messages.create(model=CLAUDE_MODEL_FAST, max_tokens=900,
+                               messages=[{"role": "user", "content": prompt}])
+        data = _extract_json(_msg_text(r))
+        out = []
+        for o in (data.get("outlets") or [])[:10]:
+            dom = str(o.get("domain", "")).strip().lower()
+            dom = dom.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
+            if dom and "." in dom and " " not in dom:
+                out.append({"name": str(o.get("name", dom))[:40],
+                            "domain": dom,
+                            "covers": str(o.get("covers", ""))[:90]})
+        return out
+    except Exception as exc:
+        print(f"[trade] outlet discovery failed: {exc}")
+        return []
+
+
+def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
+    """Collect trade-press coverage. Returns (signals, outlets_that_published).
+
+    Costs nothing but GDELT calls, which are free. Queried in batches so we make
+    a handful of requests instead of one per outlet, and only outlets that
+    actually returned an article are reported back — that list is itself useful
+    ("who covers this category") and it is verified, not guessed.
+    """
+    outlets = _sv_trade_outlets(category, market)
+    if not outlets:
+        return [], []
+    from ingestion import scrape_gdelt
+    mk = MARKETS.get(market, MARKETS[DEFAULT_MARKET])
+    by_domain = {o["domain"]: o for o in outlets}
+    sigs, seen_domains = [], set()
+
+    # GDELT ORs fine, but a very long query gets unreliable — batches of 4.
+    doms = list(by_domain)
+    for i in range(0, len(doms), 4):
+        batch = doms[i:i + 4]
+        try:
+            # No sourcecountry here: trade titles are often registered elsewhere
+            # than the market they cover, and the domain filter is already tight.
+            for sig in scrape_gdelt(search_terms, n=10, domains=batch, timespan="1month"):
+                host = urllib.parse.urlparse(sig.url).netloc.lower().replace("www.", "")
+                hit = next((d for d in batch if host.endswith(d)), None)
+                if not hit:
+                    continue
+                seen_domains.add(hit)
+                sigs.append({"title": sig.title, "content": sig.content, "source": "trade",
+                             "url": sig.url, "timestamp": sig.timestamp,
+                             "outlet": by_domain[hit]["name"]})
+        except Exception as exc:
+            print(f"[trade] batch {batch} failed: {exc}")
+
+    confirmed = [o for o in outlets if o["domain"] in seen_domains]
+    return sigs[:24], confirmed
+
+
+def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> list:
+    """Collect signals across sources (cost-aware caps) + saved DB signals.
+
+    `market` narrows the news and video sources to one country. Social scraping
+    is left global on purpose: TikTok and Instagram hashtags do not respect
+    borders, and filtering them by country would throw away most of the signal.
+    """
+    _mk = MARKETS.get(market, MARKETS[DEFAULT_MARKET])
     out: list = []
     apify = os.environ.get("APIFY_API_TOKEN", "")
     ytkey = os.environ.get("YOUTUBE_API_KEY", "")
@@ -3993,7 +4193,7 @@ def _sv_gather(search_terms: str, active: str) -> list:
 
     try: _push(scrape_reddit(search_terms, max_items=10), "reddit")
     except Exception: pass
-    try: _push(scrape_gdelt(search_terms, n=8), "gdelt")
+    try: _push(scrape_gdelt(search_terms, n=8, source_country=_mk["gdelt"]), "gdelt")
     except Exception: pass
     try: _push(scrape_hacker_news(search_terms, n=5), "hacker_news")
     except Exception: pass
@@ -4001,7 +4201,7 @@ def _sv_gather(search_terms: str, active: str) -> list:
         try:
             _seen: set = set()
             for kw in search_terms.split()[:2]:
-                for s in scrape_youtube(kw, api_key=ytkey, n=5, region_code="US"):
+                for s in scrape_youtube(kw, api_key=ytkey, n=5, region_code=_mk["youtube"]):
                     if s.url not in _seen:
                         _seen.add(s.url)
                         out.append({"title": s.title, "content": s.content, "source": "youtube",
@@ -4031,7 +4231,8 @@ def _sv_gather(search_terms: str, active: str) -> list:
     return out
 
 
-def _sv_synthesize(signals: list, category: str, competitors: list, brand: str = "the brand") -> dict:
+def _sv_synthesize(signals: list, category: str, competitors: list, brand: str = "the brand",
+                   trade: Optional[list] = None) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key or not signals:
         return {}
@@ -4044,12 +4245,24 @@ def _sv_synthesize(signals: list, category: str, competitors: list, brand: str =
         for i, s in enumerate(batch)
     )
     comp = ", ".join(competitors)
+    # The trade block is labelled separately so the model can tell industry
+    # coverage from consumer chatter — the contrast between them is the point.
+    trade_text = ""
+    if trade:
+        _tb = "\n\n".join(
+            f"[T{i}] OUTLET: {t.get('outlet','trade')} | URL: {t['url']}\n"
+            f"TITLE: {t['title'][:110]}\nCONTENT: {t['content'][:220]}"
+            for i, t in enumerate(trade[:20])
+        )
+        trade_text = (f"\nTRADE PRESS ({len(trade[:20])} articles from the industry titles that "
+                      f"cover {category} — what the INDUSTRY reads, not consumers):\n{_tb}\n")
     prompt = f"""You are the editor of "The Lighthouse", a cultural-intelligence brief written for a strategy team working on the brand {brand} in the {category} category. Write with a confident editorial voice and a clear point of view. Headlines should make an ARGUMENT (e.g. "Functional water eats flavored water", "Mineral provenance is the new luxury") — never flat descriptions.
 
 Below are {len(batch)} REAL signals scraped from social media, communities, news and the web.
 
 SIGNALS:
 {sig_text}
+{trade_text}
 
 Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
 {{
@@ -4065,6 +4278,18 @@ Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
       "handle": "the community or username, e.g. 'r/Hydrohomies' or '@thewaterguy'",
       "context": "one line of context on the post (e.g. 'Top comment on ...')",
       "engagement": "real engagement from the signal (likes/views/comments) if present, else empty string"}}
+  ],
+  "trade_summary": "3-4 sentences: what is the INDUSTRY press covering right now? Volume, distribution, regulation, launches — the business view. Only from the TRADE PRESS block. If that block is absent or empty, return an empty string.",
+  "trade_moves": [
+    {{"outlet": "the publication name, exactly as given in the TRADE block",
+      "headline": "what they are reporting, in your words",
+      "signal_index": 3,
+      "why": "why a strategist should care"}}
+  ],
+  "trade_vs_street": [
+    {{"trade_says": "what the industry press treats as the story",
+      "street_says": "what real people are actually talking about, from the SIGNALS",
+      "gap": "the opening this distance creates for {brand}"}}
   ],
   "competitors_summary": "3-4 sentences: what are competitors ({comp}) doing right now, and what's the predictable pattern everyone follows?",
   "competitors": [
@@ -4106,6 +4331,16 @@ Rules:
   sharper line from one already used twice.
 - 4 tensions (real contradictions consumers hold), 5-6 cliche_language entries, 5-6 cliche_images entries, EXACTLY 4 provocations (bold 'What if...' openings for {brand}).
 - signal_index / signal_indexes must reference real indexes from the list above.
+- TRADE: 3-4 trade_moves and 2-3 trade_vs_street entries, and ONLY from the TRADE
+  PRESS block. trade_moves.signal_index is the NUMBER INSIDE [T#] — a SEPARATE
+  sequence from the SIGNALS indexes. Never use a T index in insight_quotes, and
+  never quote a trade article as if it were a person: the trade press is not a
+  consumer voice. Never invent an outlet, never promote a consumer post into the
+  trade section. If there is no TRADE PRESS block, return "" and empty arrays —
+  an empty trade section is honest; a fabricated one is worse than none.
+  trade_vs_street is the section's whole reason to exist: the industry talks
+  volume and distribution while people talk taste and distrust, and the gap
+  between the two is where a countercurrent lives.
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
 - Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly."
@@ -4116,6 +4351,8 @@ a better field, not a lazy one. Never pad a line to reach a number.
   · trend title max 8 words · summary max 32 words · stat max 10 words
   · insights_summary and competitors_summary max 55 words each
   · quote context max 12 words
+  · trade_summary max 55 words · trade headline max 12 words · why max 16 words
+  · trade_says / street_says max 16 words each · gap max 22 words
   · competitor move max 8 words · detail max 16 words · cliche max 8 words
   · cliche_map entries max 6 words
   · tension title max 7 words · side_a and side_b max 14 words each · opening max 20 words
@@ -4384,6 +4621,24 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .mbody{font-size:13px;line-height:1.5;color:__BODY__;}
 .strike{font-size:16px;font-weight:700;color:__RED__;text-decoration:line-through;}
 .map{background:#ffffff;padding:20px 24px;margin-top:22px;}
+/* ── 02T · The Trade Current ────────────────────────────────────────────────
+   Fica em branco, entre duas seções azuis. Duas brancas seguidas (02 e 02T) sao
+   propositais: as duas se leem em par, e o cabecalho azul de cada uma ja as
+   separa. Para inverter, basta pôr "02T" na lista de open_sec. */
+.tvouts{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 22px;}
+.tvchip{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  border:1.5px solid __BLUE__;color:__BLUE__;padding:5px 9px;}
+.tvhead{font-size:11px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;
+  color:__BLUE__;margin:30px 0 14px;border-top:1.5px solid __INK__;padding-top:14px;}
+.tvrow{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;margin-bottom:16px;}
+.tvside{padding:0 20px;border-left:1px solid __INK__;}
+.tvside:first-child{padding-left:0;border-left:none;}
+.tvlbl{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;
+  color:__META__;margin-bottom:7px;}
+.tvtxt{font-size:13px;line-height:1.5;color:__BODY__;}
+.tvrow .tvside:last-child .tvtxt{color:__BLUE__;font-weight:600;}
+@media(max-width:820px){.tvrow{grid-template-columns:1fr;}
+  .tvside{border-left:none;padding:0 0 12px;}}
 .sec:not(.blue) .map{border:1.5px solid __INK__;}
 .maptitle{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
           color:__RED__;font-weight:700;margin-bottom:12px;}
@@ -4417,7 +4672,8 @@ details .src a{color:__BLUE__;text-decoration:none;}
 """
 
 
-def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str = "screen") -> tuple:
+def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str = "screen",
+                 trade_sigs: Optional[list] = None) -> tuple:
     """Render the requested brief sections as HTML.
 
     Returns (html, estimated_height_px). Odd sections get the blue block on
@@ -4431,6 +4687,11 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
 
     def sig(i):
         try: return sigs[int(i)]
+        except Exception: return None
+    def tsig(i):
+        """Trade indexes live in their OWN list — the prompt labels them [T0], [T1].
+        Resolving them against `sigs` would link to an unrelated social post."""
+        try: return (trade_sigs or [])[int(i)]
         except Exception: return None
     def head(num, label, q):
         # The design dropped the big section numbers and the two-column rail:
@@ -4529,6 +4790,48 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             H.append('<div class="qempty">No curated quote from this network — '
                      'open <b>More voices</b> above to see what it did say.</div>')
         H.append('</section>'); h += 1040
+
+    if "02T" in which and (res.get("trade_summary") or res.get("trade_moves")):
+        # Trade press. Deliberately placed right after Consumer Insight: the two
+        # are meant to be read against each other, and trade_vs_street below is
+        # where that comparison is made explicit.
+        H.append(open_sec("02T") + head("02T", "The Trade Current",
+                                        "What the industry press is reporting"))
+        if res.get("trade_summary"):
+            H.append(f'<div class="lead">{e(res["trade_summary"])}</div>')
+
+        # the verified outlets — passed in by the caller, not invented by the model
+        _outs = res.get("_trade_outlets") or []
+        if _outs:
+            chips = "".join(f'<span class="tvchip">{e(o.get("name",""))}</span>' for o in _outs[:10])
+            H.append(f'<div class="tvouts">{chips}</div>'); h += 60
+
+        _tm = (res.get("trade_moves") or [])[:4]
+        if _tm:
+            H.append('<div class="row2">')
+            for m in _tm:
+                sg = tsig(m.get("signal_index"))
+                link = ""
+                if sg and sg.get("url"):
+                    link = f'<div class="src"><a href="{e(sg["url"])}" target="_blank">open ↗</a></div>'
+                H.append(f'<div class="card"><div class="clabel">{e(m.get("outlet","Trade"))}</div>'
+                         f'<div class="ctitle">{e(m.get("headline",""))}</div>'
+                         f'<div class="cbody">{e(m.get("why",""))}</div>{link}</div>')
+            H.append('</div>'); h += len(_tm) * 110
+
+        _gaps = (res.get("trade_vs_street") or [])[:3]
+        if _gaps:
+            H.append('<div class="tvhead">Where the trade and the street disagree</div>')
+            for g in _gaps:
+                H.append('<div class="tvrow">'
+                         f'<div class="tvside"><div class="tvlbl">Trade says</div>'
+                         f'<div class="tvtxt">{e(g.get("trade_says",""))}</div></div>'
+                         f'<div class="tvside"><div class="tvlbl">Street says</div>'
+                         f'<div class="tvtxt">{e(g.get("street_says",""))}</div></div>'
+                         f'<div class="tvside"><div class="tvlbl">The opening</div>'
+                         f'<div class="tvtxt">{e(g.get("gap",""))}</div></div></div>')
+            h += len(_gaps) * 130
+        H.append('</section>'); h += 240
 
     if "03" in which:
         H.append(open_sec("03") + head("03", "The Competitive Current", "What everyone else is doing"))
@@ -5443,7 +5746,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # Scan is available to everyone (incl. the public link). The last brief is
     # persisted and auto-loaded on open, so credits are only spent on a deliberate
     # re-run — not on every page view.
-    _ic1, _ic2, _ic3, _ic4 = st.columns([1.2, 1.5, 1.2, 1], gap="medium")
+    _ic1, _ic2, _ic3, _ic5, _ic4 = st.columns([1.1, 1.4, 1.1, 1.1, 1], gap="medium")
     with _ic1:
         st.markdown('<div class="sv-input-lbl">Brand</div>', unsafe_allow_html=True)
         _in_brand = st.text_input("Brand", value=_active, label_visibility="collapsed", key="sv_brand")
@@ -5455,20 +5758,39 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         st.markdown('<div class="sv-input-lbl">Product</div>', unsafe_allow_html=True)
         _in_prod = st.text_input("Product", value=_prof.get("product", ""),
                                  label_visibility="collapsed", key="sv_prod")
+    with _ic5:
+        # Market narrows news and video to one country. Social stays global —
+        # hashtags do not respect borders and filtering them would bin most of
+        # the signal. The client profile picks the sensible default.
+        st.markdown('<div class="sv-input-lbl">Market</div>', unsafe_allow_html=True)
+        _mk_names = list(MARKETS)
+        _mk_default = _prof.get("market", DEFAULT_MARKET)
+        _in_market = st.selectbox("Market", _mk_names,
+                                  index=_mk_names.index(_mk_default) if _mk_default in _mk_names else 0,
+                                  label_visibility="collapsed", key="sv_market")
     with _ic4:
         st.markdown('<div class="sv-input-lbl">&nbsp;</div>', unsafe_allow_html=True)
         # Label stays put — the column is narrow and any suffix wraps to three
         # lines. The grey disabled state plus the notice below carry the message.
+        # Guests (the public ?view=overview link) are READ-ONLY. Without this the
+        # login wall is bypassed AND the scan button is live, so anyone holding
+        # the URL could spend Apify and Anthropic credits — about $0.14 a click.
+        # The comment on the guest branch always claimed read-only; this is what
+        # actually enforces it.
         _run = st.button("Run Lighthouse", use_container_width=True, type="primary",
-                         key="sv_scan", disabled=SCAN_PAUSED,
-                         help=("Paused — no credits. " + SCAN_PAUSED_MSG) if SCAN_PAUSED else None)
+                         key="sv_scan", disabled=SCAN_PAUSED or _is_guest,
+                         help=("Paused — no credits. " + SCAN_PAUSED_MSG) if SCAN_PAUSED
+                              else ("Sign in to run a new scan." if _is_guest else None))
+    if _is_guest and not SCAN_PAUSED:
+        st.markdown('<div class="sv-empty">Viewing a shared brief. '
+                    'Sign in to run a new scan.</div>', unsafe_allow_html=True)
     if SCAN_PAUSED:
         st.markdown(
             f'<div class="sv-paused"><b>Scanning paused — no credits.</b> {e(SCAN_PAUSED_MSG)}</div>',
             unsafe_allow_html=True)
     # `disabled` already blocks the click; the second guard is belt and braces
     # so no future rerun path can fire a scan while the switch is on.
-    if _run and not SCAN_PAUSED:
+    if _run and not SCAN_PAUSED and not _is_guest:
         _search = " ".join(dict.fromkeys(f"{_in_cat} {_in_prod}".split())).strip() or _prof["search"]
         # Written into a placeholder BEFORE the blocking calls: Streamlit streams
         # each element to the browser as it is produced, so the bar paints and
@@ -5481,14 +5803,22 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         _loader = st.empty()
         _loader.markdown('<div class="sv-load"></div>', unsafe_allow_html=True)
         with st.spinner("🗼 Scanning the currents…"):
-            _signals = _sv_gather(_search, _active)
+            _signals = _sv_gather(_search, _active, _in_market)
+            # Trade press is collected separately and kept separate: it is a
+            # different kind of source and the brief compares the two.
+            _trade_sigs, _trade_outs = _sv_gather_trade(
+                _search, _in_cat or _prof["category"], _in_market)
             _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
-                                     _competitors, _in_brand or _active) if _signals else {}
+                                     _competitors, _in_brand or _active,
+                                     trade=_trade_sigs) if _signals else {}
         _loader.empty()
         # A salvaged, truncated response is still a truthy dict — it just has
         # the later sections missing. Check the keys the page actually renders
         # rather than trusting truthiness, so an incomplete brief is reported
         # instead of quietly drawing blank sections.
+        # The trade fields are NOT here on purpose: an empty trade section is a
+        # legitimate outcome (no outlet published in the window, or the category
+        # has no trade press worth the name). Warning about it would cry wolf.
         _expected = ("trends", "insights_summary", "insight_quotes", "competitors",
                      "tensions", "cliche_language", "cliche_images", "provocations")
         _missing = [k for k in _expected if not (_result or {}).get(k)]
@@ -5502,8 +5832,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             )
         if _result:
             _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
-                                "product": _in_prod}
+                                "product": _in_prod, "market": _in_market}
+            # Verified outlets, from GDELT — not the model's list. Prefixed with
+            # "_" so the renderer can tell it apart from generated fields.
+            _result["_trade_outlets"] = _trade_outs
+            _result["_trade_sigs"] = [
+                {"title": t["title"][:160], "url": t["url"], "outlet": t.get("outlet", "")}
+                for t in _trade_sigs[:24]
+            ]
             st.session_state["sv_result"]   = _result
+            # Trade signals are appended so trade_moves' signal_index can resolve
+            # to a real URL in the renderer and in the archive.
             st.session_state["sv_signals"]  = _signals
             st.session_state["sv_client"]   = _active
             st.session_state["sv_saved_at"] = datetime.utcnow().isoformat()
@@ -5543,11 +5882,19 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             st.session_state["sv_report_id"] = _req_id
             st.session_state.pop("sv_hunch_result", None)
 
-    # The bare public link used to auto-load the last saved brief. It no longer
-    # does: EVERY arrival gets a clean sheet, so nobody walks into somebody
-    # else's run and mistakes it for their own. Sharing a specific brief still
-    # works — the Archive's "Open ↗" builds ?report=<id>, handled just above,
-    # and that link keeps working forever.
+    # Logged-in users always start on a clean sheet — nobody walks into someone
+    # else's run and mistakes it for their own.
+    #
+    # GUESTS are the exception, and deliberately so. They arrive through the
+    # public ?view=overview link and cannot run a scan (read-only), so there is
+    # no run of theirs to confuse with anyone else's. Without this they would
+    # land on an empty page, which is not a share link — it is a dead end.
+    if _res is None and _is_guest:
+        _loaded = _sv_load_brief(_active)
+        if _loaded and _loaded.get("result"):
+            _res      = _loaded["result"]
+            _sigs     = _loaded["signals"]
+            _saved_at = _loaded.get("saved_at", "")
     if _saved_at:
         st.markdown(f'<div style="text-align:center;font-family:{_sans};font-size:10.5px;'
                     f'color:{_faint};letter-spacing:.06em;margin-bottom:6px;">'
@@ -5571,7 +5918,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # interactive without a Streamlit widget.
     if _res:
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
-                                     ("01", "02", "03", "04", "05", "06"), "screen")
+                                     ("01", "02", "02T", "03", "04", "05", "06"), "screen",
+                                     trade_sigs=_res.get("_trade_sigs") or [])
         with st.container(key="svfullA"):
             _sv_embed(_html_a, _h_a)
     else:
@@ -5609,7 +5957,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _b1, _b2, _b3 = st.columns([1, 0.9, 1])
             with _b2:
                 _test = st.button("Test against the currents", use_container_width=True,
-                                  type="primary", key="sv_test")
+                                  type="primary", key="sv_test", disabled=_is_guest,
+                                  help="Sign in to test a hypothesis." if _is_guest else None)
             _reading_slot = st.empty()
 
         if _test and _hunch.strip():
@@ -5763,21 +6112,11 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 # ── Standalone full-page Overview (shareable link: add ?view=overview) ─────
 # Renders ONLY the Lovable-styled brief — no tabs, no hero masthead, no second
 # header. Warm cream background + hidden app chrome for a clean share link.
-if st.query_params.get("view") == "overview":
-    st.markdown("""
-<style>
-  [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"],
-  #lh-topnav { display:none !important; }
-  .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], .main, section.main { background:#ffffff !important; }
-  /* Same measure as the in-app tab. This used to cap at 1120px, which boxed
-     the full-bleed blue sections in and left wide white margins — the public
-     link and the internal page disagreed about the design. */
-  .block-container { max-width:100% !important; padding-top:1.4rem !important;
-                     padding-left:0.5rem !important; padding-right:0.5rem !important; }
-  /* no sticky-nav offset needed on the clean brief */
-  [id^="lh-sec-"] { scroll-margin-top:0 !important; }
-</style>
-""", unsafe_allow_html=True)
+if IS_OVERVIEW:
+    # The stylesheet went out at the top of the file — see the note there.
+    # Here we only reveal the page and render the brief.
+    st.markdown('<style>.stApp { visibility:visible !important; }</style>',
+                unsafe_allow_html=True)
     render_simple_view()
     render_footer()
     st.stop()

@@ -246,16 +246,42 @@ def scrape_gdelt(
     n: int = 20,
     client_tag: Optional[str] = None,
     callback: Optional[Callable] = None,
+    source_country: str = "",
+    domains: Optional[list] = None,
+    timespan: str = "2weeks",
 ) -> list[Signal]:
-    """Query GDELT Doc 2.0 API for news articles related to the topic."""
+    """Query GDELT Doc 2.0 API for news articles related to the topic.
+
+    Two optional filters, both native GDELT query operators:
+
+      source_country  "US", "GB", "BR"… → ` sourcecountry:US`. Narrows the brief
+                      to one market instead of the whole world.
+      domains         ["bevnet.com", …] → ` (domainis:a OR domainis:b)`. This is
+                      how the trade-press section is collected: the model
+                      proposes the outlets, GDELT decides whether they actually
+                      published anything, so an invented outlet returns nothing
+                      and disappears on its own.
+
+    `domainis` is the exact-match form — `domain:` would also match subdomains
+    and lookalikes, which is wrong when the point is "articles from THIS outlet".
+    """
     if callback:
-        callback(f"[GDELT] Querying '{topic[:40]}'…")
+        _who = f" @{','.join(domains[:3])}" if domains else ""
+        _wh = f" [{source_country}]" if source_country else ""
+        callback(f"[GDELT] Querying '{topic[:40]}'{_wh}{_who}…")
     signals: list[Signal] = []
     try:
-        q = urllib.parse.quote(topic)
+        # Operators go INSIDE the query string, space-separated, then the whole
+        # thing is percent-encoded once.
+        query = topic
+        if domains:
+            query += " (" + " OR ".join(f"domainis:{d.strip()}" for d in domains if d.strip()) + ")"
+        if source_country:
+            query += f" sourcecountry:{source_country}"
+        q = urllib.parse.quote(query)
         url = (
             f"https://api.gdeltproject.org/api/v2/doc/doc"
-            f"?query={q}&mode=artlist&maxrecords={n}&format=json&timespan=2weeks"
+            f"?query={q}&mode=artlist&maxrecords={n}&format=json&timespan={timespan}"
         )
         req = urllib.request.Request(url, headers={"User-Agent": "Lighthouse/2.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -877,6 +903,43 @@ def scrape_hacker_news(
 
 # ── YouTube Trending (needs YOUTUBE_API_KEY) ──────────────────────────────────
 
+def _fetch_youtube_transcript(video_id: str, max_chars: int = 1400) -> str:
+    """Return an excerpt of a video's captions, or "" if unavailable.
+
+    A YouTube search result only gives us a title and a truncated description,
+    which says little about what was actually said. Captions carry the real
+    content. Uses youtube-transcript-api (already a dependency, no key, no cost).
+
+    Fails silently by design — plenty of videos have captions disabled, and
+    YouTube also throttles caption requests from datacenter IPs, so this has to
+    be a bonus rather than something the pipeline depends on.
+    """
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except Exception:
+        return ""
+    try:
+        api = YouTubeTranscriptApi()
+        # prefer English, fall back to whatever the video actually has
+        try:
+            fetched = api.fetch(video_id, languages=["en", "en-US", "en-GB"])
+        except Exception:
+            fetched = api.fetch(video_id)
+        parts = []
+        for seg in fetched:
+            txt = getattr(seg, "text", None) or (seg.get("text") if isinstance(seg, dict) else "")
+            if txt:
+                parts.append(str(txt).replace("\n", " ").strip())
+        text = " ".join(p for p in parts if p)
+        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"\[(Music|Applause|Laughter|Áudio|Music)\]", "", text, flags=re.I).strip()
+        if len(text) > max_chars:
+            text = text[:max_chars].rsplit(" ", 1)[0] + "…"
+        return text
+    except Exception:
+        return ""
+
+
 def scrape_youtube(
     topic: str,
     api_key: str,
@@ -884,17 +947,25 @@ def scrape_youtube(
     region_code: str = "US",
     client_tag: Optional[str] = None,
     callback: Optional[Callable] = None,
+    with_transcripts: bool = True,
+    transcript_limit: int = 6,
 ) -> list[Signal]:
     """
     Search YouTube for videos related to the topic.
     Uses YouTube Data API v3 (free, 10k units/day quota).
     Get key at: console.cloud.google.com → APIs → YouTube Data API v3
+
+    When `with_transcripts` is on, the first `transcript_limit` results are
+    enriched with a caption excerpt — far richer signal than the description
+    alone, at no API cost. Videos without captions simply keep their metadata.
     """
     if not api_key:
         return []
     if callback:
         callback(f"[YouTube] Searching '{topic[:40]}' (region={region_code})…")
     signals: list[Signal] = []
+    n_transcripts = 0          # defined up front: the closing callback reads it
+                               # even when the request itself blew up
 
     try:
         q = urllib.parse.quote(topic)
@@ -908,7 +979,7 @@ def scrape_youtube(
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
 
-        for item in data.get("items", []):
+        for idx, item in enumerate(data.get("items", [])):
             vid_id = item.get("id", {}).get("videoId", "")
             if not vid_id:
                 continue
@@ -917,7 +988,19 @@ def scrape_youtube(
             ts = snippet.get("publishedAt") or datetime.now(tz=timezone.utc).isoformat()
             title = snippet.get("title") or ""
             description = snippet.get("description") or ""
-            content = f"{title}\n\n{description}".strip()[:4000]
+            content = f"{title}\n\n{description}".strip()
+
+            # Captions for the first few results only — each one is an extra
+            # round trip, and the top hits are the ones worth transcribing.
+            transcript = ""
+            if with_transcripts and idx < transcript_limit:
+                if callback:
+                    callback(f"[YouTube] Reading captions {idx + 1}/{transcript_limit}…")
+                transcript = _fetch_youtube_transcript(vid_id)
+                if transcript:
+                    n_transcripts += 1
+                    content += f"\n\nTRANSCRIPT: {transcript}"
+            content = content.strip()[:4000]
 
             signals.append(Signal(
                 id=_make_id(vid_url, ts),
@@ -930,6 +1013,7 @@ def scrape_youtube(
                 raw_meta={
                     "channel": snippet.get("channelTitle"),
                     "region": region_code,
+                    "has_transcript": bool(transcript),
                     "thumbnail": (
                         snippet.get("thumbnails", {}).get("medium", {}).get("url")
                         or snippet.get("thumbnails", {}).get("default", {}).get("url")
@@ -942,7 +1026,8 @@ def scrape_youtube(
             callback(f"[YouTube] Error: {exc}")
 
     if callback:
-        callback(f"[YouTube] ✓ {len(signals)} signals")
+        extra = f" ({n_transcripts} with captions)" if with_transcripts and signals else ""
+        callback(f"[YouTube] ✓ {len(signals)} signals{extra}")
     return signals
 
 
