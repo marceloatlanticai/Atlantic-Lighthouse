@@ -4131,43 +4131,74 @@ def _sv_trade_outlets(category: str, market: str) -> list:
 
 
 def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
-    """Collect trade-press coverage. Returns (signals, outlets_that_published).
+    """Collect trade-press coverage. Returns (signals, outlets, diagnostic).
 
-    Costs nothing but GDELT calls, which are free. Queried in batches so we make
-    a handful of requests instead of one per outlet, and only outlets that
-    actually returned an article are reported back — that list is itself useful
-    ("who covers this category") and it is verified, not guessed.
+    Two sources, tried in order per outlet:
+
+      1. GDELT `domainis:` — free, but its corpus is news media. Niche trade
+         titles are often thinly indexed or absent, which is exactly why the
+         first version of this returned nothing at all.
+      2. Firecrawl `site:` — costs credits, so it is only used for outlets
+         GDELT drew a blank on, and only if a key is configured.
+
+    Queried ONE DOMAIN AT A TIME, not as an OR group. GDELT's support for
+    parenthesised operator groups is undocumented, and a query it does not
+    understand fails silently — returning zero results looks identical to
+    "nothing was published", which is the worst kind of bug to chase.
+    One query per outlet also gives a per-outlet count for free, which is what
+    the diagnostic below reports.
     """
     outlets = _sv_trade_outlets(category, market)
+    diag = {"proposed": [o["domain"] for o in outlets], "counts": {}, "via": {}}
     if not outlets:
-        return [], []
-    from ingestion import scrape_gdelt
-    mk = MARKETS.get(market, MARKETS[DEFAULT_MARKET])
-    by_domain = {o["domain"]: o for o in outlets}
-    sigs, seen_domains = [], set()
+        diag["error"] = "no outlets proposed (check ANTHROPIC_API_KEY)"
+        return [], [], diag
 
-    # GDELT ORs fine, but a very long query gets unreliable — batches of 4.
-    doms = list(by_domain)
-    for i in range(0, len(doms), 4):
-        batch = doms[i:i + 4]
+    from ingestion import scrape_gdelt
+    fc_key = os.environ.get("FIRECRAWL_API_KEY", "")
+    by_domain = {o["domain"]: o for o in outlets}
+    sigs, seen = [], set()
+
+    for dom in list(by_domain)[:8]:
+        got = 0
+        # ── 1. GDELT ────────────────────────────────────────────────────────
         try:
-            # No sourcecountry here: trade titles are often registered elsewhere
-            # than the market they cover, and the domain filter is already tight.
-            for sig in scrape_gdelt(search_terms, n=10, domains=batch, timespan="1month"):
+            for sig in scrape_gdelt(search_terms, n=8, domains=[dom], timespan="2months"):
                 host = urllib.parse.urlparse(sig.url).netloc.lower().replace("www.", "")
-                hit = next((d for d in batch if host.endswith(d)), None)
-                if not hit:
+                if not host.endswith(dom):
                     continue
-                seen_domains.add(hit)
                 sigs.append({"title": sig.title, "content": sig.content, "source": "trade",
                              "url": sig.url, "timestamp": sig.timestamp,
-                             "outlet": by_domain[hit]["name"]})
+                             "outlet": by_domain[dom]["name"]})
+                got += 1
+            if got:
+                diag["via"][dom] = "gdelt"
         except Exception as exc:
-            print(f"[trade] batch {batch} failed: {exc}")
+            diag["counts"][dom] = f"gdelt error: {exc}"
 
-    confirmed = [o for o in outlets if o["domain"] in seen_domains]
-    return sigs[:24], confirmed
+        # ── 2. Firecrawl, only where GDELT found nothing ────────────────────
+        if not got and fc_key:
+            try:
+                from ingestion import scrape_web
+                for sig in scrape_web(f"site:{dom} {search_terms}", api_key=fc_key, n=4):
+                    host = urllib.parse.urlparse(sig.url).netloc.lower().replace("www.", "")
+                    if not host.endswith(dom):
+                        continue
+                    sigs.append({"title": sig.title, "content": sig.content, "source": "trade",
+                                 "url": sig.url, "timestamp": sig.timestamp,
+                                 "outlet": by_domain[dom]["name"]})
+                    got += 1
+                if got:
+                    diag["via"][dom] = "firecrawl"
+            except Exception as exc:
+                diag["counts"][dom] = f"firecrawl error: {exc}"
 
+        diag["counts"].setdefault(dom, got)
+        if got:
+            seen.add(dom)
+
+    confirmed = [o for o in outlets if o["domain"] in seen]
+    return sigs[:24], confirmed, diag
 
 def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> list:
     """Collect signals across sources (cost-aware caps) + saved DB signals.
@@ -5802,12 +5833,25 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _signals = _sv_gather(_search, _active, _in_market)
             # Trade press is collected separately and kept separate: it is a
             # different kind of source and the brief compares the two.
-            _trade_sigs, _trade_outs = _sv_gather_trade(
+            _trade_sigs, _trade_outs, _trade_diag = _sv_gather_trade(
                 _search, _in_cat or _prof["category"], _in_market)
             _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
                                      _competitors, _in_brand or _active,
                                      trade=_trade_sigs) if _signals else {}
         _loader.empty()
+        # When the trade section comes back empty, say WHY. Without this the only
+        # symptom is a missing section, and the cause could be any of four
+        # things: no outlets proposed, GDELT not indexing them, Firecrawl absent,
+        # or the model declining to fill the fields. The counts tell you which.
+        if not _trade_sigs:
+            _d = _trade_diag or {}
+            _lines = ", ".join(f"{k}: {v}" for k, v in (_d.get("counts") or {}).items())
+            with st.expander("Trade press found nothing — why", expanded=False):
+                st.caption(_d.get("error") or "Outlets proposed, none returned articles.")
+                st.code((_lines or "no outlets proposed") +
+                        ("\n\nFirecrawl fallback: OFF (no FIRECRAWL_API_KEY)"
+                         if not os.environ.get("FIRECRAWL_API_KEY") else ""))
+
         # A salvaged, truncated response is still a truthy dict — it just has
         # the later sections missing. Check the keys the page actually renders
         # rather than trusting truthiness, so an incomplete brief is reported
