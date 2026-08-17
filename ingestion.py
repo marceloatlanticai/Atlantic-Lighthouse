@@ -190,9 +190,19 @@ def scrape_rss(
 
     for feed_url, feed_name in feed_list:
         try:
-            req = urllib.request.Request(
-                feed_url, headers={"User-Agent": "Lighthouse-Countercurrent/2.0"}
-            )
+            # Browser-shaped headers. Trade publishers sit behind Cloudflare and
+            # similar, and an unrecognised User-Agent gets a 403 before the feed
+            # is ever served — which looked, from our side, exactly like "this
+            # outlet published nothing". The Accept header matters too: some
+            # servers return HTML to clients that do not ask for a feed type.
+            req = urllib.request.Request(feed_url, headers={
+                "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/124.0 Safari/537.36"),
+                "Accept": ("application/rss+xml, application/atom+xml, "
+                           "application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5"),
+                "Accept-Language": "en-US,en;q=0.9",
+            })
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read()
             root = ET.fromstring(raw)

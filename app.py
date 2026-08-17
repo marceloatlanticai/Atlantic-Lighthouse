@@ -4169,7 +4169,7 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
     def _one(dom: str):
         """All three sources for a single outlet. Returns (dom, items, via)."""
         name = by_domain[dom]["name"]
-        found, via = [], ""
+        found, via, why = [], "", []
 
         try:
             for sig in scrape_gdelt(search_terms, n=8, domains=[dom], timespan="2months"):
@@ -4181,13 +4181,15 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
             pass
 
         if not found:
-            for path in ("/feed", "/rss.xml", "/feed/"):
+            for path in ("/feed", "/rss.xml", "/feed/", "/rss"):
                 try:
                     items = scrape_rss(feeds=[(f"https://{dom}{path}", name)],
                                        max_items_per_feed=12, timeout=5)
-                except Exception:
+                except Exception as exc:
+                    why.append(f"{path}: {type(exc).__name__}")
                     continue
                 if not items:
+                    why.append(f"{path}: empty")
                     continue
                 hits = [s for s in items if _relevant(s)]
                 # A trade feed with nothing matching our exact terms is still
@@ -4207,7 +4209,7 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
             except Exception:
                 pass
 
-        return dom, found, via
+        return dom, found, via, why
 
     sigs, seen = [], set()
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -4216,13 +4218,18 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
         futures = {pool.submit(_one, d): d for d in doms}
         for fut in as_completed(futures, timeout=45):
             try:
-                dom, found, via = fut.result()
+                dom, found, via, why = fut.result()
             except Exception as exc:
                 diag["counts"][futures[fut]] = f"error: {exc}"
                 continue
             diag["counts"][dom] = len(found)
             if via:
                 diag["via"][dom] = via
+            elif why:
+                # No source answered — record what each attempt hit, so a 403
+                # (publisher blocking us) is distinguishable from a genuine
+                # "nothing published".
+                diag["via"][dom] = " | ".join(why[:4])
             if found:
                 seen.add(dom)
                 for sig in found:
@@ -5121,6 +5128,36 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
 </script>"""
     fit = fit.replace("__AUTOFIT__", "false" if hasattr(st, "iframe") else "true")
 
+    # The `h` accumulated above is a sum of fixed per-section constants, and it
+    # only matters on the fallback path (no st.iframe). Those constants were
+    # tuned for a fuller brief; with the length caps in place and a section
+    # added, they overshoot, and the surplus shows as blank space under the last
+    # section — growing with every section added.
+    #
+    # Estimate from the VISIBLE TEXT instead. Not from the markup: the embedded
+    # network logos are 84KB of base64 on their own, so markup length says more
+    # about how many Reddit quotes there are than about how tall the page is.
+    #   · ~90 characters per line in the 1120px column, ~20px per line
+    #   · plus a fixed allowance per section and per card for headings/padding
+    # Measured from the RESULT DICT, not the markup and not the stripped text:
+    # the embedded network logos carry tens of kilobytes that survive naive tag
+    # stripping, and they say nothing about how tall the page is.
+    def _textlen(v) -> int:
+        if isinstance(v, str):
+            return len(v)
+        if isinstance(v, dict):
+            return sum(_textlen(x) for k, x in v.items() if not str(k).startswith("_"))
+        if isinstance(v, (list, tuple)):
+            return sum(_textlen(x) for x in v)
+        return 0
+
+    _chars = _textlen({k: v for k, v in (res or {}).items() if not str(k).startswith("_")})
+    _sections = "".join(H).count("<section")
+    _cards = "".join(H).count('class="card"')
+    # ~90 characters per line in the 1120px column, ~20px a line, plus a fixed
+    # allowance for each section's heading and padding and for each card.
+    h = max(900, int(_chars * 0.30) + _sections * 300 + _cards * 70 + 300)
+
     # #lh-root is what the auto-fit script measures — see the comment there.
     html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
             f'<style>{_sv_css(mode)}</style></head><body><div id="lh-root">'
@@ -5989,6 +6026,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 st.code("\n".join(_rows) or "no data")
                 _billed = sum(v for k, v in _t.items()
                               if k in _paid and isinstance(v, int))
+                st.caption(f"Streamlit {st.__version__} · component height: "
+                           f"{'measured by Streamlit (st.iframe)' if hasattr(st, 'iframe') else 'PYTHON ESTIMATE — st.iframe missing, expect blank space under the brief'}")
                 st.caption(f"Apify returned {_billed} items this run. The caps in the "
                            f"code are TikTok 8 · Instagram 5 · X 12 = 25. Well under "
                            f"that means a scraper is failing quietly, not that the "
