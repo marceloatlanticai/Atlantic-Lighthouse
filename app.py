@@ -4234,12 +4234,20 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
     return sigs[:24], confirmed, diag
 
 
-def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> tuple:
-    """Collect signals across sources (cost-aware caps) + saved DB signals.
+def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
+               progress=None) -> tuple:
+    """Collect signals across sources. Returns (signals, per-source tally).
 
-    `market` narrows the news and video sources to one country. Social scraping
-    is left global on purpose: TikTok and Instagram hashtags do not respect
-    borders, and filtering them by country would throw away most of the signal.
+    RUN IN PARALLEL. The three Apify actors alone took about 150s in sequence —
+    roughly 60% of a four-minute scan — and they spend that time waiting on
+    someone else's servers, not computing. Run together, the cost is the slowest
+    one instead of the sum.
+
+    `progress(name, count)` is called from THIS thread as each source lands, so
+    the caller can safely touch Streamlit with it. The workers never do.
+
+    Social scraping stays global on purpose: TikTok and Instagram hashtags do
+    not respect borders. Only news and video are narrowed by market.
     """
     _mk = MARKETS.get(market, MARKETS[DEFAULT_MARKET])
     out: list = []
@@ -4249,68 +4257,75 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> 
 
     from ingestion import (scrape_reddit, scrape_gdelt, scrape_hacker_news,
                            scrape_youtube, scrape_tiktok, scrape_instagram,
-                           scrape_twitter)
+                           scrape_twitter, scrape_web)
 
-    # Every source below is wrapped in try/except. That is right — one dead
-    # scraper must not kill a scan — but until now the except was `pass`, so a
-    # source could return nothing, or fail outright, and leave no trace. A brief
-    # missing half its inputs looked exactly like a brief with nothing to say.
-    # This records what each one actually contributed.
+    # Every source is wrapped so one dead scraper cannot kill a scan. What it no
+    # longer does is fail SILENTLY: a brief missing half its inputs used to look
+    # exactly like a brief with little to say.
     tally: dict = {}
 
-    def _push(sigs, src):
-        n = 0
-        for s in sigs:
-            out.append({"title": s.title, "content": s.content, "source": src,
-                        "url": s.url, "timestamp": s.timestamp})
-            n += 1
-        tally[src] = tally.get(src, 0) + n
-        return n
+    def _youtube():
+        seen, got = set(), []
+        for kw in search_terms.split()[:2]:
+            for s in scrape_youtube(kw, api_key=ytkey, n=5, region_code=_mk["youtube"]):
+                if s.url not in seen:
+                    seen.add(s.url)
+                    got.append(s)
+        return got
 
-    try: _push(scrape_reddit(search_terms, max_items=10), "reddit")
-    except Exception as _e: tally["reddit"] = f"ERROR {_e}"
-    try: _push(scrape_gdelt(search_terms, n=8, source_country=_mk["gdelt"]), "gdelt")
-    except Exception as _e: tally["gdelt"] = f"ERROR {_e}"
-    try: _push(scrape_hacker_news(search_terms, n=5), "hacker_news")
-    except Exception as _e: tally["hacker_news"] = f"ERROR {_e}"
+    jobs = {
+        "reddit":      lambda: scrape_reddit(search_terms, max_items=10),
+        "gdelt":       lambda: scrape_gdelt(search_terms, n=8, source_country=_mk["gdelt"]),
+        "hacker_news": lambda: scrape_hacker_news(search_terms, n=5),
+    }
     if ytkey:
-        try:
-            _seen: set = set()
-            for kw in search_terms.split()[:2]:
-                for s in scrape_youtube(kw, api_key=ytkey, n=5, region_code=_mk["youtube"]):
-                    if s.url not in _seen:
-                        _seen.add(s.url)
-                        out.append({"title": s.title, "content": s.content, "source": "youtube",
-                                    "url": s.url, "timestamp": s.timestamp})
-                        tally["youtube"] = tally.get("youtube", 0) + 1
-        except Exception as _e: tally["youtube"] = f"ERROR {_e}"
+        jobs["youtube"] = _youtube
     if apify:
-        try: _push(scrape_tiktok(search_terms, api_token=apify, n=8, fetch_comments=False), "tiktok")
-        except Exception as _e: tally["tiktok"] = f"ERROR {_e}"
-        try: _push(scrape_instagram(search_terms, api_token=apify, n=5), "instagram")
-        except Exception as _e: tally["instagram"] = f"ERROR {_e}"
-        try: _push(scrape_twitter(search_terms, api_token=apify, n=8), "twitter")
-        except Exception as _e: tally["twitter"] = f"ERROR {_e}"
+        jobs["tiktok"]    = lambda: scrape_tiktok(search_terms, api_token=apify, n=8,
+                                                  fetch_comments=False)
+        jobs["instagram"] = lambda: scrape_instagram(search_terms, api_token=apify, n=5)
+        jobs["twitter"]   = lambda: scrape_twitter(search_terms, api_token=apify, n=8)
+    else:
+        tally["apify"] = "skipped (no APIFY_API_TOKEN)"
     if fckey:
-        try:
-            from ingestion import scrape_web
-            _push(scrape_web(search_terms, api_key=fckey, n=6), "web")
-        except Exception as _e: tally["web"] = f"ERROR {_e}"
+        jobs["web"] = lambda: scrape_web(search_terms, api_key=fckey, n=6)
     else:
         tally["web"] = "skipped (no FIRECRAWL_API_KEY)"
 
-    # Saved DB signals for this client (free — already paid for)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
+        futs = {pool.submit(fn): name for name, fn in jobs.items()}
+        for fut in as_completed(futs):
+            name = futs[fut]
+            try:
+                sigs = fut.result()
+            except Exception as exc:
+                tally[name] = f"ERROR {exc}"
+                if progress:
+                    progress(name, -1)
+                continue
+            for s in sigs:
+                out.append({"title": s.title, "content": s.content, "source": name,
+                            "url": s.url, "timestamp": s.timestamp})
+            tally[name] = len(sigs)
+            if progress:
+                progress(name, len(sigs))
+
+    # Saved signals stay on the main thread: the loader is @st.cache_data and
+    # calling it from a worker warns about a missing script context.
     try:
+        n = 0
         for s in _load_signals_raw(limit=200):
             if _signal_matches_client(s, active):
                 out.append({"title": s.get("title", ""), "content": s.get("content", ""),
                             "source": s.get("source", "db"), "url": s.get("url", ""),
                             "timestamp": s.get("timestamp", "")})
-                tally["archive"] = tally.get("archive", 0) + 1
-    except Exception as _e: tally["archive"] = f"ERROR {_e}"
-    if not apify:
-        tally["apify"] = "skipped (no APIFY_API_TOKEN)"
+                n += 1
+        tally["archive"] = n
+    except Exception as exc:
+        tally["archive"] = f"ERROR {exc}"
     return out, tally
+
 
 
 def _sv_synthesize(signals: list, category: str, competitors: list, brand: str = "the brand",
@@ -5909,16 +5924,41 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         # one div instead of a whole embedded document.
         _loader = st.empty()
         _loader.markdown('<div class="sv-load"></div>', unsafe_allow_html=True)
+        # Live status. A four-minute wait behind one static line feels broken;
+        # the same wait with sources ticking off feels like work being done.
+        _status = st.empty()
+        _done: list = []
+
+        def _tick(name: str, n: int):
+            # Called from the main thread as each source lands — safe for st.*
+            _done.append(f"{name} {'✕' if n < 0 else n}")
+            _status.markdown(
+                f'<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
+                f'{e(" · ".join(_done))}</div>', unsafe_allow_html=True)
+
         with st.spinner("🗼 Scanning the currents…"):
-            _signals, _src_tally = _sv_gather(_search, _active, _in_market)
-            # Trade press is collected separately and kept separate: it is a
-            # different kind of source and the brief compares the two.
-            _trade_sigs, _trade_outs, _trade_diag = _sv_gather_trade(
-                _search, _in_cat or _prof["category"], _in_market)
+            # Trade runs ALONGSIDE the main gather, not after it: the two share
+            # no data and waiting for one before starting the other simply added
+            # its 20-odd seconds to the total.
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as _pool:
+                _f_trade = _pool.submit(_sv_gather_trade, _search,
+                                        _in_cat or _prof["category"], _in_market)
+                _signals, _src_tally = _sv_gather(_search, _active, _in_market,
+                                                  progress=_tick)
+                try:
+                    _trade_sigs, _trade_outs, _trade_diag = _f_trade.result(timeout=90)
+                except Exception as _texc:
+                    _trade_sigs, _trade_outs = [], []
+                    _trade_diag = {"error": f"trade collection failed: {_texc}"}
+            _status.markdown(
+                '<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
+                'Writing the brief…</div>', unsafe_allow_html=True)
             _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
                                      _competitors, _in_brand or _active,
                                      trade=_trade_sigs) if _signals else {}
         _loader.empty()
+        _status.empty()
         # The trade section can fail at either of two independent stages, and a
         # missing section looks identical in both cases. This reports both.
         #
