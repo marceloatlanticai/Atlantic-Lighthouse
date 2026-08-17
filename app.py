@@ -4189,8 +4189,12 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
                     continue
                 if not items:
                     continue
-                found = [s for s in items if _relevant(s)]
-                via = f"rss{path}"
+                hits = [s for s in items if _relevant(s)]
+                # A trade feed with nothing matching our exact terms is still
+                # this industry's agenda for the week — more useful than an
+                # empty slot. Marked so the diagnostic shows it was a loose match.
+                found = hits or items[:3]
+                via = f"rss{path}" + ("" if hits else " (loose)")
                 break
 
         if not found and fc_key:
@@ -4207,7 +4211,7 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
 
     sigs, seen = [], set()
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    doms = list(by_domain)[:6]
+    doms = list(by_domain)[:8]   # parallel, so more outlets cost time, not much
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(_one, d): d for d in doms}
         for fut in as_completed(futures, timeout=45):
@@ -4230,7 +4234,7 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
     return sigs[:24], confirmed, diag
 
 
-def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> list:
+def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> tuple:
     """Collect signals across sources (cost-aware caps) + saved DB signals.
 
     `market` narrows the news and video sources to one country. Social scraping
@@ -4247,17 +4251,28 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> 
                            scrape_youtube, scrape_tiktok, scrape_instagram,
                            scrape_twitter)
 
+    # Every source below is wrapped in try/except. That is right — one dead
+    # scraper must not kill a scan — but until now the except was `pass`, so a
+    # source could return nothing, or fail outright, and leave no trace. A brief
+    # missing half its inputs looked exactly like a brief with nothing to say.
+    # This records what each one actually contributed.
+    tally: dict = {}
+
     def _push(sigs, src):
+        n = 0
         for s in sigs:
             out.append({"title": s.title, "content": s.content, "source": src,
                         "url": s.url, "timestamp": s.timestamp})
+            n += 1
+        tally[src] = tally.get(src, 0) + n
+        return n
 
     try: _push(scrape_reddit(search_terms, max_items=10), "reddit")
-    except Exception: pass
+    except Exception as _e: tally["reddit"] = f"ERROR {_e}"
     try: _push(scrape_gdelt(search_terms, n=8, source_country=_mk["gdelt"]), "gdelt")
-    except Exception: pass
+    except Exception as _e: tally["gdelt"] = f"ERROR {_e}"
     try: _push(scrape_hacker_news(search_terms, n=5), "hacker_news")
-    except Exception: pass
+    except Exception as _e: tally["hacker_news"] = f"ERROR {_e}"
     if ytkey:
         try:
             _seen: set = set()
@@ -4267,19 +4282,22 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> 
                         _seen.add(s.url)
                         out.append({"title": s.title, "content": s.content, "source": "youtube",
                                     "url": s.url, "timestamp": s.timestamp})
-        except Exception: pass
+                        tally["youtube"] = tally.get("youtube", 0) + 1
+        except Exception as _e: tally["youtube"] = f"ERROR {_e}"
     if apify:
         try: _push(scrape_tiktok(search_terms, api_token=apify, n=8, fetch_comments=False), "tiktok")
-        except Exception: pass
+        except Exception as _e: tally["tiktok"] = f"ERROR {_e}"
         try: _push(scrape_instagram(search_terms, api_token=apify, n=5), "instagram")
-        except Exception: pass
+        except Exception as _e: tally["instagram"] = f"ERROR {_e}"
         try: _push(scrape_twitter(search_terms, api_token=apify, n=8), "twitter")
-        except Exception: pass
+        except Exception as _e: tally["twitter"] = f"ERROR {_e}"
     if fckey:
         try:
             from ingestion import scrape_web
             _push(scrape_web(search_terms, api_key=fckey, n=6), "web")
-        except Exception: pass
+        except Exception as _e: tally["web"] = f"ERROR {_e}"
+    else:
+        tally["web"] = "skipped (no FIRECRAWL_API_KEY)"
 
     # Saved DB signals for this client (free — already paid for)
     try:
@@ -4288,8 +4306,11 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> 
                 out.append({"title": s.get("title", ""), "content": s.get("content", ""),
                             "source": s.get("source", "db"), "url": s.get("url", ""),
                             "timestamp": s.get("timestamp", "")})
-    except Exception: pass
-    return out
+                tally["archive"] = tally.get("archive", 0) + 1
+    except Exception as _e: tally["archive"] = f"ERROR {_e}"
+    if not apify:
+        tally["apify"] = "skipped (no APIFY_API_TOKEN)"
+    return out, tally
 
 
 def _sv_synthesize(signals: list, category: str, competitors: list, brand: str = "the brand",
@@ -4393,7 +4414,9 @@ Rules:
 - 4 tensions (real contradictions consumers hold), 5-6 cliche_language entries, 5-6 cliche_images entries, EXACTLY 4 provocations (bold 'What if...' openings for {brand}).
 - signal_index / signal_indexes must reference real indexes from the list above.
 - TRADE: 3-4 trade_moves and 2-3 trade_vs_street entries, and ONLY from the TRADE
-  PRESS block. trade_moves.signal_index is the NUMBER INSIDE [T#] — a SEPARATE
+  PRESS block. SPREAD THEM ACROSS OUTLETS: if the block contains more than one
+  publication, no single outlet may supply more than half the trade_moves. Four
+  cards from one title is a clipping service, not a read on the industry. trade_moves.signal_index is the NUMBER INSIDE [T#] — a SEPARATE
   sequence from the SIGNALS indexes. Never use a T index in insight_quotes, and
   never quote a trade article as if it were a person: the trade press is not a
   consumer voice. Never invent an outlet, never promote a consumer post into the
@@ -5887,7 +5910,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         _loader = st.empty()
         _loader.markdown('<div class="sv-load"></div>', unsafe_allow_html=True)
         with st.spinner("🗼 Scanning the currents…"):
-            _signals = _sv_gather(_search, _active, _in_market)
+            _signals, _src_tally = _sv_gather(_search, _active, _in_market)
             # Trade press is collected separately and kept separate: it is a
             # different kind of source and the brief compares the two.
             _trade_sigs, _trade_outs, _trade_diag = _sv_gather_trade(
@@ -5904,6 +5927,33 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         #
         # Shown only to the team, never on the public link.
         if not _is_guest:
+            # Where every signal came from. Shown on EVERY run, not only on
+            # failure: "$0.01 of Apify" reads as efficiency until you see that
+            # two of the three scrapers returned nothing.
+            with st.expander("Sources — what each one returned", expanded=False):
+                _t = _src_tally or {}
+                _paid = {"tiktok", "instagram", "twitter"}
+                _rows = []
+                for k in ("reddit", "gdelt", "hacker_news", "youtube", "web",
+                          "tiktok", "instagram", "twitter", "archive", "apify"):
+                    if k not in _t:
+                        continue
+                    v = _t[k]
+                    mark = ""
+                    if isinstance(v, int):
+                        if v == 0:
+                            mark = "  ← nothing" + ("  (billed source!)" if k in _paid else "")
+                    else:
+                        mark = "  ←"
+                    _rows.append(f"{k:14} {v}{mark}")
+                st.code("\n".join(_rows) or "no data")
+                _billed = sum(v for k, v in _t.items()
+                              if k in _paid and isinstance(v, int))
+                st.caption(f"Apify returned {_billed} items this run. The caps in the "
+                           f"code are TikTok 8 · Instagram 5 · X 12 = 25. Well under "
+                           f"that means a scraper is failing quietly, not that the "
+                           f"scan was cheap.")
+
             _d = _trade_diag or {}
             _n_sigs = len(_trade_sigs or [])
             _r = _result or {}
