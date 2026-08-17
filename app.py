@@ -4163,7 +4163,18 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
     # and friends would match every article ever written.
     _kw = [w for w in (search_terms + " " + category).lower().split() if len(w) > 3]
 
-    for dom in list(by_domain)[:8]:
+    # HARD TIME BUDGET. Without it this function can hang the whole scan: it
+    # reaches out to arbitrary third-party domains, several of which do not
+    # answer, and urllib waits 10s on each. The first version tried 6 feed paths
+    # across 8 outlets — up to 48 blocking requests, or 8 minutes of nothing.
+    # Trade is a bonus section; it must never hold the brief hostage.
+    import time as _t
+    _deadline = _t.monotonic() + 25.0
+
+    for dom in list(by_domain)[:6]:
+        if _t.monotonic() > _deadline:
+            diag["counts"][dom] = "skipped (time budget)"
+            continue
         got = 0
         # ── 1. GDELT ────────────────────────────────────────────────────────
         try:
@@ -4190,7 +4201,11 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
         # than asked of the model: a wrong guess costs one failed request, a
         # hallucinated URL costs a silent miss.
         if not got:
-            for path in ("/feed", "/feed/", "/rss", "/rss.xml", "/index.xml", "/atom.xml"):
+            # Three paths, not six: these cover the large majority of publishing
+            # platforms, and each miss costs a 10s timeout on a dead host.
+            for path in ("/feed", "/rss.xml", "/feed/"):
+                if _t.monotonic() > _deadline:
+                    break
                 try:
                     from ingestion import scrape_rss
                     items = scrape_rss(feeds=[(f"https://{dom}{path}", by_domain[dom]["name"])],
@@ -4212,7 +4227,7 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
                 break                     # a feed answered; no need to try other paths
 
         # ── 3. Firecrawl, only if the two free routes drew a blank ──────────
-        if not got and fc_key:
+        if not got and fc_key and _t.monotonic() < _deadline:
             try:
                 from ingestion import scrape_web
                 for sig in scrape_web(f"site:{dom} {search_terms}", api_key=fc_key, n=4):
@@ -4232,6 +4247,8 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
         if got:
             seen.add(dom)
 
+    if _t.monotonic() > _deadline:
+        diag["timed_out"] = True
     confirmed = [o for o in outlets if o["domain"] in seen]
     return sigs[:24], confirmed, diag
 
@@ -4702,6 +4719,19 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .tvlbl{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;
   color:__META__;margin-bottom:7px;}
 .tvtxt{font-size:13px;line-height:1.5;color:__BODY__;}
+/* cabeçalho do card: veículo à esquerda, domínio à direita — espelha .qhead */
+.tvhead2{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+  margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.35);}
+.tvname{font-size:10px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;}
+.tvdom{font-size:11px;opacity:.75;}
+.tvlink{display:inline-block;margin-top:12px;font-size:11.5px;font-weight:600;
+  text-decoration:none;border-bottom:1px solid currentColor;padding-bottom:1px;}
+/* Cards azuis em seções brancas: tudo aqui dentro é branco. O .src ficava azul
+   sobre azul — presente no HTML e invisível na tela. */
+.sec:not(.blue) .card .tvhead2,
+.sec:not(.blue) .card .tvlink,
+.sec:not(.blue) .card .src,
+.sec:not(.blue) .card .src a{color:#ffffff;}
 .tvrow .tvside:last-child .tvtxt{color:__BLUE__;font-weight:600;}
 @media(max-width:820px){.tvrow{grid-template-columns:1fr;}
   .tvside{border-left:none;padding:0 0 12px;}}
@@ -4875,12 +4905,26 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         _tm = (res.get("trade_moves") or [])[:4]
         if _tm:
             H.append('<div class="row2">')
+            _byname = {o.get("name", ""): o for o in _outs}
             for m in _tm:
                 sg = tsig(m.get("signal_index"))
+                _out = m.get("outlet", "Trade")
+                # The domain is the outlet's credential — "BevNET · bevnet.com"
+                # tells a strategist this came from the trade press and not from
+                # a blog, the same job the network + handle do on a quote card.
+                _dom = (_byname.get(_out) or {}).get("domain", "")
+                if not _dom and sg and sg.get("url"):
+                    _dom = urllib.parse.urlparse(sg["url"]).netloc.replace("www.", "")
+                head_ = (f'<div class="tvhead2"><span class="tvname">{e(_out)}</span>'
+                         f'<span class="tvdom">{e(_dom)}</span></div>')
                 link = ""
                 if sg and sg.get("url"):
-                    link = f'<div class="src"><a href="{e(sg["url"])}" target="_blank">open ↗</a></div>'
-                H.append(f'<div class="card"><div class="clabel">{e(m.get("outlet","Trade"))}</div>'
+                    # Same treatment as .qeng on the quote cards: white on the
+                    # blue card. The old .src was dark blue here — present in
+                    # the markup and invisible on screen.
+                    link = (f'<div><a class="tvlink" href="{e(sg["url"])}" target="_blank">'
+                            f'Read on {e(_out)} ↗</a></div>')
+                H.append(f'<div class="card">{head_}'
                          f'<div class="ctitle">{e(m.get("headline",""))}</div>'
                          f'<div class="cbody">{e(m.get("why",""))}</div>{link}</div>')
             H.append('</div>'); h += len(_tm) * 110
@@ -5899,6 +5943,10 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                         st.code("\n".join(
                             f"{k:28} {v}   {_d.get('via', {}).get(k, '')}"
                             for k, v in (_d.get("counts") or {}).items()) or "—")
+                        if _d.get("timed_out"):
+                            st.warning("Collection hit its 25s time budget and stopped early. "
+                                       "Outlets marked 'skipped' were never tried — usually a "
+                                       "dead or slow feed host eating the time.")
                         st.caption("Sources tried per outlet, in order: GDELT → the "
                                    "outlet's own RSS feed → Firecrawl. The first two are "
                                    "free; the third only runs if FIRECRAWL_API_KEY is set"
