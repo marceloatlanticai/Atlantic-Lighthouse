@@ -179,6 +179,7 @@ def scrape_rss(
     max_items_per_feed: int = 6,
     client_tag: Optional[str] = None,
     callback: Optional[Callable] = None,
+    timeout: int = 10,
 ) -> list[Signal]:
     """Read RSS / Atom feeds. Uses a curated set of cultural / trade sources."""
     feed_list = feeds or _DEFAULT_RSS_FEEDS
@@ -192,7 +193,7 @@ def scrape_rss(
             req = urllib.request.Request(
                 feed_url, headers={"User-Agent": "Lighthouse-Countercurrent/2.0"}
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read()
             root = ET.fromstring(raw)
             ns = {"atom": "http://www.w3.org/2005/Atom"}

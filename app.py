@@ -4133,20 +4133,18 @@ def _sv_trade_outlets(category: str, market: str) -> list:
 def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
     """Collect trade-press coverage. Returns (signals, outlets, diagnostic).
 
-    Two sources, tried in order per outlet:
+    Per outlet, in order: GDELT `domainis:` → the outlet's own RSS feed →
+    Firecrawl `site:`. The first two are free; the third only runs where the
+    others drew a blank and a key exists.
 
-      1. GDELT `domainis:` — free, but its corpus is news media. Niche trade
-         titles are often thinly indexed or absent, which is exactly why the
-         first version of this returned nothing at all.
-      2. Firecrawl `site:` — costs credits, so it is only used for outlets
-         GDELT drew a blank on, and only if a key is configured.
+    RUN IN PARALLEL, and that is the whole point of this design. The work is
+    pure network waiting: probing feed URLs on domains that may not answer, at
+    up to 5s each. Done in sequence — the first version — six outlets took
+    minutes and a time cap just truncated the search before it found anything.
+    Threads make the wall-clock cost roughly that of the single slowest outlet
+    instead of the sum of all of them.
 
-    Queried ONE DOMAIN AT A TIME, not as an OR group. GDELT's support for
-    parenthesised operator groups is undocumented, and a query it does not
-    understand fails silently — returning zero results looks identical to
-    "nothing was published", which is the worst kind of bug to chase.
-    One query per outlet also gives a per-outlet count for free, which is what
-    the diagnostic below reports.
+    Nothing in the worker touches Streamlit; it only returns data.
     """
     outlets = _sv_trade_outlets(category, market)
     diag = {"proposed": [o["domain"] for o in outlets], "counts": {}, "via": {}}
@@ -4154,103 +4152,83 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
         diag["error"] = "no outlets proposed (check ANTHROPIC_API_KEY)"
         return [], [], diag
 
-    from ingestion import scrape_gdelt
+    from ingestion import scrape_gdelt, scrape_rss, scrape_web
     fc_key = os.environ.get("FIRECRAWL_API_KEY", "")
     by_domain = {o["domain"]: o for o in outlets}
-    sigs, seen = [], set()
-    # An RSS feed carries everything the outlet published, not just our topic,
-    # so items are filtered against these. Short words are dropped: "of", "the"
-    # and friends would match every article ever written.
+    # An RSS feed carries everything the outlet published, not just our topic.
+    # Short words are dropped: "of", "the" and friends match every article.
     _kw = [w for w in (search_terms + " " + category).lower().split() if len(w) > 3]
 
-    # HARD TIME BUDGET. Without it this function can hang the whole scan: it
-    # reaches out to arbitrary third-party domains, several of which do not
-    # answer, and urllib waits 10s on each. The first version tried 6 feed paths
-    # across 8 outlets — up to 48 blocking requests, or 8 minutes of nothing.
-    # Trade is a bonus section; it must never hold the brief hostage.
-    import time as _t
-    _deadline = _t.monotonic() + 25.0
+    def _relevant(sig) -> bool:
+        blob = f"{sig.title} {sig.content}".lower()
+        return (not _kw) or any(k in blob for k in _kw)
 
-    for dom in list(by_domain)[:6]:
-        if _t.monotonic() > _deadline:
-            diag["counts"][dom] = "skipped (time budget)"
-            continue
-        got = 0
-        # ── 1. GDELT ────────────────────────────────────────────────────────
+    def _same_host(url: str, dom: str) -> bool:
+        return urllib.parse.urlparse(url).netloc.lower().replace("www.", "").endswith(dom)
+
+    def _one(dom: str):
+        """All three sources for a single outlet. Returns (dom, items, via)."""
+        name = by_domain[dom]["name"]
+        found, via = [], ""
+
         try:
             for sig in scrape_gdelt(search_terms, n=8, domains=[dom], timespan="2months"):
-                host = urllib.parse.urlparse(sig.url).netloc.lower().replace("www.", "")
-                if not host.endswith(dom):
-                    continue
-                sigs.append({"title": sig.title, "content": sig.content, "source": "trade",
-                             "url": sig.url, "timestamp": sig.timestamp,
-                             "outlet": by_domain[dom]["name"]})
-                got += 1
-            if got:
-                diag["via"][dom] = "gdelt"
-        except Exception as exc:
-            diag["counts"][dom] = f"gdelt error: {exc}"
+                if _same_host(sig.url, dom):
+                    found.append(sig)
+            if found:
+                via = "gdelt"
+        except Exception:
+            pass
 
-        # ── 2. The outlet's own RSS feed ────────────────────────────────────
-        # Free, no key, and usually the BEST source here: trade publications
-        # distribute by RSS as a matter of course, and GDELT's corpus is news
-        # media — it indexes mainstream titles well and niche trade ones badly,
-        # which is why step 1 so often comes back empty.
-        #
-        # The feed URL is guessed from a handful of conventional paths rather
-        # than asked of the model: a wrong guess costs one failed request, a
-        # hallucinated URL costs a silent miss.
-        if not got:
-            # Three paths, not six: these cover the large majority of publishing
-            # platforms, and each miss costs a 10s timeout on a dead host.
+        if not found:
             for path in ("/feed", "/rss.xml", "/feed/"):
-                if _t.monotonic() > _deadline:
-                    break
                 try:
-                    from ingestion import scrape_rss
-                    items = scrape_rss(feeds=[(f"https://{dom}{path}", by_domain[dom]["name"])],
-                                       max_items_per_feed=12)
+                    items = scrape_rss(feeds=[(f"https://{dom}{path}", name)],
+                                       max_items_per_feed=12, timeout=5)
                 except Exception:
                     continue
                 if not items:
                     continue
-                for sig in items:
-                    blob = f"{sig.title} {sig.content}".lower()
-                    if _kw and not any(k in blob for k in _kw):
-                        continue          # the feed is the whole outlet — keep only what is on topic
-                    sigs.append({"title": sig.title, "content": sig.content, "source": "trade",
-                                 "url": sig.url, "timestamp": sig.timestamp,
-                                 "outlet": by_domain[dom]["name"]})
-                    got += 1
-                if got:
-                    diag["via"][dom] = f"rss{path}"
-                break                     # a feed answered; no need to try other paths
+                found = [s for s in items if _relevant(s)]
+                via = f"rss{path}"
+                break
 
-        # ── 3. Firecrawl, only if the two free routes drew a blank ──────────
-        if not got and fc_key and _t.monotonic() < _deadline:
+        if not found and fc_key:
             try:
-                from ingestion import scrape_web
                 for sig in scrape_web(f"site:{dom} {search_terms}", api_key=fc_key, n=4):
-                    host = urllib.parse.urlparse(sig.url).netloc.lower().replace("www.", "")
-                    if not host.endswith(dom):
-                        continue
+                    if _same_host(sig.url, dom):
+                        found.append(sig)
+                if found:
+                    via = "firecrawl"
+            except Exception:
+                pass
+
+        return dom, found, via
+
+    sigs, seen = [], set()
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    doms = list(by_domain)[:6]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(_one, d): d for d in doms}
+        for fut in as_completed(futures, timeout=45):
+            try:
+                dom, found, via = fut.result()
+            except Exception as exc:
+                diag["counts"][futures[fut]] = f"error: {exc}"
+                continue
+            diag["counts"][dom] = len(found)
+            if via:
+                diag["via"][dom] = via
+            if found:
+                seen.add(dom)
+                for sig in found:
                     sigs.append({"title": sig.title, "content": sig.content, "source": "trade",
                                  "url": sig.url, "timestamp": sig.timestamp,
                                  "outlet": by_domain[dom]["name"]})
-                    got += 1
-                if got:
-                    diag["via"][dom] = "firecrawl"
-            except Exception as exc:
-                diag["counts"][dom] = f"firecrawl error: {exc}"
 
-        diag["counts"].setdefault(dom, got)
-        if got:
-            seen.add(dom)
-
-    if _t.monotonic() > _deadline:
-        diag["timed_out"] = True
     confirmed = [o for o in outlets if o["domain"] in seen]
     return sigs[:24], confirmed, diag
+
 
 def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET) -> list:
     """Collect signals across sources (cost-aware caps) + saved DB signals.
@@ -5943,10 +5921,6 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                         st.code("\n".join(
                             f"{k:28} {v}   {_d.get('via', {}).get(k, '')}"
                             for k, v in (_d.get("counts") or {}).items()) or "—")
-                        if _d.get("timed_out"):
-                            st.warning("Collection hit its 25s time budget and stopped early. "
-                                       "Outlets marked 'skipped' were never tried — usually a "
-                                       "dead or slow feed host eating the time.")
                         st.caption("Sources tried per outlet, in order: GDELT → the "
                                    "outlet's own RSS feed → Firecrawl. The first two are "
                                    "free; the third only runs if FIRECRAWL_API_KEY is set"
