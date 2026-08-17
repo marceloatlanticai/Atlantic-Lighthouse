@@ -5772,25 +5772,21 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         st.markdown('<div class="sv-input-lbl">&nbsp;</div>', unsafe_allow_html=True)
         # Label stays put — the column is narrow and any suffix wraps to three
         # lines. The grey disabled state plus the notice below carry the message.
-        # Guests (the public ?view=overview link) are READ-ONLY. Without this the
-        # login wall is bypassed AND the scan button is live, so anyone holding
-        # the URL could spend Apify and Anthropic credits — about $0.14 a click.
-        # The comment on the guest branch always claimed read-only; this is what
-        # actually enforces it.
+        # Guests can run scans again: during testing the page that fronts this
+        # app is itself password-protected, so the people who reach it are the
+        # team. NOTE the gap that leaves — see the comment on the guest branch
+        # of the login gate. To close it at the app level, set OVERVIEW_PASSWORD
+        # in the secrets; no code change needed.
         _run = st.button("Run Lighthouse", use_container_width=True, type="primary",
-                         key="sv_scan", disabled=SCAN_PAUSED or _is_guest,
-                         help=("Paused — no credits. " + SCAN_PAUSED_MSG) if SCAN_PAUSED
-                              else ("Sign in to run a new scan." if _is_guest else None))
-    if _is_guest and not SCAN_PAUSED:
-        st.markdown('<div class="sv-empty">Viewing a shared brief. '
-                    'Sign in to run a new scan.</div>', unsafe_allow_html=True)
+                         key="sv_scan", disabled=SCAN_PAUSED,
+                         help=("Paused — no credits. " + SCAN_PAUSED_MSG) if SCAN_PAUSED else None)
     if SCAN_PAUSED:
         st.markdown(
             f'<div class="sv-paused"><b>Scanning paused — no credits.</b> {e(SCAN_PAUSED_MSG)}</div>',
             unsafe_allow_html=True)
     # `disabled` already blocks the click; the second guard is belt and braces
     # so no future rerun path can fire a scan while the switch is on.
-    if _run and not SCAN_PAUSED and not _is_guest:
+    if _run and not SCAN_PAUSED:
         _search = " ".join(dict.fromkeys(f"{_in_cat} {_in_prod}".split())).strip() or _prof["search"]
         # Written into a placeholder BEFORE the blocking calls: Streamlit streams
         # each element to the browser as it is produced, so the bar paints and
@@ -5882,19 +5878,12 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             st.session_state["sv_report_id"] = _req_id
             st.session_state.pop("sv_hunch_result", None)
 
-    # Logged-in users always start on a clean sheet — nobody walks into someone
-    # else's run and mistakes it for their own.
+    # EVERY arrival starts on a clean sheet, guests included. Nobody opens the
+    # page onto someone else's run and mistakes it for their own.
     #
-    # GUESTS are the exception, and deliberately so. They arrive through the
-    # public ?view=overview link and cannot run a scan (read-only), so there is
-    # no run of theirs to confuse with anyone else's. Without this they would
-    # land on an empty page, which is not a share link — it is a dead end.
-    if _res is None and _is_guest:
-        _loaded = _sv_load_brief(_active)
-        if _loaded and _loaded.get("result"):
-            _res      = _loaded["result"]
-            _sigs     = _loaded["signals"]
-            _saved_at = _loaded.get("saved_at", "")
+    # This is no longer a dead end for a guest: they can run their own scan now.
+    # And nothing is lost — every run is archived at the bottom of the page, and
+    # the Archive's "Open ↗" reopens any of them through ?report=<id>.
     if _saved_at:
         st.markdown(f'<div style="text-align:center;font-family:{_sans};font-size:10.5px;'
                     f'color:{_faint};letter-spacing:.06em;margin-bottom:6px;">'
@@ -5957,8 +5946,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _b1, _b2, _b3 = st.columns([1, 0.9, 1])
             with _b2:
                 _test = st.button("Test against the currents", use_container_width=True,
-                                  type="primary", key="sv_test", disabled=_is_guest,
-                                  help="Sign in to test a hypothesis." if _is_guest else None)
+                                  type="primary", key="sv_test")
             _reading_slot = st.empty()
 
         if _test and _hunch.strip():
