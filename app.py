@@ -4158,6 +4158,10 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
     fc_key = os.environ.get("FIRECRAWL_API_KEY", "")
     by_domain = {o["domain"]: o for o in outlets}
     sigs, seen = [], set()
+    # An RSS feed carries everything the outlet published, not just our topic,
+    # so items are filtered against these. Short words are dropped: "of", "the"
+    # and friends would match every article ever written.
+    _kw = [w for w in (search_terms + " " + category).lower().split() if len(w) > 3]
 
     for dom in list(by_domain)[:8]:
         got = 0
@@ -4176,7 +4180,38 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
         except Exception as exc:
             diag["counts"][dom] = f"gdelt error: {exc}"
 
-        # ── 2. Firecrawl, only where GDELT found nothing ────────────────────
+        # ── 2. The outlet's own RSS feed ────────────────────────────────────
+        # Free, no key, and usually the BEST source here: trade publications
+        # distribute by RSS as a matter of course, and GDELT's corpus is news
+        # media — it indexes mainstream titles well and niche trade ones badly,
+        # which is why step 1 so often comes back empty.
+        #
+        # The feed URL is guessed from a handful of conventional paths rather
+        # than asked of the model: a wrong guess costs one failed request, a
+        # hallucinated URL costs a silent miss.
+        if not got:
+            for path in ("/feed", "/feed/", "/rss", "/rss.xml", "/index.xml", "/atom.xml"):
+                try:
+                    from ingestion import scrape_rss
+                    items = scrape_rss(feeds=[(f"https://{dom}{path}", by_domain[dom]["name"])],
+                                       max_items_per_feed=12)
+                except Exception:
+                    continue
+                if not items:
+                    continue
+                for sig in items:
+                    blob = f"{sig.title} {sig.content}".lower()
+                    if _kw and not any(k in blob for k in _kw):
+                        continue          # the feed is the whole outlet — keep only what is on topic
+                    sigs.append({"title": sig.title, "content": sig.content, "source": "trade",
+                                 "url": sig.url, "timestamp": sig.timestamp,
+                                 "outlet": by_domain[dom]["name"]})
+                    got += 1
+                if got:
+                    diag["via"][dom] = f"rss{path}"
+                break                     # a feed answered; no need to try other paths
+
+        # ── 3. Firecrawl, only if the two free routes drew a blank ──────────
         if not got and fc_key:
             try:
                 from ingestion import scrape_web
@@ -5839,18 +5874,45 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                      _competitors, _in_brand or _active,
                                      trade=_trade_sigs) if _signals else {}
         _loader.empty()
-        # When the trade section comes back empty, say WHY. Without this the only
-        # symptom is a missing section, and the cause could be any of four
-        # things: no outlets proposed, GDELT not indexing them, Firecrawl absent,
-        # or the model declining to fill the fields. The counts tell you which.
-        if not _trade_sigs:
+        # The trade section can fail at either of two independent stages, and a
+        # missing section looks identical in both cases. This reports both.
+        #
+        #   COLLECTION — did any outlet return an article? (per-outlet counts)
+        #   SYNTHESIS  — given articles, did the model fill the trade fields?
+        #
+        # Shown only to the team, never on the public link.
+        if not _is_guest:
             _d = _trade_diag or {}
-            _lines = ", ".join(f"{k}: {v}" for k, v in (_d.get("counts") or {}).items())
-            with st.expander("Trade press found nothing — why", expanded=False):
-                st.caption(_d.get("error") or "Outlets proposed, none returned articles.")
-                st.code((_lines or "no outlets proposed") +
-                        ("\n\nFirecrawl fallback: OFF (no FIRECRAWL_API_KEY)"
-                         if not os.environ.get("FIRECRAWL_API_KEY") else ""))
+            _n_sigs = len(_trade_sigs or [])
+            _r = _result or {}
+            _has_fields = bool(_r.get("trade_summary") or _r.get("trade_moves"))
+            if not (_n_sigs and _has_fields):
+                with st.expander("Trade section — diagnostic", expanded=False):
+                    st.markdown("**1 · Collection**")
+                    if _d.get("error"):
+                        st.error(_d["error"])
+                    elif not _d.get("proposed"):
+                        st.error("No outlets proposed. Check ANTHROPIC_API_KEY.")
+                    else:
+                        st.caption(f"{len(_d.get('proposed', []))} outlets proposed · "
+                                   f"{_n_sigs} articles collected")
+                        st.code("\n".join(
+                            f"{k:28} {v}   {_d.get('via', {}).get(k, '')}"
+                            for k, v in (_d.get("counts") or {}).items()) or "—")
+                        st.caption("Sources tried per outlet, in order: GDELT → the "
+                                   "outlet's own RSS feed → Firecrawl. The first two are "
+                                   "free; the third only runs if FIRECRAWL_API_KEY is set"
+                                   + (" (it is not)." if not os.environ.get("FIRECRAWL_API_KEY")
+                                      else "."))
+                    st.markdown("**2 · Synthesis**")
+                    if not _n_sigs:
+                        st.caption("Skipped — nothing was collected to synthesise.")
+                    elif _has_fields:
+                        st.success("Model returned the trade fields.")
+                    else:
+                        st.warning("Articles were collected but the model returned no "
+                                   "trade fields. Press Run Lighthouse again — this is "
+                                   "usually a one-off.")
 
         # A salvaged, truncated response is still a truthy dict — it just has
         # the later sections missing. Check the keys the page actually renders
