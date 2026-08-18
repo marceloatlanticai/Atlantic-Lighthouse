@@ -5813,12 +5813,58 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             return sum(_textlen(x) for x in v)
         return 0
 
-    _chars = _textlen({k: v for k, v in (res or {}).items() if not str(k).startswith("_")})
-    _sections = "".join(H).count("<section")
-    _cards = "".join(H).count('class="card"')
+    # MEASURE THE MARKUP, NOT THE MODEL'S OUTPUT.
+    #
+    # This used to size the frame from `res` — the dict the model returned. That
+    # was already the second wrong basis (the first was raw markup length, which
+    # an 84KB inlined logo dominated), and the engagement floor broke it for a
+    # third reason: cards are now dropped AFTER the model has written them. The
+    # text in `res` does not shrink when a quote is filtered out, so every card
+    # the floor removed left roughly 200px of reserved white space behind, and
+    # the gap above section 07 came back.
+    #
+    # The rendered HTML cannot disagree with itself. Tags are stripped so that
+    # inlined SVG logos — all attributes, no text — stop counting.
+    _markup = "".join(H)
+
+    def _drop_hidden(markup: str) -> str:
+        """Remove the decks waiting behind a chip.
+
+        Every network keeps six cards in the DOM and only one deck is visible,
+        so up to thirty cards' worth of text is present and occupies no height.
+        Counting it would reintroduce the same overshoot from the other side.
+        Depth-matched on <div>, because a card contains nested divs and a
+        <details> block, and a naive cut to the next </div> would truncate it.
+        """
+        out, i = [], 0
+        while True:
+            j = markup.find('<div class="qc hide"', i)
+            if j < 0:
+                out.append(markup[i:])
+                return "".join(out)
+            out.append(markup[i:j])
+            depth, k = 0, j
+            while k < len(markup):
+                if markup.startswith("<div", k):
+                    depth += 1
+                    k += 4
+                elif markup.startswith("</div>", k):
+                    depth -= 1
+                    k += 6
+                    if depth == 0:
+                        break
+                else:
+                    k += 1
+            i = k
+
+    _shown = _drop_hidden(_markup)
+    _visible = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", _shown)).strip()
+    _chars = len(_visible)
+    _sections = _markup.count("<section")
+    _cards = _shown.count('class="card"') + _shown.count('class="qc')
     # ~90 characters per line in the 1120px column, ~20px a line, plus a fixed
     # allowance for each section's heading and padding and for each card.
-    h = max(900, int(_chars * 0.30) + _sections * 300 + _cards * 70 + 300)
+    h = max(900, int(_chars * 0.26) + _sections * 300 + _cards * 70 + 300)
 
     # #lh-root is what the auto-fit script measures — see the comment there.
     html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
@@ -6643,8 +6689,13 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 .st-key-sv07 .sv07-reading, .st-key-sv07 .sv07-reading b {{ color:#ffffff; }}
 .sv07-reading {{ font-family:{_sans}; font-size:12.5px; line-height:1.5;
   color:#ffffff; margin:0 0 7px; }}
+/* The call, in the section's own vocabulary. Reads before the sentence does. */
+.sv07-call {{ font-family:{_sans}; font-size:22px; font-weight:700; line-height:1.15;
+  letter-spacing:-.01em; color:#ffffff; margin:26px 0 0; }}
+.sv07-conf {{ display:block; margin-top:7px; font-size:10px; font-weight:700;
+  letter-spacing:.16em; text-transform:uppercase; color:rgba(255,255,255,.66); }}
 .sv07-verdict {{ font-family:{_sans}; font-size:17.5px; font-weight:600; line-height:1.143;
-  color:#ffffff; margin:26px 0 14px; max-width:780px; }}
+  color:#ffffff; margin:14px 0 14px; max-width:780px; }}
 .sv07-await {{ font-family:{_sans}; font-size:12.5px; line-height:1.5;
   color:rgba(255,255,255,.72); margin:24px 0 0; }}
 .sv07-reading a {{ color:#ffffff; }}
@@ -7023,12 +7074,41 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     _batch = _sigs[:40]
                     _stext = "\n\n".join(f"[{i}] [{s['source']}] {s['title'][:100]}\n{s['content'][:200]}"
                                          for i, s in enumerate(_batch))
-                    _hprompt = (f'Hypothesis: "{_hunch}"\n\nSignals:\n{_stext}\n\n'
-                                'Classify each relevant signal as SUPPORTS or CHALLENGES the hypothesis '
-                                '(skip irrelevant ones). Respond ONLY with JSON:\n'
-                                '{"verdict": "one sentence overall read", '
-                                '"supports": [{"index": 0, "reason": "short reason"}], '
-                                '"challenges": [{"index": 4, "reason": "short reason"}]}')
+                    # A VERDICT, NOT A SHRUG.
+                    # The old prompt asked for "one sentence overall read" and
+                    # got "The signals show mixed evidence" on a hypothesis the
+                    # evidence ran 1-against-2. The section promises to say
+                    # whether an idea cuts against the grain or swims with the
+                    # school; "mixed" is neither, and a strategist cannot act on
+                    # it. So the model must pick one of four calls and state its
+                    # confidence — the hedging moves into the confidence field,
+                    # where it belongs, instead of erasing the answer.
+                    _hprompt = (
+                        f'Hypothesis: "{_hunch}"\n\nSignals:\n{_stext}\n\n'
+                        'Classify each relevant signal as SUPPORTS or CHALLENGES the '
+                        'hypothesis (skip irrelevant ones), then COMMIT TO A CALL.\n\n'
+                        'Respond ONLY with JSON:\n'
+                        '{"call": one of "CUTS AGAINST THE GRAIN" | "SWIMMING WITH THE SCHOOL" '
+                        '| "TRUE BUT NOT DIFFERENTIATING" | "TOO LITTLE EVIDENCE", '
+                        '"confidence": "high" | "medium" | "low", '
+                        '"verdict": "one sentence saying WHY you made that call, naming the '
+                        'decisive evidence", '
+                        '"supports": [{"index": 0, "reason": "short reason"}], '
+                        '"challenges": [{"index": 4, "reason": "short reason"}]}\n\n'
+                        'RULES FOR THE CALL — read them before choosing.\n'
+                        '"CUTS AGAINST THE GRAIN" — the evidence contradicts what the '
+                        'category currently does, so acting on the hypothesis would be a '
+                        'genuine countercurrent move.\n'
+                        '"SWIMMING WITH THE SCHOOL" — the hypothesis describes what '
+                        'everyone is already doing, or the evidence simply refutes it.\n'
+                        '"TRUE BUT NOT DIFFERENTIATING" — the evidence supports it, and it '
+                        'is also obvious to every competitor.\n'
+                        '"TOO LITTLE EVIDENCE" — fewer than two relevant signals either '
+                        'way. This is the ONLY honest way to sit on the fence, and using it '
+                        'when evidence exists is a failure.\n\n'
+                        'Do not write "mixed", "it depends" or "both are true" in the '
+                        'verdict. If the evidence leans, say which way and how far. The '
+                        'uncertainty belongs in "confidence", not in the call.')
                     with st.spinner("Testing against the signals…"):
                         try:
                             # Same trap as the main synthesis: 1200 was sized for
@@ -7044,6 +7124,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                             _hjson = _extract_json(_hraw)
                             if not _hjson.get("verdict"):
                                 raise ValueError("no verdict in the response")
+                            if not _hjson.get("call"):
+                                # Older cached readings have no call. Rather than
+                                # invent one, derive it from the counts we do
+                                # have — and never guess past "too little".
+                                _ns, _nc = (len(_hjson.get("supports") or []),
+                                            len(_hjson.get("challenges") or []))
+                                _hjson["call"] = (
+                                    "TOO LITTLE EVIDENCE" if _ns + _nc < 2
+                                    else "CUTS AGAINST THE GRAIN" if _ns > _nc
+                                    else "SWIMMING WITH THE SCHOOL" if _nc > _ns
+                                    else "TOO LITTLE EVIDENCE")
                             st.session_state["sv_hunch_result"] = _hjson
                         except Exception as _hexc:
                             st.error(f"The test didn't come back cleanly — press "
@@ -7060,6 +7151,22 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                             'The lighthouse can only judge a direction once you point at one.</div>',
                             unsafe_allow_html=True)
             else:
+                # The call leads, in the section's own language, with the
+                # confidence beside it. The reasoning follows underneath — a
+                # strategist should be able to read the answer without reading
+                # the sentence.
+                _call = str(_hres.get("call", "") or "").upper()
+                _conf = str(_hres.get("confidence", "") or "").lower()
+                _ns = len(_hres.get("supports") or [])
+                _nc = len(_hres.get("challenges") or [])
+                if _call:
+                    _tally = (f'{_ns} for · {_nc} against' if (_ns or _nc)
+                              else 'no clear evidence either way')
+                    _cf = f' · {e(_conf)} confidence' if _conf else ""
+                    st.markdown(
+                        f'<div class="sv07-call">{e(_call)}'
+                        f'<span class="sv07-conf">{_tally}{_cf}</span></div>',
+                        unsafe_allow_html=True)
                 st.markdown(f'<div class="sv07-verdict">{e(_hres.get("verdict",""))}</div>',
                             unsafe_allow_html=True)
                 for _it in _hres.get("supports", [])[:4]:
