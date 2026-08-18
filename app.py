@@ -4821,15 +4821,40 @@ _SV_FLOOR = {
 }
 
 
-def _sv_clears_floor(net: str, cands: list) -> list:
+def _sv_named(sig: dict, names: tuple) -> bool:
+    """Does this post name the brand or one of its competitors?
+
+    A post that says "@Rambler" is intelligence whatever its reach. The floor
+    threw away exactly that: a TikTok reading "My @Rambler Sparkling Water is
+    always with me" was cut for having 238 views, and earlier in this project
+    the single most useful line in any brief came from an account with 706
+    views. Reach measures how many people saw it; a brand mention measures
+    whether it is about you. Those are different questions and the floor was
+    answering the wrong one.
+    """
+    if not names:
+        return False
+    hay = f"{sig.get('title','')} {sig.get('content','')}".lower()
+    return any(n in hay for n in names)
+
+
+def _sv_clears_floor(net: str, cands: list, names: tuple = ()) -> list:
     """Drop candidates below their network's floor.
 
-    THE EXEMPTION MATTERS AS MUCH AS THE RULE. Some sources carry no engagement
-    data at all — Reddit over RSS, YouTube before the statistics call, anything
-    reloaded from an old archive. Filtering those on a number we never collected
-    would silently delete a whole network for having incomplete metadata rather
-    than weak content. So when NOTHING in a network has a figure, the floor does
-    not apply and the cards are judged on relevance alone.
+    THE EXEMPTIONS MATTER AS MUCH AS THE RULE, and there are three.
+
+    1. Sources that carry no engagement data at all — Reddit over RSS, YouTube
+       before the statistics call, anything reloaded from an old archive.
+       Filtering on a number we never collected would delete a network for
+       incomplete metadata rather than weak content.
+
+    2. Sources whose figures are ALL ZERO. The X actor routinely returns
+       likes: 0 · retweets: 0 on posts that plainly have engagement, so a whole
+       network can be wiped out by a scraper's silence. All-zero is a reporting
+       failure, not a verdict. A single non-zero figure anywhere proves the
+       numbers are real and the zeros with them.
+
+    3. Posts that name the brand or a competitor — see _sv_named.
     """
     floor = _SV_FLOOR.get(net)
     if not floor:
@@ -4844,7 +4869,10 @@ def _sv_clears_floor(net: str, cands: list) -> list:
                     for k in _SV_ENG_KEYS)
     if not have_data:
         return cands
-    return [c for c in cands if _sv_weight(c[1].get("meta")) >= floor]
+    if not any(_sv_weight(sg.get("meta")) for _i, sg, _c in cands):
+        return cands                     # every figure is zero — nobody measured
+    return [c for c in cands
+            if _sv_weight(c[1].get("meta")) >= floor or _sv_named(c[1], names)]
 
 
 def _sv_engagement(meta: dict) -> str:
@@ -5372,6 +5400,17 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         VOICE = ("twitter", "tiktok", "instagram", "youtube", "reddit", "hacker_news")
         PER_NET, ALL_SLOTS = 6, 6
 
+        _mt = (res or {}).get("_meta", {}) or {}
+        _terms = _sv_terms(" ".join(str(_mt.get(k, "")) for k in
+                                    ("category", "product", "brand", "competitors")))
+        # Brand and competitor names, for the floor exemption. Split on commas
+        # so "Topo Chico" survives as one name instead of two useless words.
+        _names = tuple(n for n in
+                       (x.strip().lower() for x in
+                        (str(_mt.get("brand", "")) + "," +
+                         str(_mt.get("competitors", ""))).split(","))
+                       if len(n) >= 4)
+
         # 1. the model's picks, grouped by network — these carry its context line.
         #    They used to be exempt from the engagement floor on the grounds that
         #    the model saw the whole pool when it chose. In practice that let a
@@ -5387,7 +5426,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 continue
             used.add(q.get("signal_index"))     # still consumed: never re-listed below
             _k0 = str(s_.get("source", "") or "").lower()
-            if not _sv_clears_floor(_k0, [(0, s_, "")]):
+            if not _sv_clears_floor(_k0, [(0, s_, "")], _names):
                 _dropped_curated += 1
                 continue
             k = str(s_.get("source", "") or "").lower() or "other"
@@ -5410,9 +5449,6 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         #    Candidates are gathered first and sorted by engagement, so the
         #    16M-view TikTok beats the 3-view one to the deck instead of
         #    whichever the scraper happened to return first.
-        _mt = (res or {}).get("_meta", {}) or {}
-        _terms = _sv_terms(" ".join(str(_mt.get(k, "")) for k in
-                                    ("category", "product", "brand", "competitors")))
         _lang = MARKETS.get(str(_mt.get("market", "")), {}).get("lang", "")
         cands: dict = {}
         for i2, sg in enumerate(sigs):
@@ -5432,7 +5468,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             # pool when it chose them. A network left with nothing here simply
             # gets no chip — which is the honest reading. Hacker News had
             # nothing to say about soup that week.
-            lst = _sv_clears_floor(k, lst)
+            lst = _sv_clears_floor(k, lst, _names)
             lst.sort(key=lambda t: -_sv_weight(t[1].get("meta")))
             for i2, sg, _clean in lst:
                 if len(pools.get(k, [])) >= PER_NET:
@@ -6062,6 +6098,17 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
         _LBL = {"reddit": "Reddit", "hacker_news": "HN", "youtube": "YouTube",
                 "tiktok": "TikTok", "instagram": "Instagram",
                 "twitter": "X/Twitter", "gdelt": "News", "web": "Web", "rss": "RSS"}
+        # THE PDF NOW FILTERS LIKE THE SCREEN.
+        # It did not, and the two disagreed in the worst direction: a client
+        # received a printed brief containing the five cards the team had
+        # decided were too weak to display. Whatever rule we apply has to apply
+        # to both artefacts or it is not a rule, it is a preference.
+        _pm = (res or {}).get("_meta", {}) or {}
+        _pnames = tuple(n for n in
+                        (x.strip().lower() for x in
+                         (str(_pm.get("brand", "")) + "," +
+                          str(_pm.get("competitors", ""))).split(","))
+                        if len(n) >= 4)
         for q in iq[:6]:
             _txt = _qtext(q.get("signal_index"))
             if not _txt:
@@ -6072,6 +6119,8 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
                 _sg = {}
             _m = _sg.get("meta") or {}
             _k = str(_sg.get("source", "") or "").lower()
+            if _sg and not _sv_clears_floor(_k, [(0, _sg, "")], _pnames):
+                continue                 # same floor the screen applies
             # Label from the SOURCE, not from the model — the same correction the
             # screen needed after a Hacker News post announced itself as Reddit.
             _src = _LBL.get(_k) or q.get("network", "")
