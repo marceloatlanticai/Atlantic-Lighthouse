@@ -18,6 +18,7 @@ import json
 import uuid
 import html as html_mod
 import re as _re_global
+import re          # _sv_body and the relevance gate use it at module level
 import urllib.request
 import urllib.parse
 from datetime import datetime
@@ -4287,26 +4288,54 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     # exactly like a brief with little to say.
     tally: dict = {}
 
-    def _youtube():
+    # A search phrase is usually three or four words — "Sports Lager Beer". Given
+    # to an API whole it can be too narrow (Reddit and GDELT read it as AND, and
+    # returned nothing at all); chopped to one word it is far too broad. YouTube
+    # was searching just "Sports" and coming back with Malayalam news channels.
+    #
+    # So: ask for the whole phrase, and only if that comes back thin, widen to
+    # the product tail and then the category head.
+    _words = search_terms.split()
+    _queries = [search_terms]
+    if len(_words) > 2:
+        _queries += [" ".join(_words[-2:]), " ".join(_words[:2])]
+    _queries = list(dict.fromkeys(q for q in _queries if q.strip()))
+
+    def _widen(fn, want: int) -> list:
+        """Run fn(query) over progressively broader queries until `want` results.
+        Reddit, GDELT, HN and the YouTube API are all free or quota-based, so an
+        extra call costs time, not money."""
         seen, got = set(), []
-        for kw in search_terms.split()[:2]:
-            for s in scrape_youtube(kw, api_key=ytkey, n=5, region_code=_mk["youtube"]):
-                if s.url not in seen:
+        for q in _queries:
+            try:
+                for s in fn(q):
+                    if s.url in seen:
+                        continue
                     seen.add(s.url)
                     got.append(s)
+            except Exception:
+                if not got:
+                    raise            # a total failure should still be reported
+            if len(got) >= want:
+                break
         return got
 
     jobs = {
-        "reddit":      lambda: scrape_reddit(search_terms, max_items=10),
-        "gdelt":       lambda: scrape_gdelt(search_terms, n=8, source_country=_mk["gdelt"]),
-        "hacker_news": lambda: scrape_hacker_news(search_terms, n=5),
+        "reddit":      lambda: _widen(lambda q: scrape_reddit(q, max_items=10), 8),
+        "gdelt":       lambda: _widen(lambda q: scrape_gdelt(q, n=8,
+                                      source_country=_mk["gdelt"]), 6),
+        "hacker_news": lambda: _widen(lambda q: scrape_hacker_news(q, n=5), 5),
     }
     if ytkey:
-        jobs["youtube"] = _youtube
+        jobs["youtube"] = lambda: _widen(
+            lambda q: scrape_youtube(q, api_key=ytkey, n=6,
+                                     region_code=_mk["youtube"]), 8)
     if apify:
         jobs["tiktok"]    = lambda: scrape_tiktok(search_terms, api_token=apify, n=8,
                                                   fetch_comments=False)
-        jobs["instagram"] = lambda: scrape_instagram(search_terms, api_token=apify, n=5)
+        # 8, not 5: the Consumer Insight deck wants six cards per network and a
+        # cap of five could never fill one.
+        jobs["instagram"] = lambda: scrape_instagram(search_terms, api_token=apify, n=8)
         jobs["twitter"]   = lambda: scrape_twitter(search_terms, api_token=apify, n=8)
     else:
         tally["apify"] = "skipped (no APIFY_API_TOKEN)"
@@ -4345,15 +4374,30 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
 
     # Saved signals stay on the main thread: the loader is @st.cache_data and
     # calling it from a worker warns about a missing script context.
+    #
+    # THEY ALSO HAVE TO BE ABOUT THIS SEARCH. The filter used to be the client
+    # tag alone, so every past scan for the same client poured back in: a
+    # Heineken sports-lager brief was served Instagram posts about jewellery and
+    # bathroom taps, left over from a sparkling-water run. They kept their
+    # original source name, so they looked like fresh Instagram results.
+    #
+    # Archived signals keep their source (they are real posts and belong in the
+    # network decks) but now have to mention the search to get in.
+    _terms = _sv_terms(search_terms)
     try:
-        n = 0
+        n = skipped = 0
         for s in _load_signals_raw(limit=200):
-            if _signal_matches_client(s, active):
-                out.append({"title": s.get("title", ""), "content": s.get("content", ""),
-                            "source": s.get("source", "db"), "url": s.get("url", ""),
-                            "timestamp": s.get("timestamp", "")})
-                n += 1
-        tally["archive"] = n
+            if not _signal_matches_client(s, active):
+                continue
+            if not _sv_on_topic(s, _terms):
+                skipped += 1
+                continue
+            out.append({"title": s.get("title", ""), "content": s.get("content", ""),
+                        "source": s.get("source", "db"), "url": s.get("url", ""),
+                        "timestamp": s.get("timestamp", ""),
+                        "meta": s.get("meta") or s.get("raw_meta") or {}})
+            n += 1
+        tally["archive"] = f"{n} (skipped {skipped} off-topic)" if skipped else n
     except Exception as exc:
         tally["archive"] = f"ERROR {exc}"
     return out, tally
@@ -4517,6 +4561,82 @@ a better field, not a lazy one. Never pad a line to reach a number.
             try: return json.loads(raw[s:en])
             except Exception: return {}
         return {}
+
+
+# Scrapers append a metadata footer to every post body — TikTok writes
+# "Author: @x | Views: 1,203 | Likes: 40", Instagram "@x | Likes: 4 | Comments: 1",
+# Reddit "Points: 61 | Comments: 81". Harmless when the model reads it, ugly on a
+# card: a post with no caption rendered as the quote "Author: @ | Views: 0 |
+# Likes: 0", and a post WITH a caption printed its numbers twice, since the card
+# already has an engagement line.
+_SV_FOOTER = re.compile(r"""(?ix)
+    \s*
+    (?:Author\s*:\s*)?          # TikTok prefixes the handle
+    (?:@\S*\s*[|\u00b7]?\s*)?      # optional handle, possibly a bare "@"
+    (?:Views|Likes|Comments|Retweets|Replies|Points)\s*:\s*[\d,]+
+    (?:\s*[|\u00b7]\s*(?:Views|Likes|Comments|Retweets|Replies|Points)\s*:\s*[\d,]+)*
+    """)
+_SV_TRANSCRIPT = re.compile(r"\bTRANSCRIPT\s*:\s*", re.I)
+_SV_URL = re.compile(r"https?://\S+")
+
+
+def _sv_body(sig: dict) -> str:
+    """The words a human actually wrote, with the scraper's footer removed.
+
+    Every scraper appends its own metadata tail — TikTok "Author: @x | Views: 3
+    | Likes: 0", Instagram "@x | Likes: 4 | Comments: 1", Reddit and HN
+    "Points: 61 | Comments: 81", X "@x \u00b7 Likes: 0 \u00b7 Retweets: 0". Fine for the
+    model to read, wrong on a card: a post with no caption rendered as the
+    quote "Author: @ | Views: 0 | Likes: 0", and a post WITH a caption printed
+    its numbers twice, because the card already carries an engagement line.
+
+    Returns "" when nothing human is left — the caller drops the card rather
+    than showing an empty quotation mark.
+    """
+    txt = (sig.get("content") or "").strip()
+    txt = _SV_FOOTER.sub(" ", txt)
+    if not txt.strip(" |\u00b7\n\t-"):
+        txt = _SV_FOOTER.sub(" ", (sig.get("title") or ""))
+    txt = _SV_TRANSCRIPT.sub("", txt)
+    txt = _SV_URL.sub("", txt)                  # bare t.co links read as noise
+    return " ".join(txt.split()).strip(" |\u00b7-\u2014")
+
+
+_SV_STOP = {"the", "and", "for", "with", "from", "that", "this", "your", "our",
+            "new", "best", "top", "how", "why", "what", "who", "all", "more",
+            "brand", "brands", "product", "products", "category", "market"}
+
+
+def _sv_terms(search: str) -> list:
+    """The words a signal has to earn its place with. Short words and filler are
+    dropped — matching on 'the' would let anything through."""
+    out = []
+    for w in re.findall(r"[a-z0-9]+", (search or "").lower()):
+        if len(w) >= 4 and w not in _SV_STOP:
+            out.append(w)
+    return list(dict.fromkeys(out))
+
+
+def _sv_on_topic(sig: dict, terms: list) -> bool:
+    """Does this post mention what we searched for?
+
+    The reason this exists: a Heineken / sports / lager beer scan filled its
+    cards with 'Kerala Breaking News', 'Ask HN: Why Read Books?' and an
+    Instagram post about jewellery. The scrapers return whatever their APIs
+    rank highest, and when a query has no real matches they pad the list with
+    whatever they have.
+
+    The model never saw this problem because it picked the six quotes that made
+    sense. Now that raw signals are promoted to cards to fill each network's
+    six, they have to clear the same bar on their own.
+
+    Singular/plural is handled by stem matching: 'beer' matches 'beers', and
+    'lager' matches 'lagers'.
+    """
+    if not terms:
+        return True
+    hay = f"{sig.get('title','')} {sig.get('content','')}".lower()
+    return any(t in hay or t.rstrip("s") in hay for t in terms)
 
 
 def _sv_handle(src: str, meta: dict) -> str:
@@ -4945,20 +5065,29 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 continue
             used.add(q.get("signal_index"))
             k = str(s_.get("source", "") or "").lower() or "other"
+            # The LABEL comes from the source, not from the model. It wrote
+            # "Reddit" for a Hacker News post once, and the card then sat under
+            # the HN chip announcing itself as Reddit.
             curated.setdefault(k, []).append(
-                {"sig": s_, "net": q.get("network") or SRC.get(s_.get("source", ""), ""),
+                {"sig": s_, "net": SRC.get(k, k.replace("_", " ").title()),
                  "handle": q.get("handle", ""), "context": q.get("context", ""),
-                 "eng": q.get("engagement", ""), "idx": q.get("signal_index")})
+                 "eng": q.get("engagement", "") or _sv_engagement(s_.get("meta") or {}),
+                 "idx": q.get("signal_index")})
 
-        # 2. top up each deck from the raw pool
+        # 2. top up each deck from the raw pool. Two bars to clear, because a
+        #    raw signal has no editor behind it: it must say something (an empty
+        #    caption is not a quote) and it must be about what we searched for.
+        _mt = (res or {}).get("_meta", {}) or {}
+        _terms = _sv_terms(" ".join(str(_mt.get(k, "")) for k in
+                                    ("category", "product", "brand", "competitors")))
         pools = {k: list(v) for k, v in curated.items()}
         for i2, sg in enumerate(sigs):
             k = str(sg.get("source", "") or "").lower()
             if k not in VOICE or i2 in used:
                 continue
-            if not (sg.get("content") or sg.get("title")):
-                continue
             if len(pools.get(k, [])) >= PER_NET:
+                continue
+            if not _sv_body(sg) or not _sv_on_topic(sg, _terms):
                 continue
             _m = sg.get("meta") or {}
             pools.setdefault(k, []).append(
@@ -4996,8 +5125,10 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 if mode != "screen" and not is_all:
                     continue
                 s_ = c["sig"]
+                full = _sv_body(s_)
+                if not full:
+                    continue          # nothing human in it — do not print a blank quote
                 shown.add(c["idx"])
-                full = (s_.get("content") or s_.get("title") or "")
                 txt, u = full[:260], s_.get("url", "")
                 lk = f' <a href="{e(u)}" target="_blank">\u2197</a>' if u else ""
                 more = ""
@@ -6218,8 +6349,12 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                    else ". Press Run Lighthouse again to retry.")
             )
         if _result:
+            # Competitors ride along so the relevance gate recognises them: a post
+            # about Budweiser IS on topic for a Heineken scan, even though it
+            # never says "beer".
             _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
-                                "product": _in_prod, "market": _in_market}
+                                "product": _in_prod, "market": _in_market,
+                                "competitors": _prof.get("competitors", "")}
             # Verified outlets, from GDELT — not the model's list. Prefixed with
             # "_" so the renderer can tell it apart from generated fields.
             _result["_trade_outlets"] = _trade_outs
