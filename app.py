@@ -4312,11 +4312,20 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
         _queries += [" ".join(_words[-2:]), " ".join(_words[:2])]
     _queries = list(dict.fromkeys(q for q in _queries if q.strip()))
 
-    def _widen(fn, want: int) -> list:
+    def _widen(fn, want: int, budget: float = 35.0) -> list:
         """Run fn(query) over progressively broader queries until `want` results.
-        Reddit, GDELT, HN and the YouTube API are all free or quota-based, so an
-        extra call costs time, not money."""
-        seen, got = set(), []
+        Reddit, GDELT, HN and the YouTube API are free or quota-based, so an
+        extra call costs time, not money.
+
+        TIME, THOUGH, IS THE WHOLE RISK. Widening multiplies the worst case by
+        the number of queries, and it retries precisely when a source is
+        returning nothing — which is also when it is slowest. The first version
+        of this turned a silent Reddit into a five-minute scan. So there is a
+        wall-clock budget: once it is spent, we take what we have.
+        """
+        import time
+        deadline = time.monotonic() + budget
+        seen, got, err = set(), [], None
         for q in _queries:
             try:
                 for s in fn(q):
@@ -4324,11 +4333,12 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                         continue
                     seen.add(s.url)
                     got.append(s)
-            except Exception:
-                if not got:
-                    raise            # a total failure should still be reported
-            if len(got) >= want:
+            except Exception as exc:
+                err = exc               # remember it in case nothing ever lands
+            if len(got) >= want or time.monotonic() >= deadline:
                 break
+        if not got and err is not None:
+            raise err                   # total failure must reach the tally
         return got
 
     jobs = {
@@ -4344,9 +4354,12 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     if apify:
         jobs["tiktok"]    = lambda: scrape_tiktok(search_terms, api_token=apify, n=8,
                                                   fetch_comments=False)
-        # 8, not 5: the Consumer Insight deck wants six cards per network and a
-        # cap of five could never fill one.
-        jobs["instagram"] = lambda: scrape_instagram(search_terms, api_token=apify, n=8)
+        # 12, not 5. The old cap was set when this scraper fired ONE hopeless
+        # compound hashtag, so a low limit was pure damage control. Now the
+        # budget is split across three plausible tags (~5 posts each), and the
+        # deck wants six cards per network — five could never fill one. At
+        # roughly US$2.30 per 1000 results this is about US$0.035 a scan.
+        jobs["instagram"] = lambda: scrape_instagram(search_terms, api_token=apify, n=12)
         jobs["twitter"]   = lambda: scrape_twitter(search_terms, api_token=apify, n=8)
     else:
         tally["apify"] = "skipped (no APIFY_API_TOKEN)"
@@ -5267,6 +5280,19 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             H.append('<div class="qempty">Nothing from this network in this scan.</div>')
         H.append('</section>'); h += 1040
 
+    if ("02T" in which and mode == "screen"
+            and not (res.get("trade_summary") or res.get("trade_moves"))
+            and not trade_sigs):
+        # Silence is ambiguous. A missing section could mean the industry press
+        # said nothing, or that collection broke — and the reader cannot tell
+        # the difference from an absence. Say which.
+        H.append(open_sec("02T") + head("02T", "The Trade Current",
+                                        "What the industry press is reporting"))
+        H.append('<div class="lead">No industry coverage came back for this scan. '
+                 'Either the trade press has not written about it in the last two '
+                 'months, or collection failed \u2014 the Trade section diagnostic '
+                 'below the brief says which.</div>')
+        H.append('</section>'); h += 320
     if "02T" in which and (res.get("trade_summary") or res.get("trade_moves")):
         # Trade press. Deliberately placed right after Consumer Insight: the two
         # are meant to be read against each other, and trade_vs_street below is
@@ -6391,7 +6417,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 st.caption(f"Streamlit {st.__version__} · component height: "
                            f"{'measured by Streamlit (st.iframe)' if hasattr(st, 'iframe') else 'PYTHON ESTIMATE — st.iframe missing, expect blank space under the brief'}")
                 st.caption(f"Apify returned {_billed} items this run. The caps in the "
-                           f"code are TikTok 8 · Instagram 5 · X 12 = 25. Well under "
+                           f"code are TikTok 8 · Instagram 12 · X 8 = 28. Well under "
                            f"that means a scraper is failing quietly, not that the "
                            f"scan was cheap.")
 
