@@ -4423,6 +4423,32 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     #
     # Archived signals keep their source (they are real posts and belong in the
     # network decks) but now have to mention the search to get in.
+    # NEAR-DUPLICATES.
+    # One brief showed the same Atlantic piece twice side by side, once as "The
+    # Atlantic" and once as "The Atlantic readers" — two feeds carrying one
+    # article. Two of the six cards spent on a single story. Dedupe on the first
+    # 120 characters of the body: same words, same story, whatever the feed
+    # called itself.
+    def _key(sg):
+        # The BODY only. Including the title defeats the purpose: the pair that
+        # prompted this was titled "The Atlantic" and "The Atlantic readers" —
+        # different labels on identical text, which is exactly the case to
+        # catch. My first version keyed on title+body and let both through.
+        txt = (sg.get("content") or sg.get("title") or "").lower()
+        return re.sub(r"[^a-z0-9]+", "", txt)[:120]
+
+    _seen_txt, _uniq, _dupes = set(), [], 0
+    for sg in out:
+        k = _key(sg)
+        if k and k in _seen_txt:
+            _dupes += 1
+            continue
+        _seen_txt.add(k)
+        _uniq.append(sg)
+    out = _uniq
+    if _dupes:
+        tally["duplicates removed"] = _dupes
+
     _terms = _sv_terms(search_terms)
     try:
         n = skipped = 0
@@ -4714,8 +4740,15 @@ def _sv_terms(search: str) -> list:
     return list(dict.fromkeys(out))
 
 
-def _sv_on_topic(sig: dict, terms: list) -> bool:
+def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None) -> bool:
     """Does this post mention what we searched for?
+
+    `text` is the CLEANED body when the caller has one. That matters more than it
+    looks: judging the raw content lets a restaurant promo through on the
+    strength of "#soup #foodie" in its tag wall, and the card then displays the
+    dehashed text — a Gujarati Manchurian ad, a Budapest opening-hours post, a
+    New York review of ricotta gnudi. The tags were the only thing on topic and
+    they are exactly what the card removes.
 
     The reason this exists: a Heineken / sports / lager beer scan filled its
     cards with 'Kerala Breaking News', 'Ask HN: Why Read Books?' and an
@@ -4732,7 +4765,8 @@ def _sv_on_topic(sig: dict, terms: list) -> bool:
     """
     if not terms:
         return True
-    hay = f"{sig.get('title','')} {sig.get('content','')}".lower()
+    hay = (text if text is not None
+           else f"{sig.get('title','')} {sig.get('content','')}").lower()
     return any(t in hay or t.rstrip("s") in hay for t in terms)
 
 
@@ -4774,6 +4808,9 @@ def _sv_weight(meta: dict) -> int:
 # The numbers are per network because the scales are not comparable: 5,000 views
 # on TikTok is nothing, 50 likes on Instagram is a real post, 10 points on
 # Hacker News is a thread people read.
+_SV_ENG_KEYS = ("views", "plays", "likes", "score", "points",
+                "retweets", "comments", "num_comments")
+
 _SV_FLOOR = {
     "tiktok":      10000,   # ≈ 3,000 views
     "youtube":     10000,   # ≈ 3,000 views
@@ -4797,10 +4834,17 @@ def _sv_clears_floor(net: str, cands: list) -> list:
     floor = _SV_FLOOR.get(net)
     if not floor:
         return cands
-    weights = [_sv_weight(sg.get("meta")) for _i, sg, _c in cands]
-    if not any(weights):
-        return cands                     # no data anywhere — nothing to judge on
-    return [c for c, w in zip(cands, weights) if w >= floor]
+    # The exemption tests whether the FIELDS EXIST, not whether they are
+    # non-zero. Testing the values was wrong: an Instagram post with 0 likes
+    # weighs 0 exactly like a Reddit post scraped over RSS that has no like
+    # field at all, so a deck of zero-engagement restaurant promos exempted
+    # itself and sailed past the floor. "Nobody engaged" and "we never asked"
+    # are opposite facts.
+    have_data = any(k in (sg.get("meta") or {}) for _i, sg, _c in cands
+                    for k in _SV_ENG_KEYS)
+    if not have_data:
+        return cands
+    return [c for c in cands if _sv_weight(c[1].get("meta")) >= floor]
 
 
 def _sv_engagement(meta: dict) -> str:
@@ -4856,6 +4900,100 @@ def _sv_save_brief(active: str, result: dict, signals: list) -> None:
         _db.save_dispatch(payload, f"__overview__{active}")
     except Exception as _exc:
         print(f"[overview] save error: {_exc}")
+
+
+def _sv_trend_history(active: str, trends: list, category: str = "", product: str = "",
+                      current_saved_at: str = "") -> tuple:
+    """How long each current has been running, and which ones just disappeared.
+
+    Returns (ages, faded) — one label per trend, plus the currents that were in
+    the last brief and are absent from this one.
+
+    THE DATA WAS ALREADY PAID FOR. Every brief is archived, and until now that
+    served only to reopen old reports. But the valuable thing in cultural
+    intelligence is rarely "what is happening" — it is "what changed". A current
+    in its third day reads differently to a strategist than one that appeared
+    this morning, and a current that VANISHED is often the sharper signal: it
+    tells you a story you were briefing against has stopped.
+
+    Deliberately not a new section. The age rides on the card label that already
+    exists and the faded line is a single row underneath, so the layout holds.
+
+    Comparison is token overlap, not a model call — free, deterministic, and it
+    cannot invent a continuity that was never there.
+    """
+    def _toks(t: dict) -> set:
+        txt = f"{t.get('title','')} {t.get('summary','')}".lower()
+        return {w for w in re.findall(r"[a-z0-9]+", txt)
+                if len(w) >= 4 and w not in _SV_STOP}
+
+    def _same(a: set, b: set) -> bool:
+        if not a or not b:
+            return False
+        return len(a & b) / len(a | b) >= 0.22
+
+    try:
+        past = _sv_list_briefs(active, limit=40)
+    except Exception:
+        return ["" for _ in trends], []
+
+    # ONLY LIKE WITH LIKE. The archive holds every scan for the client, and the
+    # team runs several products through it in an afternoon — Heinz/Soup at
+    # 14:33, Heineken/Sports at 12:49. Comparing a soup brief against a ketchup
+    # brief would report continuity and fade that never happened.
+    cat, prod = (category or "").strip().lower(), (product or "").strip().lower()
+
+    def _matches(b: dict) -> bool:
+        if cat and str(b.get("category", "")).strip().lower() != cat:
+            return False
+        if prod and str(b.get("product", "")).strip().lower() != prod:
+            return False
+        return True
+
+    # Briefs are grouped by DAY: eight runs in one afternoon are one day's
+    # reading, not eight days of history.
+    by_day: dict = {}
+    for b in past:
+        day = str(b.get("saved_at", ""))[:10]
+        if not day or not _matches(b):
+            continue
+        if current_saved_at and b.get("saved_at") == current_saved_at:
+            continue
+        by_day.setdefault(day, b)                   # list is newest-first
+    days = sorted(by_day, reverse=True)[:8]
+    if not days:
+        return ["" for _ in trends], []
+
+    def _pretty(day: str) -> str:
+        try:
+            return datetime.strptime(day, "%Y-%m-%d").strftime("%-d %b")
+        except Exception:
+            return day
+
+    ages = []
+    for t in trends:
+        mine = _toks(t)
+        streak, first_day = 0, ""
+        for day in days:                            # walk back until it breaks
+            prev = (by_day[day].get("result") or {}).get("trends") or []
+            if any(_same(mine, _toks(p)) for p in prev):
+                streak += 1
+                first_day = day
+            else:
+                break                               # no jumping gaps to pad a streak
+        ages.append("New" if streak == 0 else f"Running since {_pretty(first_day)}")
+
+    # WHAT DROPPED OUT. Only against the most recent prior day: a current that
+    # was there yesterday and is gone today is news. Reaching further back would
+    # keep re-reporting the same disappearance every day.
+    last_day = days[0]
+    now = [_toks(t) for t in trends]
+    faded = []
+    for p in ((by_day[last_day].get("result") or {}).get("trends") or []):
+        pt = _toks(p)
+        if not any(_same(pt, n) for n in now):
+            faded.append({"title": p.get("title", ""), "day": _pretty(last_day)})
+    return ages, faded
 
 
 def _sv_list_briefs(active: str, limit: int = 40) -> list:
@@ -4986,6 +5124,19 @@ body{font-family:__SANS__;background:__PAPER__;color:__INK__;
 .sec:not(.blue) .card .topen{color:#ffffff;}
 .clabel{font-size:10px;letter-spacing:.18em;text-transform:uppercase;
         color:__BLUE__;font-weight:600;margin-bottom:10px;}
+/* How long this current has been running. Sits on the existing label line so
+   no card grows: "CURRENT · NEW" or "CURRENT · RUNNING SINCE 11 AUG". */
+.cage{margin-left:8px;padding-left:8px;border-left:1px solid currentColor;
+      opacity:.62;font-weight:600;}
+/* Currents that were in the last brief and are gone from this one. Quiet by
+   design — it is context, not a headline. */
+.faded{margin-top:20px;padding-top:14px;border-top:1px solid rgba(0,0,0,.14);
+       font-size:12.5px;line-height:1.5;color:__BODY__;}
+.fadedlbl{display:inline-block;margin-right:10px;font-size:9.5px;font-weight:700;
+          letter-spacing:.14em;text-transform:uppercase;opacity:.6;}
+.sec.blue .faded{border-top-color:rgba(255,255,255,.28);color:rgba(255,255,255,.82);}
+.sec.blue .fadedlbl{color:#ffffff;}
+.sec:not(.blue) .card .cage{color:#ffffff;}
 .ctitle{font-size:18px;font-weight:700;line-height:1.28;margin-bottom:9px;color:__INK__;}
 .cbody{font-size:13.5px;line-height:1.6;color:__BODY__;}
 .hair{border-top:1px solid __HAIR__;margin:14px 0 12px;}
@@ -5139,7 +5290,7 @@ details .src a{color:__BLUE__;text-decoration:none;}
 
 
 def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str = "screen",
-                 trade_sigs: Optional[list] = None) -> tuple:
+                 trade_sigs: Optional[list] = None, trend_ages: Optional[list] = None) -> tuple:
     """Render the requested brief sections as HTML.
 
     Returns (html, estimated_height_px). Odd sections get the blue block on
@@ -5173,7 +5324,8 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
     if "01" in which:
         H.append(open_sec("01") + head("01", "The Currents", f"What is trending in {category}"))
         H.append('<div class="row3">')
-        for t in (res.get("trends") or [])[:3]:
+        _ages = trend_ages or []
+        for _ti, t in enumerate((res.get("trends") or [])[:3]):
             links = ""
             for ix in (t.get("signal_indexes") or [])[:6]:
                 s = sig(ix)
@@ -5184,10 +5336,23 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                               + (f' <a href="{e(u)}" target="_blank">open ↗</a>' if u else "") + '</div>')
             st_ = f'<div class="hair"></div><div class="stat">{e(t.get("stat",""))}</div>' if t.get("stat") else ""
             dd = f'<details><summary>Dig deeper</summary>{links}</details>' if links else ""
-            H.append(f'<div class="card"><div class="clabel">Current</div>'
+            # The age rides on the existing "Current" label rather than adding a
+            # row, so nothing in the layout moves.
+            _age = _ages[_ti] if _ti < len(_ages) else ""
+            _lbl = ('Current'
+                    + (f'<span class="cage">{e(_age)}</span>' if _age else ""))
+            H.append(f'<div class="card"><div class="clabel">{_lbl}</div>'
                      f'<div class="ctitle">{e(t.get("title",""))}</div>'
                      f'<div class="cbody">{e(t.get("summary",""))}</div>{st_}{dd}</div>')
-        H.append('</div></section>'); h += 700
+        H.append('</div>')
+        # ONE LINE, no new section. What LEFT the brief is often the sharper
+        # signal: it says a story you were briefing against has stopped.
+        if faded:
+            _names = " &nbsp;\u00b7&nbsp; ".join(e(f.get("title", "")) for f in faded[:3])
+            H.append(f'<div class="faded"><span class="fadedlbl">Dropped out since '
+                     f'{e(faded[0].get("day", ""))}</span>{_names}</div>')
+            h += 70
+        H.append('</section>'); h += 700
 
     if "02" in which:
         H.append(open_sec("02") + head("02", "Consumer Insight", "What people are actually saying"))
@@ -5206,13 +5371,24 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         VOICE = ("twitter", "tiktok", "instagram", "youtube", "reddit", "hacker_news")
         PER_NET, ALL_SLOTS = 6, 6
 
-        # 1. the model's picks, grouped by network — these carry its context line
+        # 1. the model's picks, grouped by network — these carry its context line.
+        #    They used to be exempt from the engagement floor on the grounds that
+        #    the model saw the whole pool when it chose. In practice that let a
+        #    restaurant promo with FOUR LIKES occupy one of the six cards in a
+        #    client PDF. Editorial judgement is worth a lot; it is not worth
+        #    quoting someone nobody listened to. The floor now applies to the
+        #    model's picks as well, and the deck refills from the top-ups.
         curated, used = {}, set()
+        _dropped_curated = 0
         for q in (res.get("insight_quotes") or [])[:6]:
             s_ = sig(q.get("signal_index"))
             if not s_:
                 continue
-            used.add(q.get("signal_index"))
+            used.add(q.get("signal_index"))     # still consumed: never re-listed below
+            _k0 = str(s_.get("source", "") or "").lower()
+            if not _sv_clears_floor(_k0, [(0, s_, "")]):
+                _dropped_curated += 1
+                continue
             k = str(s_.get("source", "") or "").lower() or "other"
             # The LABEL comes from the source, not from the model. It wrote
             # "Reddit" for a Hacker News post once, and the card then sat under
@@ -5243,7 +5419,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             if k not in VOICE or i2 in used:
                 continue
             _clean = _sv_dehash(_sv_body(sg))
-            if not _clean or not _sv_on_topic(sg, _terms):
+            if not _clean or not _sv_on_topic(sg, _terms, _clean):
                 continue
             if not _sv_in_language(_clean, _lang):
                 continue
@@ -5780,16 +5956,28 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
     """Build a self-contained, print-ready HTML of the full brief (opens the
     browser print dialog on load → Save as PDF)."""
     def _qtext(idx):
+        """Same cleaning the screen does. The export used to print the raw
+        content, so a PDF handed to a client carried lines like
+        "Author: @kenty_cook | Views: 13,100,000 | Likes: 762,500" and
+        "@ · Likes: 0 · Retweets: 0" inside the quotation marks, plus hashtag
+        walls and bare t.co links. Fine as scraper plumbing, embarrassing on
+        paper — and the figures already have their own line below the quote."""
         try:
-            s = signals[int(idx)]
-            return (s.get("content") or s.get("title") or "")[:260]
+            sg = signals[int(idx)]
         except Exception:
             return ""
+        return (_sv_dehash(_sv_body(sg)) or _sv_body(sg))[:260]
     # Print palette. Deliberately does NOT use the full-bleed blue blocks from
     # the screen design — solid blue pages are a wall of ink on paper. Instead
     # the brief prints white with blue accents; red stays for negative markers.
     INK, GOLD, PAPER, CARD, MUTED, FAINT, RED = ("#000000", "#0000ff", "#ffffff",
                                                  "#ffffff", "#222222", "#666666", "#ff383c")
+    # The masthead was the words "The Lighthouse" set in type. Same asset the
+    # screen uses, so an exported PDF is recognisably the same product — the
+    # layered black/blue offset is baked into the artwork.
+    _wm = _sv_wordmark()
+    _wordmark = (f'<div class="wm">{_wm}</div>' if _wm.lstrip().startswith("<svg")
+                 else '<div class="wmfall">THE LIGHTHOUSE</div>')
     # Space Grotesk sits between Telegraf and Helvetica: if the licensed files
     # are missing the layout still holds its geometric character.
     SANS = ("'Telegraf', 'Space Grotesk', 'Helvetica Neue', Helvetica, "
@@ -5836,10 +6024,20 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
   .strike {{ text-decoration:line-through; font-weight:700; color:{INK}; font-size:15px; }}
   .map {{ background:#eaeaea; border:1.5px solid {INK}; border-radius:4px; padding:16px 18px; margin-top:18px; }}
   .maptitle {{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:{RED}; font-weight:700; margin-bottom:8px; }}
-  @media print {{ body {{ padding:0; }} .sec {{ page-break-inside:avoid; }} }}
+  .wm {{ display:block; margin:0 auto 14px; width:340px; max-width:70%; height:auto; }}
+  .wm svg {{ width:100%; height:auto; display:block; }}
+  .wmfall {{ text-align:center; font-size:44px; font-weight:800;
+             letter-spacing:-.02em; margin:0 0 10px; }}
+  @media print {{
+    body {{ padding:0; }}
+    .sec {{ page-break-inside:avoid; }}
+    /* Print drops colour by default, and the wordmark's blue layer is
+       artwork, not decoration — force it past the driver. */
+    * {{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
+  }}
 </style></head><body onload="window.print()"><div class="wrap">
 <div class="eyebrow">Lighthouse • Intelligence Brief</div>
-<div class="big">The Lighthouse</div>
+{_wordmark}
 <div class="tag">{e(tagline)}</div>
 <div class="vol">Live Brief — {e(date_label)}</div>''']
 
@@ -5860,12 +6058,83 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
         if res.get("insights_summary"):
             parts.append(f'<div class="lead">{e(res["insights_summary"])}</div>')
         parts.append('<div class="cards">')
+        _LBL = {"reddit": "Reddit", "hacker_news": "HN", "youtube": "YouTube",
+                "tiktok": "TikTok", "instagram": "Instagram",
+                "twitter": "X/Twitter", "gdelt": "News", "web": "Web", "rss": "RSS"}
         for q in iq[:6]:
-            parts.append(f'<div class="card"><div class="qhead"><span class="qsrc">{e(q.get("network",""))}</span>'
-                         f'<span class="qhandle">{e(q.get("handle",""))}</span></div>'
-                         f'<div class="qtext">&ldquo;{e(_qtext(q.get("signal_index")))}&rdquo;</div>'
-                         f'<div class="qmeta">{e(q.get("context",""))}<br>{e(q.get("engagement",""))}</div></div>')
+            _txt = _qtext(q.get("signal_index"))
+            if not _txt:
+                continue                 # no words left — do not print empty quotes
+            try:
+                _sg = signals[int(q.get("signal_index"))] or {}
+            except Exception:
+                _sg = {}
+            _m = _sg.get("meta") or {}
+            _k = str(_sg.get("source", "") or "").lower()
+            # Label from the SOURCE, not from the model — the same correction the
+            # screen needed after a Hacker News post announced itself as Reddit.
+            _src = _LBL.get(_k) or q.get("network", "")
+            _handle = q.get("handle", "") or _sv_handle(_k, _m)
+            _eng = q.get("engagement", "") or _sv_engagement(_m)
+            parts.append(f'<div class="card"><div class="qhead">'
+                         f'<span class="qsrc">{e(_src)}</span>'
+                         f'<span class="qhandle">{e(_handle)}</span></div>'
+                         f'<div class="qtext">&ldquo;{e(_txt)}&rdquo;</div>'
+                         f'<div class="qmeta">{e(q.get("context",""))}<br>{e(_eng)}</div></div>')
         parts.append('</div>')
+
+    # ── 02T · The Trade Current ──────────────────────────────────────────────
+    # Absent from the export until now, which is the section a client is most
+    # likely to want on paper: it is the one with named outlets and links.
+    # Section 07 stays out on purpose — it is the interactive hunch tester, an
+    # input form with nothing to print. The numbering jump to 08 mirrors the
+    # screen so the PDF and the page can be read side by side.
+    _tmoves = res.get("trade_moves") or []
+    if res.get("trade_summary") or _tmoves:
+        parts.append(_sec("02T", "The Trade Current",
+                          "What the industry press is reporting"))
+        if res.get("trade_summary"):
+            parts.append(f'<div class="lead">{e(res["trade_summary"])}</div>')
+        _touts = res.get("_trade_outlets") or []
+        if _touts:
+            parts.append('<div class="vol" style="text-align:left;margin-bottom:14px;">'
+                         + e(" · ".join(o.get("name", "") for o in _touts[:10]))
+                         + '</div>')
+        _tsigs = res.get("_trade_sigs") or []
+        if _tmoves:
+            _byname = {o.get("name", ""): o for o in _touts}
+            parts.append('<div class="cards2">')
+            for m in _tmoves[:4]:
+                _out = m.get("outlet", "Trade")
+                _dom = (_byname.get(_out) or {}).get("domain", "")
+                _url = ""
+                try:
+                    _url = (_tsigs[int(m.get("signal_index"))] or {}).get("url", "")
+                except Exception:
+                    pass
+                if not _dom and _url:
+                    _dom = urllib.parse.urlparse(_url).netloc.replace("www.", "")
+                _lk = (f'<div class="stat"><a href="{e(_url)}" style="color:{GOLD};">'
+                       f'{e(_url[:70])}</a></div>' if _url else "")
+                parts.append(f'<div class="card"><div class="clabel">{e(_out)}'
+                             + (f' &nbsp;·&nbsp; {e(_dom)}' if _dom else "")
+                             + f'</div><div class="ctitle">{e(m.get("headline",""))}</div>'
+                               f'<div class="cbody">{e(m.get("why",""))}</div>{_lk}</div>')
+            parts.append('</div>')
+        _tgaps = (res.get("trade_vs_street") or [])[:3]
+        if _tgaps:
+            parts.append('<div class="sublbl" style="margin:22px 0 8px;">'
+                         'Where the trade and the street disagree</div><table>')
+            for g in _tgaps:
+                parts.append(
+                    f'<tr><td style="width:33%;"><div class="sublbl">Trade says</div>'
+                    f'{e(g.get("trade_says",""))}</td>'
+                    f'<td style="width:33%;"><div class="sublbl">Street says</div>'
+                    f'{e(g.get("street_says",""))}</td>'
+                    f'<td><div class="sublbl">The opening</div>'
+                    f'<span style="color:{GOLD};font-weight:700;">'
+                    f'{e(g.get("gap",""))}</span></td></tr>')
+            parts.append('</table>')
 
     cp = res.get("competitors", [])
     if cp:
@@ -6637,9 +6906,19 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # sections. "Dig deeper" becomes a native <details>, so it stays
     # interactive without a Streamlit widget.
     if _res:
+        # How long each current has been running, read off the archive. Cheap
+        # (one cached Supabase read, no model call) and it fails to an empty
+        # list, so a brief still renders if the archive is unreachable.
+        try:
+            _ages = _sv_trend_age(_active, (_res.get("trends") or [])[:3],
+                                  current_saved_at=(_res.get("_meta") or {}).get("saved_at", ""))
+        except Exception as _aexc:
+            print(f"[overview] trend age unavailable: {_aexc}")
+            _ages = []
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
                                      ("01", "02", "02T", "03", "04", "05", "06"), "screen",
-                                     trade_sigs=_res.get("_trade_sigs") or [])
+                                     trade_sigs=_res.get("_trade_sigs") or [],
+                                     trend_ages=_ages)
         with st.container(key="svfullA"):
             _sv_embed(_html_a, _h_a)
     else:
