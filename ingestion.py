@@ -134,6 +134,7 @@ def _reddit_token() -> str:
 # four paid actor runs for a single scan, and four more minutes. One attempt per
 # scan window is enough to learn whether the fallback works right now.
 _REDDIT_APIFY_TRIED = [0.0]
+_REDDIT_APIFY_LAST_ERR = [""]     # why the one attempt failed, kept for the retries
 _REDDIT_APIFY_COOLDOWN = 300      # seconds
 
 
@@ -149,11 +150,19 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
     if not token:
         raise RuntimeError("no APIFY_API_TOKEN, so no fallback available")
     if time.monotonic() - _REDDIT_APIFY_TRIED[0] < _REDDIT_APIFY_COOLDOWN:
-        raise RuntimeError("Apify fallback already tried this scan \u2014 not "
-                           "paying for it again on a widened query")
+        # Report WHY the one attempt failed, not merely that we declined to
+        # repeat it. Production surfaced "already tried this scan", which is
+        # true and useless — it described the second query's refusal and buried
+        # the first query's actual error.
+        raise RuntimeError(_REDDIT_APIFY_LAST_ERR[0]
+                           or "Apify fallback already tried this scan")
     _REDDIT_APIFY_TRIED[0] = time.monotonic()
     from apify_client import ApifyClient
     ac = ApifyClient(token)
+
+    def _remember(exc):
+        _REDDIT_APIFY_LAST_ERR[0] = f"Apify fallback failed: {exc}"
+        return exc
 
     q = urllib.parse.quote(topic)
     urls = [{"url": f"https://www.reddit.com/search/?q={q}&sort=hot&t=month"}]
@@ -166,9 +175,12 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
     # The caller asks for 10 per subreddit on the free path, but here maxItems is
     # the TOTAL across every search URL — 10 would not fill a six-card deck.
     cap = max(25, max_items)
-    run = _apify_call(ac.actor("trudax/reddit-scraper"),
-                      run_input={"startUrls": urls, "maxItems": cap,
-                                 "proxy": {"useApifyProxy": True}})
+    try:
+        run = _apify_call(ac.actor("trudax/reddit-scraper"),
+                          run_input={"startUrls": urls, "maxItems": cap,
+                                     "proxy": {"useApifyProxy": True}})
+    except Exception as exc:
+        raise _remember(exc)
     ds = _run_dataset_id(run)
     if not ds:
         raise RuntimeError("Apify returned no dataset id for the Reddit run")

@@ -4346,7 +4346,11 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                     seen.add(s.url)
                     got.append(s)
             except Exception as exc:
-                err = exc               # remember it in case nothing ever lands
+                # The FIRST failure, not the last. Later queries fail as a
+                # CONSEQUENCE of the first — a spent fallback, an exhausted
+                # budget — and reporting the last one describes the aftermath
+                # instead of the cause.
+                err = err or exc
             if len(got) >= want or time.monotonic() >= deadline:
                 break
         if not got and err is not None:
