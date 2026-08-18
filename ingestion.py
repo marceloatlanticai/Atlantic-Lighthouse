@@ -29,6 +29,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -89,6 +91,127 @@ _DEFAULT_SUBREDDITS = [
 ]
 
 
+# ── Reddit authentication (optional, free) ───────────────────────────────────
+# The public .json endpoints are what Reddit throttles and soft-blocks from
+# datacenter IPs. The authenticated API is free, has a published quota of 100
+# requests per minute, and does not do the silent-empty-response thing.
+#
+# Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET (reddit.com/prefs/apps → create
+# an app → type "script") and this path is used automatically. Without them the
+# public endpoints are still tried, so nothing breaks if they are absent.
+_REDDIT_TOKEN: dict = {"value": "", "expires": 0.0}
+_REDDIT_TOKEN_LOCK = threading.Lock()
+
+
+def _reddit_token() -> str:
+    """A cached app-only OAuth token, or "" when no credentials are configured."""
+    cid = os.environ.get("REDDIT_CLIENT_ID", "")
+    sec = os.environ.get("REDDIT_CLIENT_SECRET", "")
+    if not (cid and sec):
+        return ""
+    with _REDDIT_TOKEN_LOCK:
+        if _REDDIT_TOKEN["value"] and time.time() < _REDDIT_TOKEN["expires"]:
+            return _REDDIT_TOKEN["value"]
+        import base64
+        basic = base64.b64encode(f"{cid}:{sec}".encode()).decode()
+        req = urllib.request.Request(
+            "https://www.reddit.com/api/v1/access_token",
+            data=urllib.parse.urlencode({"grant_type": "client_credentials"}).encode(),
+            headers={"Authorization": f"Basic {basic}",
+                     "User-Agent": "Lighthouse-Countercurrent/2.0"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        tok = data.get("access_token", "")
+        # Renew a minute early rather than discover expiry mid-scan.
+        _REDDIT_TOKEN["value"] = tok
+        _REDDIT_TOKEN["expires"] = time.time() + max(60, data.get("expires_in", 3600) - 60)
+        return tok
+
+
+# The caller widens a thin search into up to four progressively broader
+# queries. Each one that comes back empty would fire its own billed Apify run —
+# four paid actor runs for a single scan, and four more minutes. One attempt per
+# scan window is enough to learn whether the fallback works right now.
+_REDDIT_APIFY_TRIED = [0.0]
+_REDDIT_APIFY_COOLDOWN = 300      # seconds
+
+
+def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
+                         client_tag: Optional[str], callback: Optional[Callable]) -> list:
+    """Reddit through Apify's proxy pool — the route that survives the block.
+
+    Search URLs, not subreddit crawls: one global Reddit search plus the same
+    search inside a handful of relevant subreddits. Billing is per post, so the
+    URL list is kept short on purpose.
+    """
+    token = os.environ.get("APIFY_API_TOKEN", "")
+    if not token:
+        raise RuntimeError("no APIFY_API_TOKEN, so no fallback available")
+    if time.monotonic() - _REDDIT_APIFY_TRIED[0] < _REDDIT_APIFY_COOLDOWN:
+        raise RuntimeError("Apify fallback already tried this scan \u2014 not "
+                           "paying for it again on a widened query")
+    _REDDIT_APIFY_TRIED[0] = time.monotonic()
+    from apify_client import ApifyClient
+    ac = ApifyClient(token)
+
+    q = urllib.parse.quote(topic)
+    urls = [{"url": f"https://www.reddit.com/search/?q={q}&sort=hot&t=month"}]
+    for sub in list(subs)[:6]:
+        urls.append({"url": f"https://www.reddit.com/r/{sub}/search/?q={q}"
+                            f"&sort=hot&restrict_sr=1&t=month"})
+
+    if callback:
+        callback(f"[Reddit] Apify: {len(urls)} search URLs")
+    # The caller asks for 10 per subreddit on the free path, but here maxItems is
+    # the TOTAL across every search URL — 10 would not fill a six-card deck.
+    cap = max(25, max_items)
+    run = ac.actor("trudax/reddit-scraper").call(
+        run_input={"startUrls": urls, "maxItems": cap,
+                   "proxy": {"useApifyProxy": True}},
+        timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP)
+    ds = _run_dataset_id(run)
+    if not ds:
+        raise RuntimeError("Apify returned no dataset id for the Reddit run")
+
+    out, seen = [], set()
+    for item in ac.dataset(ds).iterate_items():
+        url = item.get("url") or item.get("link") or ""
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        ts_raw = item.get("createdAt") or item.get("created_utc") or ""
+        try:
+            ts = (datetime.fromtimestamp(ts_raw, tz=timezone.utc).isoformat()
+                  if isinstance(ts_raw, (int, float))
+                  else str(ts_raw) or datetime.now(tz=timezone.utc).isoformat())
+        except Exception:
+            ts = datetime.now(tz=timezone.utc).isoformat()
+        title = item.get("title") or item.get("heading") or ""
+        body = item.get("body") or item.get("text") or item.get("selftext") or ""
+        content = f"{title}\n\n{body}".strip()
+        if not content:
+            continue
+        out.append(Signal(
+            id=_make_id(url, ts),
+            title=_clean_title(title, content),
+            content=content[:4000], source="reddit", url=url,
+            timestamp=ts, client_tag=client_tag,
+            raw_meta={
+                "subreddit": item.get("subreddit") or item.get("community", ""),
+                "score": item.get("score") or item.get("upVotes")
+                         or item.get("upvotes", 0),
+                "num_comments": item.get("numberOfComments")
+                                or item.get("num_comments", 0),
+                "author": item.get("author") or item.get("username", ""),
+                "via": "apify",
+            },
+        ))
+    if callback:
+        callback(f"[Reddit] Apify \u2713 {len(out)} signals")
+    return out
+
+
 def scrape_reddit(
     topic: str,
     subreddits: Optional[list[str]] = None,
@@ -96,25 +219,78 @@ def scrape_reddit(
     client_tag: Optional[str] = None,
     callback: Optional[Callable] = None,
 ) -> list[Signal]:
-    """Search Reddit for topic across relevant subreddits. No API key needed."""
+    """Search Reddit for topic across relevant subreddits. No API key needed.
+
+    THE SUBREDDITS ARE QUERIED IN PARALLEL. In sequence, nine subreddits at a
+    12-second timeout could hold the whole scan for 108 seconds — and when the
+    caller widened the query and ran this three times, a single scan spent five
+    and a half minutes waiting on Reddit alone. The work is pure network
+    waiting, so it parallelises perfectly: nine at once costs one timeout.
+
+    A subreddit that fails is skipped. If EVERY one fails the error is raised,
+    because "Reddit returned nothing" and "Reddit refused to talk to us" are
+    completely different problems and used to look identical in the tally.
+    Reddit blocks datacenter IPs on the public JSON endpoints, so a server that
+    worked from a laptop can go silent once deployed — that has to be visible.
+    """
     subs = subreddits or _DEFAULT_SUBREDDITS
-    headers = {"User-Agent": "Lighthouse-Countercurrent/2.0"}
+    # Reddit 403s unfamiliar clients. A browser-shaped header is what the RSS
+    # probes already needed for the same reason.
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0 Safari/537.36"),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    # ALL OF THEM, not the first eight. The slice was written when these ran in
+    # sequence and nine requests were already slow. The list, though, is ordered
+    # by the agency's own interests — advertising, marketing, social media,
+    # fashion — and r/food and r/Cooking sit at positions 15 and 16. So a search
+    # for "Food Soup" politely asked r/femalefashionadvice and r/advertising,
+    # got nothing, and reported "0" as though Reddit had no soup on it.
+    # Now that the requests run in parallel, the whole list costs one timeout.
+    search_targets = list(dict.fromkeys(list(subs) + ["all"]))
+    if callback:
+        callback(f"[Reddit] Searching {len(search_targets)} subreddits for '{topic[:40]}'…")
+
+    q = urllib.parse.quote(topic)
+
+    token = ""
+    try:
+        token = _reddit_token()
+    except Exception as exc:
+        if callback:
+            callback(f"[Reddit] auth failed, falling back to public API: {exc}")
+    if token:
+        headers = {"Authorization": f"bearer {token}",
+                   "User-Agent": "Lighthouse-Countercurrent/2.0"}
+    host = "oauth.reddit.com" if token else "www.reddit.com"
+    leaf = "search" if token else "search.json"
+
+    def _one(sub: str):
+        url = (f"https://{host}/r/{sub}/{leaf}?q={q}&sort=hot"
+               f"&limit={max_items}&restrict_sr={'1' if sub != 'all' else '0'}&t=month")
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read())
+
     signals: list[Signal] = []
     seen: set[str] = set()
+    errors: list[str] = []
 
-    if callback:
-        callback(f"[Reddit] Searching {len(subs)} subreddits for '{topic[:40]}'…")
-
-    # Also search r/all for broader coverage
-    search_targets = subs[:8] + ["all"]
-
-    for sub in search_targets:
-        try:
-            q = urllib.parse.quote(topic)
-            url = f"https://www.reddit.com/r/{sub}/search.json?q={q}&sort=hot&limit={max_items}&restrict_sr={'1' if sub != 'all' else '0'}&t=month"
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                data = json.loads(resp.read())
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=len(search_targets)) as pool:
+        futs = {pool.submit(_one, sub): sub for sub in search_targets}
+        for fut in as_completed(futs, timeout=30):
+            sub = futs[fut]
+            try:
+                data = fut.result()
+            except Exception as exc:
+                errors.append(f"r/{sub}: {exc}")
+                if callback:
+                    callback(f"[Reddit] r/{sub}: {exc}")
+                continue
             for post in data.get("data", {}).get("children", []):
                 p = post.get("data", {})
                 purl = f"https://reddit.com{p.get('permalink', '')}"
@@ -137,12 +313,45 @@ def scrape_reddit(
                         "num_comments": p.get("num_comments", 0),
                     },
                 ))
-        except Exception as exc:
-            if callback:
-                callback(f"[Reddit] r/{sub}: {exc}")
 
+    if not signals and len(errors) == len(search_targets):
+        raise RuntimeError(f"every subreddit failed \u2014 {errors[0]}")
+
+    # SOFT BLOCKING.
+    # Reddit does not always answer a refused client with 403. From datacenter
+    # IPs it commonly returns 200 OK with an empty children list — a polite lie
+    # that is indistinguishable from "no results" unless you notice that ALL of
+    # nineteen subreddits, r/all included, came back empty at once. That does
+    # not happen for a real query. Saying so is the difference between the team
+    # thinking Reddit has nothing on soup and knowing they need credentials.
+    # PLAN B: APIFY.
+    # This is how Reddit worked in the earlier version of the Lighthouse, and
+    # the note in that file said exactly why — "contorna os bloqueios 403".
+    # The trudax actor runs through Apify's proxy pool, so Reddit sees a
+    # residential address instead of a datacenter one and answers normally.
+    #
+    # It is deliberately the FALLBACK, not the default: it bills per post
+    # (~US$0.002-0.005) while the public endpoints are free. When Reddit is
+    # willing to talk to us we pay nothing; when it goes quiet we pay a few
+    # cents rather than losing the source. Creating a script app at
+    # reddit.com/prefs/apps is no longer possible for everyone, so the OAuth
+    # path above cannot be relied on.
+    if not signals:
+        why = errors[0] if errors else "all subreddits answered 200 OK with zero results"
+        if callback:
+            callback(f"[Reddit] public API gave nothing ({why}) \u2014 trying Apify")
+        try:
+            signals = _scrape_reddit_apify(topic, subs, max_items, client_tag, callback)
+        except Exception as exc:
+            raise RuntimeError(f"public Reddit failed ({why}); Apify fallback "
+                               f"also failed: {exc}")
+        if not signals:
+            raise RuntimeError(
+                f"public Reddit returned nothing ({why}) and the Apify actor "
+                f"returned nothing either \u2014 check APIFY_API_TOKEN and credit")
     if callback:
-        callback(f"[Reddit] ✓ {len(signals)} signals")
+        callback(f"[Reddit] \u2713 {len(signals)} signals"
+                 + (f" ({len(errors)} subreddits failed)" if errors else ""))
     return signals
 
 
@@ -252,6 +461,36 @@ def scrape_rss(
 
 # ── GDELT (free, no auth) ─────────────────────────────────────────────────────
 
+# GDELT rate-limits hard and says so in plain text, not JSON. The Lighthouse
+# hits it from two directions at once — the main scan (up to four widened
+# queries) and the trade section (one query per outlet, eight in parallel) —
+# which is a dozen requests in a couple of seconds. That is a refusal, and the
+# refusal used to look like "no news found".
+#
+# One global gate, one request at a time, spaced out. The trade workers keep
+# probing RSS in parallel while they wait their turn here.
+# APIFY ACTORS RUN ON APIFY'S MACHINES AND `.call()` BLOCKS UNTIL THEY FINISH.
+# There was no ceiling on that wait, so one slow actor held the entire scan
+# hostage — an Instagram run that wandered off for four minutes took the whole
+# brief with it. timeout_secs tells Apify to abort the run; wait_secs stops us
+# waiting. Whatever landed in the dataset before the cut is still collected, so
+# a slow actor now costs a few results instead of the scan.
+_APIFY_RUN_CAP = 90       # seconds the actor may run
+_APIFY_WAIT_CAP = 100     # seconds we are willing to wait for it
+
+_GDELT_LOCK = threading.Lock()
+_GDELT_MIN_GAP = 1.6          # seconds between consecutive GDELT calls
+_GDELT_LAST = [0.0]
+
+
+def _gdelt_gate():
+    with _GDELT_LOCK:
+        wait = _GDELT_MIN_GAP - (time.monotonic() - _GDELT_LAST[0])
+        if wait > 0:
+            time.sleep(wait)
+        _GDELT_LAST[0] = time.monotonic()
+
+
 def scrape_gdelt(
     topic: str,
     n: int = 20,
@@ -295,8 +534,19 @@ def scrape_gdelt(
             f"?query={q}&mode=artlist&maxrecords={n}&format=json&timespan={timespan}"
         )
         req = urllib.request.Request(url, headers={"User-Agent": "Lighthouse/2.0"})
+        _gdelt_gate()
         with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
+            raw = resp.read()
+        # GDELT does NOT answer with JSON when it is unhappy. A rate limit, a
+        # malformed operator or too many requests all come back as plain text or
+        # an HTML page, json.loads raises, and the except below used to turn that
+        # into a quiet empty list. Every scan reported "gdelt 0" and no one could
+        # tell an empty result from a refusal.
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            msg = raw.decode("utf-8", "replace").strip()[:180]
+            raise RuntimeError(f"GDELT did not return JSON: {msg or '(empty body)'}")
         for art in data.get("articles", []):
             aurl = art.get("url", "")
             ts = art.get("seendate", datetime.now(tz=timezone.utc).isoformat())
@@ -317,8 +567,9 @@ def scrape_gdelt(
     except Exception as exc:
         if callback:
             callback(f"[GDELT] Error: {exc}")
+        raise                      # let the caller's tally record it, not hide it
     if callback:
-        callback(f"[GDELT] ✓ {len(signals)} signals")
+        callback(f"[GDELT] \u2713 {len(signals)} signals")
     return signals
 
 
@@ -380,7 +631,8 @@ def scrape_tiktok(
             "shouldDownloadVideos": False,
             "shouldDownloadCovers": True,   # download to Apify storage → stable URL, bypasses TikTok CDN hotlink block
         }
-        run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input)
+        run = client.actor("clockworks/free-tiktok-scraper").call(
+            run_input=run_input, timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP)
         videos = list(client.dataset(run.default_dataset_id).iterate_items())
         for idx, item in enumerate(videos):
             vid_url = item.get("webVideoUrl") or item.get("authorMeta", {}).get("url", "")
@@ -501,24 +753,82 @@ def scrape_instagram(
         from apify_client import ApifyClient
         client = ApifyClient(api_token)
 
-        # COST CONTROL: apify/instagram-scraper bills per result, and resultsLimit
-        # applies PER hashtag URL — so N results × M hashtags = N×M billed posts.
-        # We use a SINGLE hashtag (the full topic) and cap the limit at 5 to keep
-        # each Instagram search cheap during testing. This also stops Instagram
-        # from dominating the multi-source feed. Bump this if you need more depth.
-        _ig_cap = min(n, 5)
-        full_tag = topic.lower().replace(" ", "")
-        direct_urls = [f"https://www.instagram.com/explore/tags/{full_tag}/"]
+        # HASHTAGS, NOT A SENTENCE.
+        # This used to glue the whole search phrase into one tag —
+        # "Sparkling water Mineral with gas" became #sparklingwatermineralwithgas,
+        # a hashtag nobody has ever posted under. That is why Instagram returned
+        # one post while X returned sixteen: X does a text search, Instagram
+        # needs a tag that real people actually use.
+        #
+        # So we try a few plausible tags instead: the two-word compound (the one
+        # that usually exists — #sparklingwater), then a three-word compound, then
+        # the longest single words. Dead tags cost nothing; they just return
+        # nothing and the next one is tried.
+        words = [w for w in re.findall(r"[a-z0-9]+", topic.lower()) if len(w) >= 3]
+        tags: list[str] = []
+        if len(words) >= 2:
+            tags.append(words[0] + words[1])
+        # A three-word compound is almost always dead too, so the remaining
+        # slots go to real single words — #sparkling and #mineral exist, and
+        # #sparklingwatermineral does not.
+        # >= 4, not 5. At five, a search like "Food Soup" produced exactly ONE
+        # tag — #foodsoup — because both words are four letters, and the scan
+        # came back with a single Instagram post. #food and #soup are perfectly
+        # good hashtags; the relevance and language gates downstream handle the
+        # breadth they bring.
+        tags += sorted([w for w in words if len(w) >= 4], key=len, reverse=True)
+        if not tags and words:
+            tags = [words[0]]
+        tags = list(dict.fromkeys(tags))[:3]
 
+        # COST CONTROL: the actor bills per result and resultsLimit applies PER
+        # URL, so the budget is split across the tags rather than multiplied by
+        # them. Three tags at 4 each ≈ 12 billed posts, about US$0.03.
+        _per = max(2, -(-n // max(1, len(tags))) + 1)
+        direct_urls = [f"https://www.instagram.com/explore/tags/{t}/" for t in tags]
+
+        # I TRIED `search` + `searchType: "hashtag"` HERE AND IT MADE THINGS
+        # WORSE — reverted. The idea was to let Instagram choose the tags
+        # instead of us guessing them. In practice the actor went off doing
+        # hashtag discovery, the run went from under a minute to several, and it
+        # came back with ONE post instead of five. The scan went from 1m50 to
+        # 4m30 and the section lost four cards.
+        #
+        # Worth recording why the original idea does not work either way:
+        # Instagram has no public caption search, so there is no way to find a
+        # post that mentions the phrase without tagging it. Guessed tags are the
+        # only lever we have here; the honest improvement is to guess better.
         run_input = {
             "directUrls": direct_urls,
             "resultsType": "posts",
-            "resultsLimit": _ig_cap,
+            "resultsLimit": _per,
             "addParentData": False,
         }
-        run = client.actor("apify/instagram-scraper").call(run_input=run_input)
-        items = list(client.dataset(run.default_dataset_id).iterate_items())
+        run = client.actor("apify/instagram-scraper").call(
+            run_input=run_input, timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP)
+        # _run_dataset_id handles both the dict and the object the client returns
+        # depending on version. Reading .default_dataset_id directly threw an
+        # AttributeError on the dict form — swallowed by the except below, so it
+        # looked exactly like "Instagram had nothing".
+        _ds = _run_dataset_id(run)
+        if not _ds:
+            raise RuntimeError("Apify returned no dataset id for the Instagram run")
+        items = list(client.dataset(_ds).iterate_items())
         signals = _parse_ig_items(items)
+        # Which tag each post came from — so a future scan can be debugged
+        # without guessing.
+        for _sg in signals:
+            _sg.raw_meta.setdefault("tags_tried", tags)
+        # Dedupe: the same post can sit under two of the tags we asked for.
+        _seen, _uniq = set(), []
+        for _sg in signals:
+            if _sg.url in _seen:
+                continue
+            _seen.add(_sg.url)
+            _uniq.append(_sg)
+        signals = _uniq[:n]
+        if callback:
+            callback(f"[Instagram] tags: {', '.join('#' + t for t in tags)}")
 
     except Exception as exc:
         if callback:
@@ -631,7 +941,8 @@ def scrape_twitter(
         # (a string), the sort is "search_type", and "max_posts" is required.
         # (searchTerms / search / maxItems are silently ignored by this actor.)
         try:
-            run = ac.actor("danek/twitter-scraper").call(run_input={
+            run = ac.actor("danek/twitter-scraper").call(
+                timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP, run_input={
                 "query": topic,
                 "search_type": "Top",   # Top | Latest | Media | People | Lists
                 "max_posts": n,
@@ -655,7 +966,8 @@ def scrape_twitter(
             if callback:
                 callback("[X/Twitter] Trying apidojo/tweet-scraper as fallback…")
             try:
-                run2 = ac.actor("apidojo/tweet-scraper").call(run_input={
+                run2 = ac.actor("apidojo/tweet-scraper").call(
+                    timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP, run_input={
                     "searchTerms": [topic],
                     "maxItems": n,          # correct param (not maxTweets)
                     "sort": "Top",          # correct param (not queryType)
