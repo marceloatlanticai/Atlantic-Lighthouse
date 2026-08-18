@@ -1196,17 +1196,20 @@ CLIENTS = {
 #   gdelt   → the `sourcecountry:` operator (FIPS-ish codes or the full name)
 #   youtube → regionCode, ISO 3166-1 alpha-2
 #   trends  → pytrends geo, also alpha-2 ("" means worldwide)
+# "lang" is the market's language, used by the language gate in section 02:
+# hashtag scrapers know no borders, so a United Kingdom scan happily returns
+# Polish and Indonesian soup posts. Empty string = no gate (Worldwide).
 MARKETS = {
-    "United States":  {"gdelt": "US", "youtube": "US", "trends": "US"},
-    "United Kingdom": {"gdelt": "UK", "youtube": "GB", "trends": "GB"},
-    "Brazil":         {"gdelt": "BR", "youtube": "BR", "trends": "BR"},
-    "Canada":         {"gdelt": "CA", "youtube": "CA", "trends": "CA"},
-    "Australia":      {"gdelt": "AS", "youtube": "AU", "trends": "AU"},
-    "Portugal":       {"gdelt": "PO", "youtube": "PT", "trends": "PT"},
-    "Spain":          {"gdelt": "SP", "youtube": "ES", "trends": "ES"},
-    "France":         {"gdelt": "FR", "youtube": "FR", "trends": "FR"},
-    "Germany":        {"gdelt": "GM", "youtube": "DE", "trends": "DE"},
-    "Worldwide":      {"gdelt": "",   "youtube": "US", "trends": ""},
+    "United States":  {"gdelt": "US", "youtube": "US", "trends": "US", "lang": "en"},
+    "United Kingdom": {"gdelt": "UK", "youtube": "GB", "trends": "GB", "lang": "en"},
+    "Brazil":         {"gdelt": "BR", "youtube": "BR", "trends": "BR", "lang": "pt"},
+    "Canada":         {"gdelt": "CA", "youtube": "CA", "trends": "CA", "lang": "en"},
+    "Australia":      {"gdelt": "AS", "youtube": "AU", "trends": "AU", "lang": "en"},
+    "Portugal":       {"gdelt": "PO", "youtube": "PT", "trends": "PT", "lang": "pt"},
+    "Spain":          {"gdelt": "SP", "youtube": "ES", "trends": "ES", "lang": "es"},
+    "France":         {"gdelt": "FR", "youtube": "FR", "trends": "FR", "lang": "fr"},
+    "Germany":        {"gdelt": "GM", "youtube": "DE", "trends": "DE", "lang": "de"},
+    "Worldwide":      {"gdelt": "",   "youtube": "US", "trends": "",   "lang": ""},
 }
 DEFAULT_MARKET = "United States"
 
@@ -4101,7 +4104,7 @@ _SV_SRC_LABEL = {"reddit": "Reddit", "gdelt": "News", "hacker_news": "HN", "yout
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def _sv_trade_outlets(category: str, market: str) -> list:
+def _sv_trade_outlets(category: str, market: str, product: str = "") -> list:
     """Ask the cheap model which trade publications matter for this category.
 
     The model PROPOSES; GDELT DISPOSES. Nothing here is trusted: every domain is
@@ -4118,11 +4121,18 @@ def _sv_trade_outlets(category: str, market: str) -> list:
     try:
         import anthropic
         cl = anthropic.Anthropic(api_key=key)
+        # The product anchors the request. "Food industry in the United
+        # Kingdom" once returned Logistics Manager — technically food-adjacent,
+        # actually the truck press — and the whole section read like a freight
+        # bulletin. "Food industry (the product is Soup)" pulls The Grocer and
+        # Food Manufacture instead.
+        _prod = f" The specific product is {product} — favour outlets that cover it." if product else ""
         prompt = (
             f"List the trade publications a strategist would read to follow the "
-            f"{category} industry in {market}. Trade press only — the outlets people "
-            f"IN the industry read: business, manufacturing, retail and distribution "
-            f"titles. NOT consumer magazines, NOT general news, NOT blogs.\n\n"
+            f"{category} industry in {market}.{_prod} Trade press only — the outlets "
+            f"people IN the industry read: business, manufacturing, retail and "
+            f"distribution titles. NOT consumer magazines, NOT general news, NOT "
+            f"blogs, NOT logistics/freight titles unless the product IS logistics.\n\n"
             "Respond ONLY with JSON:\n"
             '{"outlets": [{"name": "BevNET", "domain": "bevnet.com", '
             '"covers": "beverage industry news, launches, distribution"}]}\n\n'
@@ -4147,7 +4157,8 @@ def _sv_trade_outlets(category: str, market: str) -> list:
         return []
 
 
-def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
+def _sv_gather_trade(search_terms: str, category: str, market: str,
+                     product: str = "") -> tuple:
     """Collect trade-press coverage. Returns (signals, outlets, diagnostic).
 
     Per outlet, in order: GDELT `domainis:` → the outlet's own RSS feed →
@@ -4163,7 +4174,7 @@ def _sv_gather_trade(search_terms: str, category: str, market: str) -> tuple:
 
     Nothing in the worker touches Streamlit; it only returns data.
     """
-    outlets = _sv_trade_outlets(category, market)
+    outlets = _sv_trade_outlets(category, market, product)
     diag = {"proposed": [o["domain"] for o in outlets], "counts": {}, "via": {}}
     if not outlets:
         diag["error"] = "no outlets proposed (check ANTHROPIC_API_KEY)"
@@ -4573,9 +4584,9 @@ _SV_FOOTER = re.compile(r"""(?ix)
     \s*
     (?:Author\s*:\s*)?          # TikTok prefixes the handle
     (?:@\S*\s*[|\u00b7]?\s*)?      # optional handle, possibly a bare "@"
-    (?:Views|Likes|Comments|Retweets|Replies|Points)\s*:\s*[\d,]+
-    (?:\s*[|\u00b7]\s*(?:Views|Likes|Comments|Retweets|Replies|Points)\s*:\s*[\d,]+)*
-    """)
+    (?:Views|Likes|Comments|Retweets|Replies|Points)\s*:\s*-?[\d,]+
+    (?:\s*[|\u00b7]\s*(?:Views|Likes|Comments|Retweets|Replies|Points)\s*:\s*-?[\d,]+)*
+    """)                        # -? because Instagram reports hidden like counts as -1
 _SV_TRANSCRIPT = re.compile(r"\bTRANSCRIPT\s*:\s*", re.I)
 _SV_URL = re.compile(r"https?://\S+")
 
@@ -4601,6 +4612,63 @@ def _sv_body(sig: dict) -> str:
     txt = _SV_URL.sub("", txt)                  # bare t.co links read as noise
     return " ".join(txt.split()).strip(" |\u00b7-\u2014")
 
+
+_SV_HASHTAG = re.compile(r"#[\w\u00c0-\u024f]+")
+
+# The most common words of each language we serve. Not a language detector —
+# a bouncer. A post written in the market's language will contain at least one
+# of these within its first dozen words; a wall of hashtags or a Polish recipe
+# in a UK scan will not.
+_SV_LANG_WORDS = {
+    "en": {"the", "a", "an", "and", "or", "of", "to", "in", "is", "are", "was",
+           "for", "with", "on", "at", "this", "that", "it", "its", "my", "your",
+           "you", "we", "our", "i", "so", "but", "not", "no", "yes", "how",
+           "what", "when", "make", "made", "makes", "making", "from", "by",
+           "be", "been", "has", "have", "had", "do", "does", "did", "will",
+           "would", "can", "could", "up", "out", "just", "like", "love", "get",
+           "if", "as", "all", "one", "some", "more", "s", "t"},
+    "pt": {"o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das",
+           "e", "ou", "em", "no", "na", "nos", "nas", "que", "com", "para",
+           "por", "se", "mais", "muito", "meu", "minha", "seu", "sua", "eu",
+           "ele", "ela", "isso", "esse", "essa", "este", "esta", "como",
+           "quando", "fazer", "feito", "ser", "estar", "tem", "tenho", "vai"},
+    "es": {"el", "la", "los", "las", "un", "una", "de", "del", "y", "o", "en",
+           "que", "con", "para", "por", "se", "su", "mi", "tu", "es", "son",
+           "está", "esta", "este", "como", "cuando", "hacer", "hecho", "muy",
+           "más", "mas", "todo", "toda", "hay", "tiene", "tengo", "al", "lo"},
+    "fr": {"le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "en",
+           "que", "qui", "avec", "pour", "par", "se", "son", "sa", "ses",
+           "mon", "ma", "mes", "est", "sont", "cette", "ce", "ces", "comme",
+           "quand", "faire", "fait", "très", "tres", "plus", "tout", "toute",
+           "il", "elle", "je", "nous", "vous", "au", "aux", "dans", "sur"},
+    "de": {"der", "die", "das", "ein", "eine", "einen", "und", "oder", "in",
+           "im", "mit", "für", "fur", "von", "vom", "zu", "zum", "zur", "ist",
+           "sind", "war", "dieser", "diese", "dieses", "wie", "wenn", "machen",
+           "gemacht", "sehr", "mehr", "alle", "es", "ich", "wir", "sie", "auf",
+           "aus", "bei", "nach", "so", "auch", "nicht", "kein", "man"},
+}
+
+
+def _sv_dehash(txt: str) -> str:
+    """Displayed quotes lose their hashtags. Half the Instagram cards were a
+    wall of #foodsoup #lovesoup #happ — the tag soup is retrieval plumbing, not
+    something a person said. What remains after stripping is the actual voice;
+    when nothing remains, there was no voice at all."""
+    return " ".join(_SV_HASHTAG.sub(" ", txt or "").split()).strip(" .\u00b7|-\u2014")
+
+
+def _sv_in_language(txt: str, lang: str) -> bool:
+    """Is this text plausibly in the market's language? Checks the first dozen
+    real words for that language's function words — every language leaks them
+    ("the", "de", "und") no matter the subject. Unknown language codes and
+    Worldwide scans gate nothing."""
+    words = _SV_LANG_WORDS.get(lang)
+    if not words:
+        return True
+    seen = re.findall(r"[\w\u00c0-\u024f']+", (txt or "").lower())[:14]
+    if not seen:
+        return False
+    return any(w in words for w in seen)
 
 _SV_STOP = {"the", "and", "for", "with", "from", "that", "this", "your", "our",
             "new", "best", "top", "how", "why", "what", "who", "all", "more",
@@ -4652,6 +4720,18 @@ def _sv_handle(src: str, meta: dict) -> str:
         if v:
             return v if v.startswith("@") else "@" + v.lstrip("@")
     return ""
+
+
+def _sv_weight(meta: dict) -> int:
+    """A single number to sort candidates by. Views dominate likes dominate
+    comments, roughly mirroring how platforms themselves rank."""
+    m = meta or {}
+    def num(x):
+        try: return max(0, int(x))
+        except (TypeError, ValueError): return 0
+    return (num(m.get("plays")) + num(m.get("views"))) * 3 \
+         + (num(m.get("likes")) + num(m.get("score")) + num(m.get("points"))) * 2 \
+         + num(m.get("retweets")) + num(m.get("comments")) + num(m.get("num_comments"))
 
 
 def _sv_engagement(meta: dict) -> str:
@@ -5074,26 +5154,42 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                  "eng": q.get("engagement", "") or _sv_engagement(s_.get("meta") or {}),
                  "idx": q.get("signal_index")})
 
-        # 2. top up each deck from the raw pool. Two bars to clear, because a
-        #    raw signal has no editor behind it: it must say something (an empty
-        #    caption is not a quote) and it must be about what we searched for.
+        # 2. top up each deck from the raw pool. Three bars to clear, because a
+        #    raw signal has no editor behind it: it must say something once its
+        #    hashtags are stripped (a wall of #foodsoup is not a quote), it must
+        #    be about what we searched for, and it must be in the market's
+        #    language — a UK scan was serving Polish and Indonesian soup posts,
+        #    because hashtag scrapers know no borders.
+        #
+        #    Candidates are gathered first and sorted by engagement, so the
+        #    16M-view TikTok beats the 3-view one to the deck instead of
+        #    whichever the scraper happened to return first.
         _mt = (res or {}).get("_meta", {}) or {}
         _terms = _sv_terms(" ".join(str(_mt.get(k, "")) for k in
                                     ("category", "product", "brand", "competitors")))
-        pools = {k: list(v) for k, v in curated.items()}
+        _lang = MARKETS.get(str(_mt.get("market", "")), {}).get("lang", "")
+        cands: dict = {}
         for i2, sg in enumerate(sigs):
             k = str(sg.get("source", "") or "").lower()
             if k not in VOICE or i2 in used:
                 continue
-            if len(pools.get(k, [])) >= PER_NET:
+            _clean = _sv_dehash(_sv_body(sg))
+            if not _clean or not _sv_on_topic(sg, _terms):
                 continue
-            if not _sv_body(sg) or not _sv_on_topic(sg, _terms):
+            if not _sv_in_language(_clean, _lang):
                 continue
-            _m = sg.get("meta") or {}
-            pools.setdefault(k, []).append(
-                {"sig": sg, "net": SRC.get(k, k.replace("_", " ").title()),
-                 "handle": _sv_handle(k, _m), "context": "",
-                 "eng": _sv_engagement(_m), "idx": i2})
+            cands.setdefault(k, []).append((i2, sg, _clean))
+        pools = {k: list(v) for k, v in curated.items()}
+        for k, lst in cands.items():
+            lst.sort(key=lambda t: -_sv_weight(t[1].get("meta")))
+            for i2, sg, _clean in lst:
+                if len(pools.get(k, [])) >= PER_NET:
+                    break
+                _m = sg.get("meta") or {}
+                pools.setdefault(k, []).append(
+                    {"sig": sg, "net": SRC.get(k, k.replace("_", " ").title()),
+                     "handle": _sv_handle(k, _m), "context": "", "body": _clean,
+                     "eng": _sv_engagement(_m), "idx": i2})
 
         # 3. the All deck: one at a time around the networks until six. Round
         #    robin rather than two-at-a-time so that with five networks every
@@ -5125,7 +5221,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 if mode != "screen" and not is_all:
                     continue
                 s_ = c["sig"]
-                full = _sv_body(s_)
+                full = c.get("body") or _sv_dehash(_sv_body(s_)) or _sv_body(s_)
                 if not full:
                     continue          # nothing human in it — do not print a blank quote
                 shown.add(c["idx"])
@@ -6245,7 +6341,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=2) as _pool:
                 _f_trade = _pool.submit(_sv_gather_trade, _search,
-                                        _in_cat or _prof["category"], _in_market)
+                                        _in_cat or _prof["category"], _in_market,
+                                        _in_prod)
                 _signals, _src_tally = _sv_gather(_search, _active, _in_market,
                                                   progress=_tick)
                 try:
