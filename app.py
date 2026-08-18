@@ -5730,25 +5730,38 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
   function fit() {
     if (!AUTOFIT || !root) return;
     var h = Math.ceil(root.getBoundingClientRect().height) + 8;
-    var f = window.frameElement;
-    if (!f) return;
-    f.style.height = h + "px";
-    f.style.minHeight = h + "px";
-    f.setAttribute("height", h);
-    // Streamlit reserves the estimated height on the component's own wrapper,
-    // so releasing the iframe alone is not enough. Walk at most two levels and
-    // only through nodes that identify themselves as component wrappers —
-    // going further reaches the app shell, whose height drives page scrolling,
-    // and clearing that froze the whole page once before.
-    var p = f.parentElement;
-    for (var i = 0; i < 2 && p && p.style; i++) {
-      var id = (p.getAttribute && p.getAttribute("data-testid")) || "";
-      var cn = (typeof p.className === "string" ? p.className : "");
-      if (!/stElementContainer|stCustomComponent|stIFrame|element-container/i.test(id + " " + cn)) break;
-      p.style.height = "auto";
-      p.style.minHeight = "0";
-      p = p.parentElement;
-    }
+
+    // I TRIED streamlit:setFrameHeight HERE AND REMOVED IT. Recording why, so
+    // nobody spends the afternoon on it again: that message is handled by
+    // ComponentInstance.js — real custom components, declare_component. The
+    // fallback path uses components.v1.html, which renders through IFrame.js,
+    // and that file contains no reference to setFrameHeight at all. The
+    // message is simply never read.
+    //
+    // Which leaves exactly one mechanism that measures rather than guesses:
+    // st.iframe with height="content", added in Streamlit 1.5x. If this
+    // function is running at all, the app is on the fallback and the frame is
+    // pinned to a Python estimate — the deployed Streamlit is older than
+    // requirements.txt asks for.
+    //
+    // Direct sizing, wrapped: an exception here used to take the rest of the
+    // script with it.
+    try {
+      var f = window.frameElement;
+      if (!f) return;
+      f.style.height = h + "px";
+      f.style.minHeight = h + "px";
+      f.setAttribute("height", h);
+      var p = f.parentElement;
+      for (var i = 0; i < 2 && p && p.style; i++) {
+        var id = (p.getAttribute && p.getAttribute("data-testid")) || "";
+        var cn = (typeof p.className === "string" ? p.className : "");
+        if (!/stElementContainer|stCustomComponent|stIFrame|element-container/i.test(id + " " + cn)) break;
+        p.style.height = "auto";
+        p.style.minHeight = "0";
+        p = p.parentElement;
+      }
+    } catch (e) { /* cross-origin frame — the message above already did the work */ }
   }
   // Network filter for section 02. Runs inside the document, so switching is
   // instant — no Streamlit rerun, no re-scan, no cost.
@@ -5895,8 +5908,18 @@ def _sv_embed(html: str, est_height: int) -> None:
     """
     if hasattr(st, "iframe"):
         st.iframe(html)
-    else:
-        st.components.v1.html(html, height=est_height, scrolling=False)
+        return
+    # FALLBACK. The frame is pinned to a Python estimate, and an estimate can
+    # only ever approximate — the leftover shows up as white space above the
+    # next section. This is not a code problem to solve again; it is a
+    # deployment fact worth stating once, loudly, in the server log.
+    if not st.session_state.get("_warned_no_iframe"):
+        st.session_state["_warned_no_iframe"] = True
+        print(f"[lighthouse] Streamlit {st.__version__} has no st.iframe. The brief "
+              f"is sized by a PYTHON ESTIMATE, so expect a white gap above "
+              f"'Test the currents'. requirements.txt asks for >=1.58.0 — if the "
+              f"host is older, it did not install from that file.")
+    st.components.v1.html(html, height=est_height, scrolling=False)
 
 
 # Tracks which heavy logo symbols have already been written into the current
