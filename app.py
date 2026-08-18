@@ -4307,9 +4307,20 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     # So: ask for the whole phrase, and only if that comes back thin, widen to
     # the product tail and then the category head.
     _words = search_terms.split()
+    # Filler words make useless fallbacks: "Sparkling water Mineral with gas"
+    # widened to "with gas". Only content words survive into the shorter tries.
+    _content = [w for w in _words if w.lower() not in
+                ("with", "and", "the", "for", "of", "in", "a", "an", "or", "to")]
     _queries = [search_terms]
-    if len(_words) > 2:
-        _queries += [" ".join(_words[-2:]), " ".join(_words[:2])]
+    if len(_content) >= 2:
+        _queries += [" ".join(_content[-2:]), " ".join(_content[:2])]
+    # A two-word search never widened at all, so "Food Soup" got exactly one
+    # attempt. Falling back to the single most specific word gives it a second.
+    if _content:
+        # The LAST content word, not the longest: the search is built as
+        # category + product, so the product noun sits at the end and is the
+        # more specific of the two. "Food Soup" should fall back to "Soup".
+        _queries.append(_content[-1])
     _queries = list(dict.fromkeys(q for q in _queries if q.strip()))
 
     def _widen(fn, want: int, budget: float = 35.0) -> list:
