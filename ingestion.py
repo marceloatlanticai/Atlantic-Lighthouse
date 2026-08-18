@@ -166,10 +166,9 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
     # The caller asks for 10 per subreddit on the free path, but here maxItems is
     # the TOTAL across every search URL — 10 would not fill a six-card deck.
     cap = max(25, max_items)
-    run = ac.actor("trudax/reddit-scraper").call(
-        run_input={"startUrls": urls, "maxItems": cap,
-                   "proxy": {"useApifyProxy": True}},
-        timeout_secs=_APIFY_RUN_CAP)
+    run = _apify_call(ac.actor("trudax/reddit-scraper"),
+                      run_input={"startUrls": urls, "maxItems": cap,
+                                 "proxy": {"useApifyProxy": True}})
     ds = _run_dataset_id(run)
     if not ds:
         raise RuntimeError("Apify returned no dataset id for the Reddit run")
@@ -314,9 +313,6 @@ def scrape_reddit(
                     },
                 ))
 
-    if not signals and len(errors) == len(search_targets):
-        raise RuntimeError(f"every subreddit failed \u2014 {errors[0]}")
-
     # SOFT BLOCKING.
     # Reddit does not always answer a refused client with 403. From datacenter
     # IPs it commonly returns 200 OK with an empty children list — a polite lie
@@ -336,8 +332,20 @@ def scrape_reddit(
     # cents rather than losing the source. Creating a script app at
     # reddit.com/prefs/apps is no longer possible for everyone, so the OAuth
     # path above cannot be relied on.
+    #
+    # ORDER MATTERS AND I GOT IT WRONG THE FIRST TIME. This used to sit below a
+    # `raise` for "every subreddit failed", so the one situation the fallback
+    # exists for — Reddit refusing every request — was the one situation where
+    # it never ran. Production said "every subreddit failed — r/socialmedia:
+    # HTTP Error 403: Blocked" and stopped there. It is a hard 403 after all,
+    # not the soft empty response I guessed at earlier.
     if not signals:
-        why = errors[0] if errors else "all subreddits answered 200 OK with zero results"
+        if errors and len(errors) == len(search_targets):
+            why = f"every subreddit failed \u2014 {errors[0]}"
+        elif errors:
+            why = errors[0]
+        else:
+            why = "all subreddits answered 200 OK with zero results"
         if callback:
             callback(f"[Reddit] public API gave nothing ({why}) \u2014 trying Apify")
         try:
@@ -482,6 +490,23 @@ def scrape_rss(
 # problem they were meant to solve had a different cause anyway: the Instagram
 # hashtag-discovery experiment, since reverted.
 _APIFY_RUN_CAP = 300      # seconds the actor may run, queue included
+
+
+def _apify_call(actor, **kwargs):
+    """`.call()` with a run ceiling where the installed client supports one.
+
+    Production reported `ActorClient.call() got an unexpected keyword argument
+    'timeout_secs'` on all three actors at once — the deployed apify-client is
+    older than the one I tested against. Pinning a version would fix it for one
+    environment and break another, so the ceiling is applied only if the client
+    accepts it. This is the whole reason to introspect rather than assume.
+    """
+    try:
+        return actor.call(timeout_secs=_APIFY_RUN_CAP, **kwargs)
+    except TypeError as exc:
+        if "timeout_secs" not in str(exc):
+            raise
+        return actor.call(**kwargs)
 
 # `wait_secs` IS REMOVED ON PURPOSE. It does not cancel anything — it makes
 # .call() give up waiting and return None while the run carries on and still
@@ -642,8 +667,8 @@ def scrape_tiktok(
             "shouldDownloadVideos": False,
             "shouldDownloadCovers": True,   # download to Apify storage → stable URL, bypasses TikTok CDN hotlink block
         }
-        run = client.actor("clockworks/free-tiktok-scraper").call(
-            run_input=run_input, timeout_secs=_APIFY_RUN_CAP)
+        run = _apify_call(client.actor("clockworks/free-tiktok-scraper"),
+                          run_input=run_input)
         # _run_dataset_id, not run.default_dataset_id: the client's own type hint
         # is `dict | None`, and attribute access on either blows up with an
         # AttributeError that the except below turns into a silent zero.
@@ -823,8 +848,8 @@ def scrape_instagram(
             "resultsLimit": _per,
             "addParentData": False,
         }
-        run = client.actor("apify/instagram-scraper").call(
-            run_input=run_input, timeout_secs=_APIFY_RUN_CAP)
+        run = _apify_call(client.actor("apify/instagram-scraper"),
+                          run_input=run_input)
         # _run_dataset_id handles both the dict and the object the client returns
         # depending on version. Reading .default_dataset_id directly threw an
         # AttributeError on the dict form — swallowed by the except below, so it
@@ -961,8 +986,7 @@ def scrape_twitter(
         # (a string), the sort is "search_type", and "max_posts" is required.
         # (searchTerms / search / maxItems are silently ignored by this actor.)
         try:
-            run = ac.actor("danek/twitter-scraper").call(
-                timeout_secs=_APIFY_RUN_CAP, run_input={
+            run = _apify_call(ac.actor("danek/twitter-scraper"), run_input={
                 "query": topic,
                 "search_type": "Top",   # Top | Latest | Media | People | Lists
                 "max_posts": n,
@@ -986,8 +1010,7 @@ def scrape_twitter(
             if callback:
                 callback("[X/Twitter] Trying apidojo/tweet-scraper as fallback…")
             try:
-                run2 = ac.actor("apidojo/tweet-scraper").call(
-                    timeout_secs=_APIFY_RUN_CAP, run_input={
+                run2 = _apify_call(ac.actor("apidojo/tweet-scraper"), run_input={
                     "searchTerms": [topic],
                     "maxItems": n,          # correct param (not maxTweets)
                     "sort": "Top",          # correct param (not queryType)
@@ -1002,6 +1025,12 @@ def scrape_twitter(
             except Exception as _fallback_err:
                 if callback:
                     callback(f"[X/Twitter] Fallback actor error: {_fallback_err}")
+                # Both actors are gone. Swallowing here is why X reported a
+                # clean "0" in the very run where the other two showed "✕" for
+                # the same underlying cause — it hid the shared error.
+                raise RuntimeError(
+                    f"both X actors failed \u2014 danek: {_primary_err} \u00b7 "
+                    f"apidojo: {_fallback_err}")
 
     except Exception as exc:
         if callback:
