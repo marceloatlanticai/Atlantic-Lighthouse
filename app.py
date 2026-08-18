@@ -6302,6 +6302,15 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 """, unsafe_allow_html=True)
 
     _is_guest = st.session_state.get("_is_guest", False)
+    # THE DIAGNOSTICS WERE INVISIBLE TO THE TEAM.
+    # They are gated on `not _is_guest`, and the public route (?view=overview)
+    # sets _is_guest = True for everyone — including us. Since that route is now
+    # how the app is reached day to day, nobody could open the panels I kept
+    # asking for prints of.
+    #
+    # `&debug=1` on the URL reveals them regardless. It is not linked from
+    # anywhere, so a client following the normal link still sees nothing.
+    _show_diag = (not _is_guest) or st.query_params.get("debug") == "1"
 
     # ── Brand / Category / Product control row + Run Lighthouse ────────────
     # Scan is available to everyone (incl. the public link). The last brief is
@@ -6401,8 +6410,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         #   COLLECTION — did any outlet return an article? (per-outlet counts)
         #   SYNTHESIS  — given articles, did the model fill the trade fields?
         #
-        # Shown only to the team, never on the public link.
-        if not _is_guest:
+        # Shown to the team, and on the public route only with ?debug=1.
+        if _show_diag:
             # Where every signal came from. Shown on EVERY run, not only on
             # failure: "$0.01 of Apify" reads as efficiency until you see that
             # two of the three scrapers returned nothing.

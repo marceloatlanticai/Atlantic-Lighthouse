@@ -469,14 +469,20 @@ def scrape_rss(
 #
 # One global gate, one request at a time, spaced out. The trade workers keep
 # probing RSS in parallel while they wait their turn here.
-# APIFY ACTORS RUN ON APIFY'S MACHINES AND `.call()` BLOCKS UNTIL THEY FINISH.
-# There was no ceiling on that wait, so one slow actor held the entire scan
-# hostage — an Instagram run that wandered off for four minutes took the whole
-# brief with it. timeout_secs tells Apify to abort the run; wait_secs stops us
-# waiting. Whatever landed in the dataset before the cut is still collected, so
-# a slow actor now costs a few results instead of the scan.
-_APIFY_RUN_CAP = 90       # seconds the actor may run
-_APIFY_WAIT_CAP = 100     # seconds we are willing to wait for it
+# APIFY TIME CAPS — RAISED AFTER THEY BROKE COLLECTION.
+# I first set these to 90/100 seconds to stop a slow actor holding the scan
+# hostage. The next run came back twitter 0 · instagram 0 · tiktok 0: all three
+# actors at once, which is one cause, not three. `timeout_secs` makes Apify
+# ABORT the run, and that clock includes the time a run spends QUEUING for a
+# free machine — on free credits that queue can eat the whole allowance before
+# the scraper starts, so the actor was killed with an empty dataset.
+#
+# The caps stay, because an uncapped `.call()` really can block forever, but
+# generous enough to be a safety net rather than a guillotine. The scan-time
+# problem they were meant to solve had a different cause anyway: the Instagram
+# hashtag-discovery experiment, since reverted.
+_APIFY_RUN_CAP = 300      # seconds the actor may run, queue included
+_APIFY_WAIT_CAP = 320     # seconds we are willing to wait for it
 
 _GDELT_LOCK = threading.Lock()
 _GDELT_MIN_GAP = 1.6          # seconds between consecutive GDELT calls
