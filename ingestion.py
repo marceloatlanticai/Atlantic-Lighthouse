@@ -138,6 +138,80 @@ _REDDIT_APIFY_LAST_ERR = [""]     # why the one attempt failed, kept for the ret
 _REDDIT_APIFY_COOLDOWN = 300      # seconds
 
 
+def _scrape_reddit_rss(topic: str, subs: list, client_tag: Optional[str],
+                       callback: Optional[Callable]) -> list:
+    """Reddit through its RSS endpoints — free, no key, no actor rental.
+
+    Reddit blocks `search.json` from datacenter IPs with a hard 403, but it
+    also publishes the same searches as Atom at `search.rss`, and that path is
+    policed far less aggressively: feeds are meant to be read by machines.
+
+    Worth trying before paying. What it costs us is the metadata — RSS carries
+    title, link and body but no score or comment count, so these posts arrive
+    without engagement figures and sort below the ones that have them. A post
+    with no number beats no post at all.
+    """
+    import xml.etree.ElementTree as _ET
+    NS = {"a": "http://www.w3.org/2005/Atom"}
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0 Safari/537.36"),
+        "Accept": "application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.5",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    q = urllib.parse.quote(topic)
+    targets = [f"https://www.reddit.com/search.rss?q={q}&sort=hot&t=month"]
+    for sub in list(subs)[:10]:
+        targets.append(f"https://www.reddit.com/r/{sub}/search.rss?q={q}"
+                       f"&restrict_sr=1&sort=hot&t=month")
+
+    def _one(url: str):
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return _ET.fromstring(resp.read())
+
+    out, seen, errors = [], set(), []
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=min(8, len(targets))) as pool:
+        futs = {pool.submit(_one, u): u for u in targets}
+        for fut in as_completed(futs, timeout=25):
+            try:
+                root = fut.result()
+            except Exception as exc:
+                errors.append(str(exc))
+                continue
+            for ent in root.findall("a:entry", NS):
+                link_el = ent.find("a:link", NS)
+                url = (link_el.get("href") if link_el is not None else "") or ""
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                title = (ent.findtext("a:title", "", NS) or "").strip()
+                body = _strip_html(ent.findtext("a:content", "", NS) or "")
+                ts = (ent.findtext("a:updated", "", NS)
+                      or datetime.now(tz=timezone.utc).isoformat())
+                content = f"{title}\n\n{body}".strip()
+                if not content:
+                    continue
+                # "/r/Cooking/" out of the category element, when present
+                cat = ent.find("a:category", NS)
+                sub_name = (cat.get("label", "") if cat is not None else "").strip("/")
+                out.append(Signal(
+                    id=_make_id(url, ts),
+                    title=_clean_title(title, content),
+                    content=content[:4000], source="reddit", url=url,
+                    timestamp=str(ts), client_tag=client_tag,
+                    raw_meta={"subreddit": sub_name.replace("r/", ""), "via": "rss"},
+                ))
+    if callback:
+        callback(f"[Reddit] RSS \u2713 {len(out)} signals"
+                 + (f" ({len(errors)} feeds failed)" if errors else ""))
+    if not out and errors:
+        raise RuntimeError(f"RSS also refused \u2014 {errors[0]}")
+    return out
+
+
 def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
                          client_tag: Optional[str], callback: Optional[Callable]) -> list:
     """Reddit through Apify's proxy pool — the route that survives the block.
@@ -351,8 +425,15 @@ def scrape_reddit(
     # it never ran. Production said "every subreddit failed — r/socialmedia:
     # HTTP Error 403: Blocked" and stopped there. It is a hard 403 after all,
     # not the soft empty response I guessed at earlier.
+    # RUNG 2: RSS. Free, so it goes before anything that bills.
     if not signals:
-        if errors and len(errors) == len(search_targets):
+        try:
+            signals = _scrape_reddit_rss(topic, subs, client_tag, callback)
+        except Exception as exc:
+            errors.append(f"rss: {exc}")
+
+    if not signals:
+        if errors and len(errors) >= len(search_targets):
             why = f"every subreddit failed \u2014 {errors[0]}"
         elif errors:
             why = errors[0]
@@ -1364,6 +1445,32 @@ def scrape_youtube(
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
 
+        # VIEW COUNTS, IN ONE EXTRA CALL.
+        # search only returns snippets, so every YouTube signal arrived with no
+        # engagement at all — which meant a kids' channel and a video with
+        # millions of views were indistinguishable to anything downstream.
+        # videos?part=statistics takes up to 50 ids at once and costs 1 quota
+        # unit against search's 100, so this is close to free.
+        _ids = [it.get("id", {}).get("videoId", "") for it in data.get("items", [])]
+        _ids = [i for i in _ids if i]
+        _stats: dict = {}
+        if _ids:
+            try:
+                surl = (f"https://www.googleapis.com/youtube/v3/videos"
+                        f"?part=statistics&id={','.join(_ids[:50])}&key={api_key}")
+                sreq = urllib.request.Request(surl, headers={"User-Agent": "Lighthouse/2.0"})
+                with urllib.request.urlopen(sreq, timeout=15) as sresp:
+                    for v in json.loads(sresp.read()).get("items", []):
+                        st = v.get("statistics", {}) or {}
+                        _stats[v.get("id", "")] = {
+                            "views": int(st.get("viewCount", 0) or 0),
+                            "likes": int(st.get("likeCount", 0) or 0),
+                            "comments": int(st.get("commentCount", 0) or 0),
+                        }
+            except Exception as _sexc:
+                if callback:
+                    callback(f"[YouTube] statistics unavailable: {_sexc}")
+
         for idx, item in enumerate(data.get("items", [])):
             vid_id = item.get("id", {}).get("videoId", "")
             if not vid_id:
@@ -1396,6 +1503,7 @@ def scrape_youtube(
                 timestamp=ts,
                 client_tag=client_tag,
                 raw_meta={
+                    **_stats.get(vid_id, {}),
                     "channel": snippet.get("channelTitle"),
                     "region": region_code,
                     "has_transcript": bool(transcript),

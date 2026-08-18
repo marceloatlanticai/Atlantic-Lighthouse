@@ -4763,6 +4763,46 @@ def _sv_weight(meta: dict) -> int:
          + num(m.get("retweets")) + num(m.get("comments")) + num(m.get("num_comments"))
 
 
+# ENGAGEMENT FLOORS, in _sv_weight units (views ×3, likes ×2, comments ×1).
+#
+# A card has to show that somebody actually engaged with the post. Without this
+# a scan filled the Hacker News deck with a 1-point thread about "noodles UX"
+# and gave it a chip reading "HN (5)" — the same visual weight as "TikTok (6)",
+# where every card had millions of views. The reader has no way to know one deck
+# is signal and the other is filler.
+#
+# The numbers are per network because the scales are not comparable: 5,000 views
+# on TikTok is nothing, 50 likes on Instagram is a real post, 10 points on
+# Hacker News is a thread people read.
+_SV_FLOOR = {
+    "tiktok":      10000,   # ≈ 3,000 views
+    "youtube":     10000,   # ≈ 3,000 views
+    "instagram":     100,   # ≈ 50 likes
+    "twitter":        20,   # ≈ 10 likes
+    "reddit":         20,   # ≈ 10 upvotes
+    "hacker_news":    20,   # ≈ 10 points
+}
+
+
+def _sv_clears_floor(net: str, cands: list) -> list:
+    """Drop candidates below their network's floor.
+
+    THE EXEMPTION MATTERS AS MUCH AS THE RULE. Some sources carry no engagement
+    data at all — Reddit over RSS, YouTube before the statistics call, anything
+    reloaded from an old archive. Filtering those on a number we never collected
+    would silently delete a whole network for having incomplete metadata rather
+    than weak content. So when NOTHING in a network has a figure, the floor does
+    not apply and the cards are judged on relevance alone.
+    """
+    floor = _SV_FLOOR.get(net)
+    if not floor:
+        return cands
+    weights = [_sv_weight(sg.get("meta")) for _i, sg, _c in cands]
+    if not any(weights):
+        return cands                     # no data anywhere — nothing to judge on
+    return [c for c, w in zip(cands, weights) if w >= floor]
+
+
 def _sv_engagement(meta: dict) -> str:
     """Two engagement figures, largest first. Empty when the scraper gave none —
     an empty line is honest, a fabricated '0 likes' is not."""
@@ -5210,6 +5250,12 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             cands.setdefault(k, []).append((i2, sg, _clean))
         pools = {k: list(v) for k, v in curated.items()}
         for k, lst in cands.items():
+            # The floor runs BEFORE the sort and never touches the curated
+            # quotes: those are the model's editorial picks and it saw the whole
+            # pool when it chose them. A network left with nothing here simply
+            # gets no chip — which is the honest reading. Hacker News had
+            # nothing to say about soup that week.
+            lst = _sv_clears_floor(k, lst)
             lst.sort(key=lambda t: -_sv_weight(t[1].get("meta")))
             for i2, sg, _clean in lst:
                 if len(pools.get(k, [])) >= PER_NET:
