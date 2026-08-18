@@ -58,6 +58,22 @@ USERS = {
 # To switch scanning back on, either flip the default below to "0" or — better,
 # no code change — add this line to the Streamlit secrets:  SCAN_PAUSED = "0"
 SCAN_PAUSED = os.environ.get("SCAN_PAUSED", "1").strip().lower() not in ("0", "false", "no", "off", "")
+# ── Public address ────────────────────────────────────────────────────────────
+# The app is served inside an iframe on atlantic-lighthouse.com. A relative link
+# in the Archive resolves against the IFRAME's URL, so "Open ↗" opened the raw
+# streamlit.app address — leaking the plumbing and breaking the illusion.
+#
+# Set PUBLIC_BASE_URL in the secrets and the Archive emits absolute links to the
+# real domain instead. Left unset, behaviour is exactly as before, so opening
+# the app directly still works.
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+
+
+def _public_url(params: str) -> str:
+    """Absolute link to the public site when configured, relative otherwise."""
+    return f"{PUBLIC_BASE_URL}/?{params}" if PUBLIC_BASE_URL else f"?{params}"
+
+
 SCAN_PAUSED_MSG = os.environ.get(
     "SCAN_PAUSED_MSG",
     "The Apify allowance for this cycle is used up and the paid plan is being "
@@ -4312,8 +4328,17 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                     progress(name, -1)
                 continue
             for s in sigs:
+                # raw_meta carries the handle and the engagement numbers. It used
+                # to be thrown away here, which is why a promoted card could only
+                # ever show bare text — no @name, no likes.
+                _rm = s.raw_meta or {}
                 out.append({"title": s.title, "content": s.content, "source": name,
-                            "url": s.url, "timestamp": s.timestamp})
+                            "url": s.url, "timestamp": s.timestamp,
+                            "meta": {k: _rm[k] for k in
+                                     ("subreddit", "author", "owner", "handle", "channel",
+                                      "likes", "plays", "views", "score", "points",
+                                      "retweets", "comments", "num_comments")
+                                     if k in _rm}})
             tally[name] = len(sigs)
             if progress:
                 progress(name, len(sigs))
@@ -4494,12 +4519,65 @@ a better field, not a lazy one. Never pad a line to reach a number.
         return {}
 
 
+def _sv_handle(src: str, meta: dict) -> str:
+    """The @name for a card the model did not write. Reddit reads as r/sub and
+    YouTube as the channel name; everything else takes the @handle."""
+    src, m = (src or "").lower(), (meta or {})
+    if src == "reddit":
+        return f"r/{m['subreddit']}" if m.get("subreddit") else ""
+    if src == "youtube":
+        return str(m.get("channel") or "")
+    for k in ("handle", "author", "owner", "channel"):
+        v = str(m.get(k) or "").strip()
+        if v:
+            return v if v.startswith("@") else "@" + v.lstrip("@")
+    return ""
+
+
+def _sv_engagement(meta: dict) -> str:
+    """Two engagement figures, largest first. Empty when the scraper gave none —
+    an empty line is honest, a fabricated '0 likes' is not."""
+    m = meta or {}
+
+    def num(x):
+        try:
+            x = int(x)
+        except (TypeError, ValueError):
+            return None
+        return x if x > 0 else None
+
+    def short(x):
+        if x >= 1_000_000:
+            return f"{x/1_000_000:.1f}M".replace(".0M", "M")
+        if x >= 1_000:
+            return f"{x/1_000:.1f}k".replace(".0k", "k")
+        return str(x)
+
+    seen, bits = set(), []
+    for label, keys in (("views", ("plays", "views")), ("likes", ("likes",)),
+                        ("points", ("points",)), ("upvotes", ("score",)),
+                        ("reposts", ("retweets",)),
+                        ("comments", ("num_comments", "comments"))):
+        if label in seen:
+            continue
+        for k in keys:
+            v = num(m.get(k))
+            if v is not None:
+                bits.append(f"{short(v)} {label}")
+                seen.add(label)
+                break
+        if len(bits) == 2:
+            break
+    return " \u00b7 ".join(bits)
+
+
 def _sv_save_brief(active: str, result: dict, signals: list) -> None:
     """Archive a generated brief. Every run is kept, so the Archive section can
     reopen any past report at zero API cost."""
     trimmed = [{"title": s.get("title", "")[:160], "content": s.get("content", "")[:400],
                 "source": s.get("source", ""), "url": s.get("url", ""),
-                "timestamp": s.get("timestamp", "")} for s in (signals or [])[:80]]
+                "timestamp": s.get("timestamp", ""),
+                "meta": s.get("meta") or {}} for s in (signals or [])[:80]]
     meta = (result or {}).get("_meta", {}) or {}
     payload = {"_overview": True, "_client": active, "sv_result": result,
                "sv_signals": trimmed, "saved_at": datetime.utcnow().isoformat(),
@@ -4846,68 +4924,120 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         H.append(open_sec("02") + head("02", "Consumer Insight", "What people are actually saying"))
         if res.get("insights_summary"):
             H.append(f'<div class="lead">{e(res["insights_summary"])}</div>')
-        # Chips are built from the networks that actually turned up, so the
-        # reader can isolate one when the mix skews to a single platform.
-        _qs = [q for q in (res.get("insight_quotes") or [])[:6] if sig(q.get("signal_index"))]
-        _counts = {}
-        for q in _qs:
-            k = str((sig(q.get("signal_index")) or {}).get("source", "") or "").lower() or "other"
-            _counts[k] = _counts.get(k, 0) + 1
-        if mode == "screen" and len(_counts) > 1:
-            chips = (f'<button data-net="all" class="on">All ({len(_qs)})</button>')
-            for k, c in sorted(_counts.items(), key=lambda x: -x[1]):
-                chips += f'<button data-net="{e(k)}">{e(SRC.get(k, k.title()))} ({c})</button>'
-            H.append(f'<div class="qfilter">{chips}</div>')
-        H.append('<div class="row3">')
-        used = set()
+
+        # ── SIX CARDS PER NETWORK ────────────────────────────────────────────
+        # The model writes six curated quotes for the section as a whole, which
+        # is right editorially but left the chips lopsided: clicking "TikTok"
+        # could return a single card while forty more TikTok posts sat unread
+        # under More voices. So each network now gets its own deck of six — the
+        # curated quotes lead it, raw signals from the same network fill it out.
+        #
+        # This costs nothing per report. The top-ups are signals already
+        # collected and already paid for; no second model call is made.
+        VOICE = ("twitter", "tiktok", "instagram", "youtube", "reddit", "hacker_news")
+        PER_NET, ALL_SLOTS = 6, 6
+
+        # 1. the model's picks, grouped by network — these carry its context line
+        curated, used = {}, set()
         for q in (res.get("insight_quotes") or [])[:6]:
             s_ = sig(q.get("signal_index"))
-            if not s_: continue
+            if not s_:
+                continue
             used.add(q.get("signal_index"))
-            net = q.get("network") or SRC.get(s_.get("source",""), "")
-            full = (s_.get("content") or s_.get("title") or "")
-            txt = full[:260]
-            u = s_.get("url","")
-            lk = f' <a href="{e(u)}" target="_blank">↗</a>' if u else ""
-            # Only offer the disclosure when there is genuinely more to read —
-            # the card trims at 260 characters and often lands mid-sentence.
-            more = ""
-            if mode == "screen" and (len(full) > 260 or u):
-                body = f'<div class="full">{e(full)}'
-                if u: body += f' <a href="{e(u)}" target="_blank">open the post ↗</a>'
-                body += '</div>'
-                more = f'<details><summary>Dig deeper</summary>{body}</details>'
-            _net_key = str(s_.get("source", "") or "").lower() or "other"
-            H.append(f'<div class="qc" data-net="{e(_net_key)}"><div class="qhead">'
-                     f'<span class="qsrc">{e(net)}{_sv_logo(net, on_blue=(mode=="screen"))}</span>'
-                     f'<span class="qhandle">{e(q.get("handle",""))}</span></div>'
-                     f'<div class="qtext">&ldquo;{e(txt)}&rdquo;</div><div class="qdiv"></div>'
-                     f'<div class="qctx">{e(q.get("context",""))}</div>'
-                     f'<div><span class="qeng">{e(q.get("engagement",""))}{lk}</span></div>'
-                     f'{more}</div>')
+            k = str(s_.get("source", "") or "").lower() or "other"
+            curated.setdefault(k, []).append(
+                {"sig": s_, "net": q.get("network") or SRC.get(s_.get("source", ""), ""),
+                 "handle": q.get("handle", ""), "context": q.get("context", ""),
+                 "eng": q.get("engagement", ""), "idx": q.get("signal_index")})
+
+        # 2. top up each deck from the raw pool
+        pools = {k: list(v) for k, v in curated.items()}
+        for i2, sg in enumerate(sigs):
+            k = str(sg.get("source", "") or "").lower()
+            if k not in VOICE or i2 in used:
+                continue
+            if not (sg.get("content") or sg.get("title")):
+                continue
+            if len(pools.get(k, [])) >= PER_NET:
+                continue
+            _m = sg.get("meta") or {}
+            pools.setdefault(k, []).append(
+                {"sig": sg, "net": SRC.get(k, k.replace("_", " ").title()),
+                 "handle": _sv_handle(k, _m), "context": "",
+                 "eng": _sv_engagement(_m), "idx": i2})
+
+        # 3. the All deck: one at a time around the networks until six. Round
+        #    robin rather than two-at-a-time so that with five networks every
+        #    one of them still appears, instead of the first three eating all
+        #    six slots.
+        order = sorted(pools, key=lambda k: (-len(curated.get(k, [])), -len(pools[k]), k))
+        in_all, rank = set(), 0
+        while len(in_all) < ALL_SLOTS and any(len(pools[k]) > rank for k in order):
+            for k in order:
+                if len(in_all) >= ALL_SLOTS:
+                    break
+                if len(pools[k]) > rank:
+                    in_all.add((k, rank))
+            rank += 1
+
+        if mode == "screen" and len(order) > 1:
+            chips = f'<button data-net="all" class="on">All ({len(in_all)})</button>'
+            for k in order:
+                n_ = len(pools[k][:PER_NET])
+                chips += f'<button data-net="{e(k)}">{e(SRC.get(k, k.title()))} ({n_})</button>'
+            H.append(f'<div class="qfilter">{chips}</div>')
+
+        H.append('<div class="row3">')
+        shown = set()
+        for k in order:
+            for r_, c in enumerate(pools[k][:PER_NET]):
+                is_all = (k, r_) in in_all
+                # print has no chips, so it only ever gets the All deck
+                if mode != "screen" and not is_all:
+                    continue
+                s_ = c["sig"]
+                shown.add(c["idx"])
+                full = (s_.get("content") or s_.get("title") or "")
+                txt, u = full[:260], s_.get("url", "")
+                lk = f' <a href="{e(u)}" target="_blank">\u2197</a>' if u else ""
+                more = ""
+                if mode == "screen" and (len(full) > 260 or u):
+                    body = f'<div class="full">{e(full)}'
+                    if u:
+                        body += f' <a href="{e(u)}" target="_blank">open the post \u2197</a>'
+                    body += '</div>'
+                    more = f'<details><summary>Dig deeper</summary>{body}</details>'
+                cls = "qc" if is_all else "qc hide"
+                flag = ' data-all="1"' if is_all else ""
+                H.append(f'<div class="{cls}" data-net="{e(k)}"{flag}><div class="qhead">'
+                         f'<span class="qsrc">{e(c["net"])}'
+                         f'{_sv_logo(c["net"], on_blue=(mode=="screen"))}</span>'
+                         f'<span class="qhandle">{e(c["handle"])}</span></div>'
+                         f'<div class="qtext">&ldquo;{e(txt)}&rdquo;</div><div class="qdiv"></div>'
+                         f'<div class="qctx">{e(c["context"])}</div>'
+                         f'<div><span class="qeng">{e(c["eng"])}{lk}</span></div>'
+                         f'{more}</div>')
         H.append('</div>')
-        # Everything else we heard, kept compact so the curated six keep their
-        # weight. Social and community sources only — news and web belong to 03.
+
+        # Everything still unheard, kept compact. Anything promoted to a card
+        # above is excluded, so nothing appears twice on the page.
         if mode == "screen":
-            VOICE = {"reddit","tiktok","instagram","twitter","youtube"}
             rest = [(i2, sg) for i2, sg in enumerate(sigs)
-                    if i2 not in used and str(sg.get("source","")).lower() in VOICE
+                    if i2 not in shown and str(sg.get("source", "")).lower() in VOICE
                     and (sg.get("title") or sg.get("content"))]
             if rest:
                 rows = ""
                 for _i2, sg in rest[:25]:
-                    lbl = SRC.get(sg.get("source",""), str(sg.get("source","")).title())
+                    lbl = SRC.get(sg.get("source", ""), str(sg.get("source", "")).title())
                     t2 = (sg.get("title") or sg.get("content") or "")[:110]
-                    u2 = sg.get("url","")
-                    a2 = f' <a href="{e(u2)}" target="_blank">↗</a>' if u2 else ""
+                    u2 = sg.get("url", "")
+                    a2 = f' <a href="{e(u2)}" target="_blank">\u2197</a>' if u2 else ""
                     _k2 = str(sg.get("source", "") or "").lower()
                     rows += f'<div class="v" data-net="{e(_k2)}"><b>{e(lbl)}</b>{e(t2)}{a2}</div>'
                 H.append(f'<details class="qmore"><summary>More voices '
                          f'({len(rest)})</summary>{rows}</details>')
                 h += 90
-            # shown by the filter when a network has no curated quote of its own
-            H.append('<div class="qempty">No curated quote from this network — '
-                     'open <b>More voices</b> above to see what it did say.</div>')
+            H.append('<div class="qempty">Nothing from this network in this scan.</div>')
         H.append('</section>'); h += 1040
 
     if "02T" in which and (res.get("trade_summary") or res.get("trade_moves")):
@@ -5105,7 +5235,11 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
       });
       var shown = 0;
       document.querySelectorAll(".qc[data-net]").forEach(function (c) {
-        var hit = net === "all" || c.getAttribute("data-net") === net;
+        // "All" is a curated six, not every card — so it shows the flagged
+        // deck rather than the whole pool. Any other chip shows that
+        // network's six in full.
+        var hit = net === "all" ? c.hasAttribute("data-all")
+                                : c.getAttribute("data-net") === net;
         c.classList.toggle("hide", !hit);
         if (hit) shown++;
       });
@@ -6326,7 +6460,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 # tabs. target=_blank needs a real anchor; st.button can't.
                 _rid = urllib.parse.quote(str(_a.get("id", "")), safe="")
                 st.markdown(
-                    f'<a href="?view=overview&report={_rid}" target="_blank" rel="noopener" '
+                    f'<a href="{_public_url(f"view=overview&report={_rid}")}" target="_blank" rel="noopener" ' 
                     f'style="display:block;text-align:center;font-family:{_sans};font-size:12px;'
                     f'font-weight:700;letter-spacing:.06em;text-transform:uppercase;'
                     f'color:#ffffff;background:{_blue};border-radius:{_rad};'
