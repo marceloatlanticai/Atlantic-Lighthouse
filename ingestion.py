@@ -169,7 +169,7 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
     run = ac.actor("trudax/reddit-scraper").call(
         run_input={"startUrls": urls, "maxItems": cap,
                    "proxy": {"useApifyProxy": True}},
-        timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP)
+        timeout_secs=_APIFY_RUN_CAP)
     ds = _run_dataset_id(run)
     if not ds:
         raise RuntimeError("Apify returned no dataset id for the Reddit run")
@@ -482,7 +482,12 @@ def scrape_rss(
 # problem they were meant to solve had a different cause anyway: the Instagram
 # hashtag-discovery experiment, since reverted.
 _APIFY_RUN_CAP = 300      # seconds the actor may run, queue included
-_APIFY_WAIT_CAP = 320     # seconds we are willing to wait for it
+
+# `wait_secs` IS REMOVED ON PURPOSE. It does not cancel anything — it makes
+# .call() give up waiting and return None while the run carries on and still
+# bills. The console then shows "Actor succeeded with 19 results" and the app
+# reports zero, which is exactly the contradiction we were staring at. Only
+# timeout_secs is a real ceiling, because Apify enforces it on its own side.
 
 _GDELT_LOCK = threading.Lock()
 _GDELT_MIN_GAP = 1.6          # seconds between consecutive GDELT calls
@@ -595,7 +600,7 @@ def _fetch_tiktok_comments(video_url: str, api_token: str, max_comments: int = 1
         )
 
         comments = []
-        for c in client.dataset(run.default_dataset_id).iterate_items():
+        for c in client.dataset(_run_dataset_id(run) or "").iterate_items():
             text = c.get("text") or c.get("commentText") or ""
             likes = c.get("diggCount") or c.get("likeCount") or 0
             if text:
@@ -638,8 +643,15 @@ def scrape_tiktok(
             "shouldDownloadCovers": True,   # download to Apify storage → stable URL, bypasses TikTok CDN hotlink block
         }
         run = client.actor("clockworks/free-tiktok-scraper").call(
-            run_input=run_input, timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP)
-        videos = list(client.dataset(run.default_dataset_id).iterate_items())
+            run_input=run_input, timeout_secs=_APIFY_RUN_CAP)
+        # _run_dataset_id, not run.default_dataset_id: the client's own type hint
+        # is `dict | None`, and attribute access on either blows up with an
+        # AttributeError that the except below turns into a silent zero.
+        _ds = _run_dataset_id(run)
+        if not _ds:
+            raise RuntimeError("Apify returned no dataset id for the TikTok run "
+                               f"(call returned {type(run).__name__})")
+        videos = list(client.dataset(_ds).iterate_items())
         for idx, item in enumerate(videos):
             vid_url = item.get("webVideoUrl") or item.get("authorMeta", {}).get("url", "")
             ts = item.get("createTimeISO") or datetime.now(tz=timezone.utc).isoformat()
@@ -687,6 +699,7 @@ def scrape_tiktok(
     except Exception as exc:
         if callback:
             callback(f"[TikTok] Error: {exc}")
+        raise            # the caller's tally reports it; silence looked like "no results"
     if callback:
         callback(f"[TikTok] ✓ {len(signals)} signals")
     return signals
@@ -811,7 +824,7 @@ def scrape_instagram(
             "addParentData": False,
         }
         run = client.actor("apify/instagram-scraper").call(
-            run_input=run_input, timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP)
+            run_input=run_input, timeout_secs=_APIFY_RUN_CAP)
         # _run_dataset_id handles both the dict and the object the client returns
         # depending on version. Reading .default_dataset_id directly threw an
         # AttributeError on the dict form — swallowed by the except below, so it
@@ -839,6 +852,7 @@ def scrape_instagram(
     except Exception as exc:
         if callback:
             callback(f"[Instagram] Error: {exc}")
+        raise            # the caller's tally reports it; silence looked like "no results"
     if callback:
         callback(f"[Instagram] ✓ {len(signals)} signals")
     return signals
@@ -948,7 +962,7 @@ def scrape_twitter(
         # (searchTerms / search / maxItems are silently ignored by this actor.)
         try:
             run = ac.actor("danek/twitter-scraper").call(
-                timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP, run_input={
+                timeout_secs=_APIFY_RUN_CAP, run_input={
                 "query": topic,
                 "search_type": "Top",   # Top | Latest | Media | People | Lists
                 "max_posts": n,
@@ -973,7 +987,7 @@ def scrape_twitter(
                 callback("[X/Twitter] Trying apidojo/tweet-scraper as fallback…")
             try:
                 run2 = ac.actor("apidojo/tweet-scraper").call(
-                    timeout_secs=_APIFY_RUN_CAP, wait_secs=_APIFY_WAIT_CAP, run_input={
+                    timeout_secs=_APIFY_RUN_CAP, run_input={
                     "searchTerms": [topic],
                     "maxItems": n,          # correct param (not maxTweets)
                     "sort": "Top",          # correct param (not queryType)
@@ -992,8 +1006,9 @@ def scrape_twitter(
     except Exception as exc:
         if callback:
             callback(f"[X/Twitter] Error: {exc}")
+        raise            # the caller's tally reports it; silence looked like "no results"
     if callback:
-        callback(f"[X/Twitter] ✓ {len(signals)} signals")
+        callback(f"[X/Twitter] \u2713 {len(signals)} signals")
     return signals
 
 

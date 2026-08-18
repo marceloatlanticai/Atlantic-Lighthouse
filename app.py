@@ -4278,8 +4278,9 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     someone else's servers, not computing. Run together, the cost is the slowest
     one instead of the sum.
 
-    `progress(name, count)` is called from THIS thread as each source lands, so
-    the caller can safely touch Streamlit with it. The workers never do.
+    `progress(name, count, why)` is called from THIS thread as each source lands,
+    so the caller can safely touch Streamlit with it. The workers never do.
+    `why` carries the exception text when a source failed.
 
     Social scraping stays global on purpose: TikTok and Instagram hashtags do
     not respect borders. Only news and video are narrowed by market.
@@ -4389,7 +4390,7 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             except Exception as exc:
                 tally[name] = f"ERROR {exc}"
                 if progress:
-                    progress(name, -1)
+                    progress(name, -1, str(exc))
                 continue
             for s in sigs:
                 # raw_meta carries the handle and the engagement numbers. It used
@@ -6373,12 +6374,23 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         _status = st.empty()
         _done: list = []
 
-        def _tick(name: str, n: int):
+        _fails: list = []
+
+        def _tick(name: str, n: int, why: str = ""):
             # Called from the main thread as each source lands — safe for st.*
+            #
+            # A failing source used to render as a bare "✕" and the reason lived
+            # only in a panel the public route hides. Chasing "twitter 0 ·
+            # instagram 0 · tiktok 0" cost us several rounds of guessing, so the
+            # reason now rides on the line everyone already watches.
             _done.append(f"{name} {'✕' if n < 0 else n}")
+            if n < 0 and why:
+                _fails.append(f"{name}: {why[:200]}")
+            _extra = ("<br><span style=\'font-size:11px;opacity:.75\'>"
+                      + e(" · ".join(_fails)) + "</span>") if _fails else ""
             _status.markdown(
                 f'<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
-                f'{e(" · ".join(_done))}</div>', unsafe_allow_html=True)
+                f'{e(" · ".join(_done))}{_extra}</div>', unsafe_allow_html=True)
 
         with st.spinner("🗼 Scanning the currents…"):
             # Trade runs ALONGSIDE the main gather, not after it: the two share
