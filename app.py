@@ -5290,7 +5290,8 @@ details .src a{color:__BLUE__;text-decoration:none;}
 
 
 def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str = "screen",
-                 trade_sigs: Optional[list] = None, trend_ages: Optional[list] = None) -> tuple:
+                 trade_sigs: Optional[list] = None, trend_ages: Optional[list] = None,
+                 faded: Optional[list] = None) -> tuple:
     """Render the requested brief sections as HTML.
 
     Returns (html, estimated_height_px). Odd sections get the blue block on
@@ -6910,15 +6911,18 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         # (one cached Supabase read, no model call) and it fails to an empty
         # list, so a brief still renders if the archive is unreachable.
         try:
-            _ages = _sv_trend_age(_active, (_res.get("trends") or [])[:3],
-                                  current_saved_at=(_res.get("_meta") or {}).get("saved_at", ""))
+            _ages, _faded = _sv_trend_history(
+                _active, (_res.get("trends") or [])[:3],
+                category=_meta.get("category", ""),
+                product=_meta.get("product", ""),
+                current_saved_at=_meta.get("saved_at", ""))
         except Exception as _aexc:
-            print(f"[overview] trend age unavailable: {_aexc}")
-            _ages = []
+            print(f"[overview] trend history unavailable: {_aexc}")
+            _ages, _faded = [], []
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
                                      ("01", "02", "02T", "03", "04", "05", "06"), "screen",
                                      trade_sigs=_res.get("_trade_sigs") or [],
-                                     trend_ages=_ages)
+                                     trend_ages=_ages, faded=_faded)
         with st.container(key="svfullA"):
             _sv_embed(_html_a, _h_a)
     else:
