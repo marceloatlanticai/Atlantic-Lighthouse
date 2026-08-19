@@ -4265,8 +4265,47 @@ def _sv_gather_trade(search_terms: str, category: str, market: str,
                                  "url": sig.url, "timestamp": sig.timestamp,
                                  "outlet": by_domain[dom]["name"]})
 
+    sigs = sigs[:24]
+
+    # ── READ THE ARTICLES, NOT JUST THE HEADLINES ────────────────────────────
+    # Until now this section was synthesised from titles alone: GDELT returns no
+    # body at all, and an RSS item is a two-line teaser. The model was asked to
+    # characterise an industry's week through a keyhole.
+    #
+    # Free path first — a plain GET reads most trade sites, and costs nothing.
+    # Firecrawl runs only where that fails, at 1 credit a page, so the spend
+    # tracks how stubborn the publishers are rather than how many articles we
+    # found. Both counts go into the diagnostic.
+    from ingestion import fetch_article_text
+    _thin = [sg for sg in sigs if len((sg.get("content") or "")) < 400][:8]
+    if _thin:
+        diag["text"] = {"http": 0, "firecrawl": 0, "failed": 0}
+
+        def _body(sg):
+            txt, how = fetch_article_text(sg.get("url", ""), fc_key=fc_key)
+            return sg, txt, how
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futs = [pool.submit(_body, sg) for sg in _thin]
+            try:
+                for fut in as_completed(futs, timeout=40):
+                    try:
+                        sg, txt, how = fut.result()
+                    except Exception:
+                        diag["text"]["failed"] += 1
+                        continue
+                    if txt and how:
+                        # Keep the headline at the front: it is the outlet's own
+                        # framing, and the body does not always repeat it.
+                        sg["content"] = f"{sg.get('title','')}\n\n{txt}"[:4000]
+                        diag["text"][how] += 1
+                    else:
+                        diag["text"]["failed"] += 1
+            except Exception:
+                pass            # the time budget ran out; headlines still stand
+
     confirmed = [o for o in outlets if o["domain"] in seen]
-    return sigs[:24], confirmed, diag
+    return sigs, confirmed, diag
 
 
 def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
@@ -4490,7 +4529,12 @@ def _sv_synthesize(signals: list, category: str, competitors: list, brand: str =
     if trade:
         _tb = "\n\n".join(
             f"[T{i}] OUTLET: {t.get('outlet','trade')} | URL: {t['url']}\n"
-            f"TITLE: {t['title'][:110]}\nCONTENT: {t['content'][:220]}"
+            # 700, not 220. The cap was sized when trade "content" WAS the
+            # headline — there was nothing else to fit. Now that the articles
+            # are actually read, 220 characters would cut mid-first-paragraph
+            # and throw away the work. 20 articles at 700 is ~3,500 tokens of
+            # input, roughly half a cent: input is ~15% of the cost of a brief.
+            f"TITLE: {t['title'][:110]}\nCONTENT: {t['content'][:700]}"
             for i, t in enumerate(trade[:20])
         )
         trade_text = (f"\nTRADE PRESS ({len(trade[:20])} articles from the industry titles that "
@@ -6913,6 +6957,14 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                         st.code("\n".join(
                             f"{k:28} {v}   {_d.get('via', {}).get(k, '')}"
                             for k, v in (_d.get("counts") or {}).items()) or "—")
+                        _tx = _d.get("text") or {}
+                        if _tx:
+                            st.caption(
+                                f"Article bodies read: {_tx.get('http',0)} by plain HTTP "
+                                f"(free) · {_tx.get('firecrawl',0)} via Firecrawl "
+                                f"({_tx.get('firecrawl',0)} credits) · "
+                                f"{_tx.get('failed',0)} unavailable. Without a body the "
+                                f"model only sees the headline.")
                         st.caption("Sources tried per outlet, in order: GDELT → the "
                                    "outlet's own RSS feed → Firecrawl. The first two are "
                                    "free; the third only runs if FIRECRAWL_API_KEY is set"

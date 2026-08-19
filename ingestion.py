@@ -91,6 +91,110 @@ _DEFAULT_SUBREDDITS = [
 ]
 
 
+# ── Article text: free first, Firecrawl only for the stubborn ones ───────────
+# The Trade Current is written from HEADLINES. GDELT returns titles and no body
+# (its own API gives nothing else), and an RSS item is usually a two-line teaser.
+# So the model has been asked to read the industry's agenda through a keyhole.
+#
+# Most trade sites are ordinary server-rendered HTML — a plain GET reads them
+# fine, and costs nothing. Firecrawl is kept for the ones that need a real
+# browser, at 1 credit a page. Same shape as the Reddit cascade: try free,
+# pay only where free fails.
+
+_STRIP_BLOCKS = re.compile(
+    r"(?is)<(script|style|noscript|svg|nav|header|footer|aside|form|figure)\b.*?</\1\s*>")
+_TAG = re.compile(r"(?s)<[^>]+>")
+_WS = re.compile(r"[ \t\x0b\f\r]+")
+
+
+def _html_to_text(html: str) -> str:
+    """Readable text from an article page, without a parser dependency.
+
+    Paragraph-first: <p> blocks are where article prose lives, and taking only
+    those skips menus, cookie banners and share widgets without having to
+    identify them. Falls back to the whole document when a page uses divs for
+    paragraphs, which some CMSs still do.
+    """
+    if not html:
+        return ""
+    body = html
+    m = re.search(r"(?is)<body\b[^>]*>(.*)</body\s*>", body)
+    if m:
+        body = m.group(1)
+    body = _STRIP_BLOCKS.sub(" ", body)
+
+    paras = re.findall(r"(?is)<p\b[^>]*>(.*?)</p\s*>", body)
+    chunks = []
+    for para in paras:
+        txt = _unescape(_WS.sub(" ", _TAG.sub(" ", para))).strip()
+        # Short fragments are captions, bylines, cookie text and share prompts.
+        if len(txt) >= 60:
+            chunks.append(txt)
+    text = "\n\n".join(chunks)
+
+    if len(text) < 200:                       # divs-as-paragraphs, or a stub
+        text = _unescape(_WS.sub(" ", _TAG.sub(" ", body)))
+        text = "\n".join(l.strip() for l in text.splitlines() if len(l.strip()) >= 60)
+    return text.strip()
+
+
+def _unescape(s: str) -> str:
+    import html as _h
+    return _h.unescape(s or "")
+
+
+def fetch_article_text(url: str, fc_key: str = "", min_chars: int = 400,
+                       timeout: int = 8) -> tuple:
+    """Body text of one article. Returns (text, how).
+
+    Free path first: a plain GET with browser-shaped headers. Most trade titles
+    are server-rendered and answer it. Firecrawl only runs when that comes back
+    thin — a paywall, a JavaScript shell, or a 403 — and costs 1 credit.
+
+    `how` is one of "http", "firecrawl" or "" and is reported in the diagnostic,
+    so the credit burn is visible rather than inferred from the invoice.
+    """
+    if not url:
+        return "", ""
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/124.0 Safari/537.36"),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "html" in ctype or not ctype:
+                raw = resp.read(1_500_000)          # cap: some pages are enormous
+                enc = resp.headers.get_content_charset() or "utf-8"
+                text = _html_to_text(raw.decode(enc, "replace"))
+                if len(text) >= min_chars:
+                    return text, "http"
+    except Exception:
+        pass                                        # fall through to the paid path
+
+    if not fc_key:
+        return "", ""
+    try:
+        from firecrawl import Firecrawl
+        fc = Firecrawl(api_key=fc_key)
+        scrape = getattr(getattr(fc, "v2", None), "scrape", None) or getattr(fc, "scrape", None)
+        if scrape is None:
+            return "", ""
+        # only_main_content strips nav and footers on Firecrawl's side.
+        # max_age lets them serve a cached copy — their docs put repeat requests
+        # at up to 5x faster, and a trade article does not change hour to hour.
+        doc = scrape(url, formats=["markdown"], only_main_content=True,
+                     max_age=86_400_000, timeout=20_000)
+        md = getattr(doc, "markdown", None) or (doc.get("markdown") if isinstance(doc, dict) else "")
+        md = (md or "").strip()
+        return (md, "firecrawl") if len(md) >= 120 else ("", "")
+    except Exception:
+        return "", ""
+
+
 # ── Reddit authentication (optional, free) ───────────────────────────────────
 # The public .json endpoints are what Reddit throttles and soft-blocks from
 # datacenter IPs. The authenticated API is free, has a published quota of 100
@@ -1546,31 +1650,47 @@ def scrape_web(
     try:
         from firecrawl import Firecrawl
         fc = Firecrawl(api_key=api_key)
-        results = fc.search(query, limit=n)
-        # results is a dict with a "data" list of page objects
-        pages = results.get("data", []) if isinstance(results, dict) else (results or [])
+        # THE SDK MOVED AND TOOK THE METHOD WITH IT.
+        # This called fc.search(...) directly. In firecrawl-py 4.x the Firecrawl
+        # class is a thin shell — search, scrape and the rest live on .v2, and
+        # the only methods left on the top-level object are the academic-paper
+        # ones. So the call raised AttributeError, the except below swallowed
+        # it, and every scan reported "web 0" as though the web simply had
+        # nothing to say. requirements.txt pins no version, so the upgrade
+        # arrived on its own.
+        _search = getattr(getattr(fc, "v2", None), "search", None) or getattr(fc, "search", None)
+        if _search is None:
+            raise RuntimeError("this firecrawl-py exposes no search method")
+        results = _search(query, limit=n)
+
+        # v2 answers with typed objects, v1 with dicts. Normalise both.
+        def _get(o, *names, default=None):
+            for nm in names:
+                if isinstance(o, dict):
+                    if o.get(nm) not in (None, ""):
+                        return o[nm]
+                else:
+                    v = getattr(o, nm, None)
+                    if v not in (None, ""):
+                        return v
+            return default
+
+        pages = _get(results, "web", "data", default=None)
+        if pages is None:
+            pages = results if isinstance(results, list) else []
         for page in pages:
-            url = page.get("url") or page.get("sourceURL") or ""
+            url = _get(page, "url", "sourceURL", default="")
             if not url:
                 continue
-            title   = page.get("title") or page.get("metadata", {}).get("title") or ""
-            content = (
-                page.get("markdown") or
-                page.get("content") or
-                page.get("description") or
-                page.get("metadata", {}).get("description") or ""
-            )
+            meta    = _get(page, "metadata", default={}) or {}
+            title   = _get(page, "title", default="") or _get(meta, "title", default="")
+            content = (_get(page, "markdown", "content", "description", default="")
+                       or _get(meta, "description", default=""))
             # Prefer og:image for thumbnail, fall back to screenshot
-            thumbnail = (
-                page.get("metadata", {}).get("og_image") or
-                page.get("metadata", {}).get("ogImage") or
-                page.get("screenshot") or ""
-            )
-            ts = (
-                page.get("metadata", {}).get("publishedTime") or
-                page.get("metadata", {}).get("modifiedTime") or
-                datetime.now(tz=timezone.utc).isoformat()
-            )
+            thumbnail = (_get(meta, "og_image", "ogImage", default="")
+                         or _get(page, "screenshot", default=""))
+            ts = (_get(meta, "publishedTime", "modifiedTime", default="")
+                  or datetime.now(tz=timezone.utc).isoformat())
             signals.append(Signal(
                 id=_make_id(url, str(ts)),
                 title=_clean_title(title, content),
@@ -1581,6 +1701,7 @@ def scrape_web(
     except Exception as exc:
         if callback:
             callback(f"[Web] Error: {exc}")
+        raise            # the caller's tally reports it; silence read as "no results"
     if callback:
         callback(f"[Web] ✓ {len(signals)} signals")
     return signals
