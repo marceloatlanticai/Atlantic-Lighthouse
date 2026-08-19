@@ -4790,7 +4790,8 @@ def _sv_tags(sig: dict) -> list:
     return [t.lower() for t in _SV_HASHTAG.findall(raw)]
 
 
-def _sv_tagged_on_topic(sig: dict, terms: list, max_tags: int = 6) -> bool:
+def _sv_tagged_on_topic(sig: dict, terms: list, max_tags: int = 6,
+                        strong: Optional[set] = None) -> bool:
     """Is the post LABELLED as being about our subject, rather than net-casting?
 
     Yesterday's rule judged relevance on the dehashed text alone, which was
@@ -4806,10 +4807,52 @@ def _sv_tagged_on_topic(sig: dict, terms: list, max_tags: int = 6) -> bool:
     tags = _sv_tags(sig)
     if not tags or len(tags) > max_tags:
         return False
-    return any(t in tag or t.rstrip("s") in tag for tag in tags for t in terms)
+    hits = {t for tag in tags for t in terms if t in tag or t.rstrip("s") in tag}
+    if not hits:
+        return False
+    if not strong:
+        return True
+    return bool(hits & strong) or len(hits) >= 2
 
 
-def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None) -> bool:
+def _sv_strong_terms(terms: list, meta: dict) -> set:
+    """The terms that carry the subject on their own.
+
+    A single generic word is not evidence. "Sparkling" matches glitter,
+    jewellery, makeup and personalities — a scan for mineral sparkling water
+    came back with Evil Eye keyrings and a German firm's staff announcement,
+    every one of them tagged #sparkling. But "water" only means water, and
+    "Topo Chico" only means Topo Chico.
+
+    Strong = the PRODUCT's words (its head noun always, the rest unless they are
+    shaped like adjectives) plus every brand and competitor name. Words that
+    appear only in the category are modifiers, and a modifier has to bring a
+    friend.
+    """
+    meta = meta or {}
+    prod = _sv_terms(str(meta.get("product", "")) or str(meta.get("category", "")))
+    strong = set()
+    if prod:
+        # The head noun is always strong — it IS the thing being searched for.
+        strong.add(prod[-1])
+        # The rest of the product qualifies unless it is shaped like a modifier.
+        # No part-of-speech tagger here, just suffixes: -ing and -al are how
+        # "sparkling" and "mineral" announce themselves as adjectives, while
+        # "lager", "soup" and "cola" are nouns and mean one thing each. Crude,
+        # but it is the difference between barring an Evil Eye keyring and
+        # barring "Yuengling Traditional Lager".
+        for w in prod[:-1]:
+            if not (w.endswith("ing") or w.endswith("al") or w.endswith("ed")
+                    or w.endswith("free") or w.endswith("less")):
+                strong.add(w)
+    for n in (str(meta.get("brand", "")) + "," + str(meta.get("competitors", ""))).split(","):
+        for w in _sv_terms(n):
+            strong.add(w)
+    return strong & set(terms)
+
+
+def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None,
+                 strong: Optional[set] = None) -> bool:
     """Does this post mention what we searched for?
 
     `text` is the CLEANED body when the caller has one. That matters more than it
@@ -4836,7 +4879,14 @@ def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None) -> bool:
         return True
     hay = (text if text is not None
            else f"{sig.get('title','')} {sig.get('content','')}").lower()
-    return any(t in hay or t.rstrip("s") in hay for t in terms)
+    hits = {t for t in terms if t in hay or t.rstrip("s") in hay}
+    if not hits:
+        return False
+    if not strong:
+        return True
+    # One strong term is enough. Otherwise a modifier needs a second modifier
+    # beside it — "mineral sparkling" is convincing, "sparkling" alone is not.
+    return bool(hits & strong) or len(hits) >= 2
 
 
 def _sv_handle(src: str, meta: dict) -> str:
@@ -5519,6 +5569,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         #    16M-view TikTok beats the 3-view one to the deck instead of
         #    whichever the scraper happened to return first.
         _lang = MARKETS.get(str(_mt.get("market", "")), {}).get("lang", "")
+        _strong = _sv_strong_terms(_terms, _mt)
         cands: dict = {}
         # WHICH GATE IS DOING THE KILLING.
         # A scan collected 8 TikToks and 12 Instagram posts and showed 1 and 0.
@@ -5539,8 +5590,8 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             if not _clean:
                 _no(k, "empty after cleaning")
                 continue
-            if not (_sv_on_topic(sg, _terms, _clean)
-                    or _sv_tagged_on_topic(sg, _terms)):
+            if not (_sv_on_topic(sg, _terms, _clean, _strong)
+                    or _sv_tagged_on_topic(sg, _terms, strong=_strong)):
                 _no(k, "off topic once hashtags removed")
                 continue
             if not _sv_in_language(_clean, _lang):
