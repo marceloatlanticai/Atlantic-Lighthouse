@@ -6389,8 +6389,13 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
                     pass
                 if not _dom and _url:
                     _dom = urllib.parse.urlparse(_url).netloc.replace("www.", "")
+                # A readable label, not the URL. Printing the raw address cut
+                # it mid-slug — "…97327-mineragua-releases-12-pack-" — which
+                # reads as a bug on a page going to a client. The screen already
+                # says "Read on Beverage Industry ↗"; the PDF should match, and
+                # the link still carries the full address underneath.
                 _lk = (f'<div class="stat"><a href="{e(_url)}" style="color:{GOLD};">'
-                       f'{e(_url[:70])}</a></div>' if _url else "")
+                       f'Read on {e(_out)} \u2197</a></div>' if _url else "")
                 parts.append(f'<div class="card"><div class="clabel">{e(_out)}'
                              + (f' &nbsp;·&nbsp; {e(_dom)}' if _dom else "")
                              + f'</div><div class="ctitle">{e(m.get("headline",""))}</div>'
