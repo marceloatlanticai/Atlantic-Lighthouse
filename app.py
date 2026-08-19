@@ -4784,6 +4784,31 @@ def _sv_terms(search: str) -> list:
     return list(dict.fromkeys(out))
 
 
+def _sv_tags(sig: dict) -> list:
+    """The hashtags on a post, lowercased."""
+    raw = f"{sig.get('title','')} {sig.get('content','')}"
+    return [t.lower() for t in _SV_HASHTAG.findall(raw)]
+
+
+def _sv_tagged_on_topic(sig: dict, terms: list, max_tags: int = 6) -> bool:
+    """Is the post LABELLED as being about our subject, rather than net-casting?
+
+    Yesterday's rule judged relevance on the dehashed text alone, which was
+    right for a Gujarati restaurant ad carrying fifteen tags with #soup buried
+    among them. It was wrong for "my daily ritual 💦 #sparklingwater" — two tags,
+    both on subject, a caption too short to repeat the topic. On TikTok and
+    Instagram the hashtag IS the caption's subject line, and the previous scan
+    lost 8 TikToks and 12 Instagram posts to that.
+
+    The distinction is the ratio, not the presence: a handful of tags is a
+    label, twenty is a trawl.
+    """
+    tags = _sv_tags(sig)
+    if not tags or len(tags) > max_tags:
+        return False
+    return any(t in tag or t.rstrip("s") in tag for tag in tags for t in terms)
+
+
 def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None) -> bool:
     """Does this post mention what we searched for?
 
@@ -5495,25 +5520,61 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         #    whichever the scraper happened to return first.
         _lang = MARKETS.get(str(_mt.get("market", "")), {}).get("lang", "")
         cands: dict = {}
+        # WHICH GATE IS DOING THE KILLING.
+        # A scan collected 8 TikToks and 12 Instagram posts and showed 1 and 0.
+        # Four gates run in sequence and the result looks identical whichever
+        # one fired, so the counts are recorded per network and reported in the
+        # diagnostic. Guessing at this cost us several rounds already.
+        _rej: dict = {}
+
+        def _no(k, why):
+            _rej.setdefault(k, {}).setdefault(why, 0)
+            _rej[k][why] += 1
+
         for i2, sg in enumerate(sigs):
             k = str(sg.get("source", "") or "").lower()
             if k not in VOICE or i2 in used:
                 continue
             _clean = _sv_dehash(_sv_body(sg))
-            if not _clean or not _sv_on_topic(sg, _terms, _clean):
+            if not _clean:
+                _no(k, "empty after cleaning")
+                continue
+            if not (_sv_on_topic(sg, _terms, _clean)
+                    or _sv_tagged_on_topic(sg, _terms)):
+                _no(k, "off topic once hashtags removed")
                 continue
             if not _sv_in_language(_clean, _lang):
+                _no(k, "wrong language for the market")
                 continue
             cands.setdefault(k, []).append((i2, sg, _clean))
-        pools = {k: list(v) for k, v in curated.items()}
         for k, lst in cands.items():
-            # The floor runs BEFORE the sort and never touches the curated
-            # quotes: those are the model's editorial picks and it saw the whole
-            # pool when it chose them. A network left with nothing here simply
-            # gets no chip — which is the honest reading. Hacker News had
-            # nothing to say about soup that week.
-            lst = _sv_clears_floor(k, lst, _names)
+            _kept = max(len(_sv_clears_floor(k, lst, _names)), min(2, len(lst)))
+            if _kept < len(lst):
+                _rej.setdefault(k, {})["below the engagement floor"] = len(lst) - _kept
+        res.setdefault("_gates", _rej)
+        pools = {k: list(v) for k, v in curated.items()}
+        KEEP_MIN = 2
+        for k, lst in cands.items():
+            # THE FLOOR RANKS DOWN THE WEAK; IT DOES NOT ERASE A NETWORK.
+            # Gates 1 to 3 already established that these posts are real, on
+            # topic and in the market's language. The floor is about prominence,
+            # not legitimacy — and in a niche category like mineral sparkling
+            # water almost nothing clears 3,000 views, so it was emptying whole
+            # networks that genuinely had something to say. A scan collected
+            # eight TikToks and showed one.
+            #
+            # So: the floor still decides the ORDER, and still removes the weak
+            # when there is strength to compare against. But a network that
+            # cleared the first three gates keeps its best two regardless. The
+            # card prints the engagement figure, so a reader can see for
+            # themselves that it is a small post.
             lst.sort(key=lambda t: -_sv_weight(t[1].get("meta")))
+            _strong = _sv_clears_floor(k, lst, _names)
+            if len(_strong) >= KEEP_MIN:
+                lst = _strong
+            else:
+                _rest = [c for c in lst if c not in _strong]
+                lst = _strong + _rest[:KEEP_MIN - len(_strong)]
             for i2, sg, _clean in lst:
                 if len(pools.get(k, [])) >= PER_NET:
                     break
@@ -6939,6 +7000,24 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                            f"code are TikTok 8 · Instagram 12 · X 8 = 28. Well under "
                            f"that means a scraper is failing quietly, not that the "
                            f"scan was cheap.")
+
+            # WHY A NETWORK CAME BACK THIN.
+            # The collection line already says how many signals arrived; this
+            # says how many survived the four display gates and where the rest
+            # died. Without it, "tiktok 8" on the progress line and one card on
+            # screen look like a bug with no visible cause.
+            _g = (_result or {}).get("_gates") or {}
+            if _g:
+                with st.expander("Consumer Insight — why signals did not become cards",
+                                 expanded=False):
+                    for _net, _reasons in sorted(_g.items()):
+                        st.code(f"{_net}\n" + "\n".join(
+                            f"   {v:>3}  {why}" for why, v in sorted(
+                                _reasons.items(), key=lambda x: -x[1])))
+                    st.caption("Gates run in order: text left after cleaning → on topic "
+                               "→ market language → engagement floor. The floor now ranks "
+                               "rather than erases: a network that cleared the first three "
+                               "keeps its best two whatever the numbers.")
 
             _d = _trade_diag or {}
             _n_sigs = len(_trade_sigs or [])
