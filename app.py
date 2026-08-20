@@ -4308,8 +4308,46 @@ def _sv_gather_trade(search_terms: str, category: str, market: str,
     return sigs, confirmed, diag
 
 
+def _sv_social_queries(product: str, brand: str, competitors: str,
+                       search_terms: str) -> list:
+    """What to actually ASK TikTok, Instagram and X.
+
+    These three were being handed `search_terms` — category glued to product.
+    For a Heineken scan that produced "Sports Lager Beer", a phrase nobody has
+    ever typed into TikTok, and the network came back empty while a generic web
+    search found better social material than the social scrapers did.
+
+    A category is a strategic territory, not a search term. The things people
+    actually write are the PRODUCT ("lager beer") and the NAMES — the brand and
+    its competitors. The category stays on as a lens: it still picks the trade
+    press, still filters the cards, still frames the model's prompt.
+
+    Order matters, because callers take the first N: brand first (the most
+    engaged content about you mentions you), then product, then competitors.
+    """
+    out = []
+    if brand.strip():
+        out.append(brand.strip())
+    if product.strip():
+        out.append(product.strip())
+    for c in competitors.split(","):
+        if c.strip():
+            out.append(c.strip())
+    if not out:
+        out = [search_terms]
+    # de-dupe case-insensitively, keep order
+    seen, uniq = set(), []
+    for q in out:
+        k = q.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(q)
+    return uniq
+
+
 def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
-               progress=None) -> tuple:
+               progress=None, product: str = "", brand: str = "",
+               competitors: str = "") -> tuple:
     """Collect signals across sources. Returns (signals, per-source tally).
 
     RUN IN PARALLEL. The three Apify actors alone took about 150s in sequence —
@@ -4407,15 +4445,47 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             lambda q: scrape_youtube(q, api_key=ytkey, n=6,
                                      region_code=_mk["youtube"]), 8)
     if apify:
-        jobs["tiktok"]    = lambda: scrape_tiktok(search_terms, api_token=apify, n=8,
-                                                  fetch_comments=False)
+        # BETTER QUESTIONS, NOT MORE OF THEM.
+        # The three paid scrapers now ask about the brand, the product and the
+        # top competitors instead of the glued category+product phrase. The
+        # TOTAL number of billed results per network is unchanged — the budget
+        # is split across the queries rather than multiplied by them, exactly as
+        # the Instagram tags already are. Four queries at three results each
+        # costs the same as one query at twelve, and asks four useful questions
+        # instead of one useless one.
+        _sq = _sv_social_queries(product, brand, competitors, search_terms)[:4]
+
+        def _across(fn, total: int):
+            """Run a scraper over each query, merged and de-duplicated by URL."""
+            per = max(3, total // max(1, len(_sq)))
+            seen, out = set(), []
+            for q in _sq:
+                try:
+                    got = fn(q, per)
+                except Exception:
+                    continue                 # one dead query must not kill the network
+                for sig in got:
+                    if sig.url in seen:
+                        continue
+                    seen.add(sig.url)
+                    out.append(sig)
+            if not out:
+                # Every query failed. Raise the last one so the tally reports it
+                # instead of showing a silent zero.
+                fn(_sq[0], per)
+            return out[:total]
+
+        jobs["tiktok"] = lambda: _across(
+            lambda q, n: scrape_tiktok(q, api_token=apify, n=n, fetch_comments=False), 12)
         # 12, not 5. The old cap was set when this scraper fired ONE hopeless
         # compound hashtag, so a low limit was pure damage control. Now the
         # budget is split across three plausible tags (~5 posts each), and the
         # deck wants six cards per network — five could never fill one. At
         # roughly US$2.30 per 1000 results this is about US$0.035 a scan.
-        jobs["instagram"] = lambda: scrape_instagram(search_terms, api_token=apify, n=12)
-        jobs["twitter"]   = lambda: scrape_twitter(search_terms, api_token=apify, n=8)
+        jobs["instagram"] = lambda: _across(
+            lambda q, n: scrape_instagram(q, api_token=apify, n=n), 12)
+        jobs["twitter"] = lambda: _across(
+            lambda q, n: scrape_twitter(q, api_token=apify, n=n), 12)
     else:
         tally["apify"] = "skipped (no APIFY_API_TOKEN)"
     if fckey:
@@ -7005,8 +7075,10 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 _f_trade = _pool.submit(_sv_gather_trade, _search,
                                         _in_cat or _prof["category"], _in_market,
                                         _in_prod)
-                _signals, _src_tally = _sv_gather(_search, _active, _in_market,
-                                                  progress=_tick)
+                _signals, _src_tally = _sv_gather(
+                    _search, _active, _in_market, progress=_tick,
+                    product=_in_prod, brand=_in_brand or _active,
+                    competitors=_prof.get("competitors", ""))
                 try:
                     _trade_sigs, _trade_outs, _trade_diag = _f_trade.result(timeout=90)
                 except Exception as _texc:
