@@ -5293,7 +5293,23 @@ def _sv_list_briefs(active: str, limit: int = 40) -> list:
     try:
         for rec in _db.load_all_dispatches():   # newest first
             full = rec.get("full") or {}
-            if not full.get("_overview") or full.get("_client") != active:
+            # MATCH THE CLIENT KEY *OR* THE BRAND THE BRIEF IS ABOUT.
+            # Every run is filed under whatever the client selector said at the
+            # time. That was harmless while the selector was the only way to
+            # choose a client — but now the typed Brand chooses it, so a run
+            # made with the selector on "Rambler" while researching Heinz was
+            # filed as Rambler and vanished from the list the moment Heinz
+            # became the active client. Nothing was lost; it was mislabelled.
+            #
+            # Matching the brand as well recovers the whole history and is the
+            # more intuitive rule anyway: the Archive should show the briefs
+            # that are ABOUT what you are looking at.
+            if not full.get("_overview"):
+                continue
+            _key = str(active or "").strip().lower()
+            _cli = str(full.get("_client", "") or "").strip().lower()
+            _brd = str(full.get("brand", "") or "").strip().lower()
+            if _key not in (_cli, _brd):
                 continue
             out.append({
                 "saved_at":  full.get("saved_at", "") or rec.get("timestamp", ""),
