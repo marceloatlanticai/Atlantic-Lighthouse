@@ -4325,14 +4325,37 @@ def _sv_social_queries(product: str, brand: str, competitors: str,
     Order matters, because callers take the first N: brand first (the most
     engaged content about you mentions you), then product, then competitors.
     """
+    # A BRAND NAME IS NOT ALWAYS A BRAND.
+    # Searching "Rambler" on its own returned Google's Rambler AI feature on
+    # Pixel phones and a 1967 AMC Rambler from car communities — nine polluting
+    # signals, and the model honestly reported the confusion as one of the three
+    # currents. "Heineken" and "Topo Chico" mean one thing; "Rambler", "Corona"
+    # and "Hint" are ordinary words with a logo attached.
+    #
+    # So brand and competitor names carry the product's head noun with them —
+    # "Rambler water", "Heineken beer". That is also how people write about
+    # them, so it costs nothing on a distinctive name and saves the ambiguous
+    # ones. The product query stays bare, because it is already the category.
+    head = ""
+    _pw = [w for w in re.findall(r"[a-z0-9]+", product.lower()) if len(w) >= 3]
+    if _pw:
+        head = _pw[-1]
+
+    def _qualify(name: str) -> str:
+        n = name.strip()
+        if not n or not head:
+            return n
+        # Already contains it ("Sparkling Water" as a brand) — leave alone.
+        return n if head in n.lower() else f"{n} {head}"
+
     out = []
     if brand.strip():
-        out.append(brand.strip())
+        out.append(_qualify(brand))
     if product.strip():
         out.append(product.strip())
     for c in competitors.split(","):
         if c.strip():
-            out.append(c.strip())
+            out.append(_qualify(c))
     if not out:
         out = [search_terms]
     # de-dupe case-insensitively, keep order
@@ -7054,11 +7077,16 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # brief labelled Rambler, searched with Heineken's competitors, and saved in
     # Heineken's archive. That is almost never what someone means.
     if _in_brand.strip() and _in_brand.strip().lower() != str(_active).strip().lower():
-        st.warning(
-            f"Brand says **{_in_brand.strip()}** but the client selector says "
-            f"**{_active}**. The scan will use {_active}'s competitors and trade "
-            f"press, and file the run under {_active}. Switch the client in the "
-            f"sidebar if you meant to research {_in_brand.strip()}.")
+        # An st.info, not an st.warning. The first version was yellow with an
+        # alert icon and read as a blocker — someone stopped mid-scan thinking
+        # the app had refused. Nothing here prevents anything: it is a heads-up
+        # about which profile the run will borrow.
+        st.info(
+            f"Heads-up — this will still run. Brand says **{_in_brand.strip()}**, "
+            f"client selector says **{_active}**, so the scan borrows "
+            f"**{_active}**'s competitors and trade press and files the report "
+            f"under **{_active}**. To research {_in_brand.strip()} properly, "
+            f"switch the client in the sidebar first.")
 
     with _ic4:
         st.markdown('<div class="sv-input-lbl">&nbsp;</div>', unsafe_allow_html=True)
