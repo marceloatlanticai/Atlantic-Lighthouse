@@ -4158,7 +4158,7 @@ def _sv_trade_outlets(category: str, market: str, product: str = "") -> list:
 
 
 def _sv_gather_trade(search_terms: str, category: str, market: str,
-                     product: str = "") -> tuple:
+                     product: str = "", outlets: Optional[list] = None) -> tuple:
     """Collect trade-press coverage. Returns (signals, outlets, diagnostic).
 
     Per outlet, in order: GDELT `domainis:` → the outlet's own RSS feed →
@@ -4174,7 +4174,16 @@ def _sv_gather_trade(search_terms: str, category: str, market: str,
 
     Nothing in the worker touches Streamlit; it only returns data.
     """
-    outlets = _sv_trade_outlets(category, market, product)
+    # THE OUTLET LIST IS RESOLVED BY THE CALLER, ON THE MAIN THREAD.
+    # _sv_trade_outlets is @st.cache_data, and this function runs inside a
+    # ThreadPoolExecutor. A cached Streamlit function called from a worker has
+    # no script context — it warns on older builds and fails outright on newer
+    # ones, which is why the whole Trade section started coming back empty after
+    # the Streamlit upgrade. The archive loader in _sv_gather already carries a
+    # comment about this exact trap; it reappeared here because the call was one
+    # level deeper and easy to miss.
+    if outlets is None:
+        outlets = _sv_trade_outlets(category, market, product)
     diag = {"proposed": [o["domain"] for o in outlets], "counts": {}, "via": {}}
     if not outlets:
         diag["error"] = "no outlets proposed (check ANTHROPIC_API_KEY)"
@@ -4480,19 +4489,28 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
 
         def _across(fn, total: int):
             """Run a scraper over each query, merged and de-duplicated by URL."""
+            # THE QUERIES RUN IN PARALLEL, LIKE EVERYTHING ELSE HERE.
+            # The first version looped over them, and each loop turn is a full
+            # round trip to Apify — fifteen to forty seconds of waiting on
+            # someone else's machine. Four queries in sequence turned a
+            # twenty-second network into eighty, and the scan went from 1m50 to
+            # 2m20. Same lesson as the sources themselves: this is network
+            # waiting, not computation, so it parallelises for free.
             per = max(3, total // max(1, len(_sq)))
             seen, out, errs = set(), [], []
-            for q in _sq:
-                try:
-                    got = fn(q, per)
-                except Exception as exc:
-                    errs.append(exc)
-                    continue                 # one dead query must not kill the network
-                for sig in got:
-                    if sig.url in seen:
-                        continue
-                    seen.add(sig.url)
-                    out.append(sig)
+            with ThreadPoolExecutor(max_workers=len(_sq) or 1) as qpool:
+                qfuts = {qpool.submit(fn, q, per): q for q in _sq}
+                for qf in as_completed(qfuts, timeout=180):
+                    try:
+                        got = qf.result()
+                    except Exception as exc:
+                        errs.append(exc)
+                        continue             # one dead query must not kill the network
+                    for sig in got:
+                        if sig.url in seen:
+                            continue
+                        seen.add(sig.url)
+                        out.append(sig)
             if not out and errs:
                 # Every query FAILED — re-raise so the tally reports the cause
                 # instead of showing a silent zero. Only when there were errors:
@@ -6630,6 +6648,19 @@ def render_simple_view():
     """Render the four-section Simple View inside the Overview tab."""
     _cc = get_active_client()
     _active = st.session_state.get("active_client", DEFAULT_CLIENT)
+    # THE TYPED BRAND CHOOSES THE CLIENT.
+    # A search names its own subject, so typing "Heinz" into Brand IS selecting
+    # the Heinz profile — its competitors, its trade category, its archive. The
+    # sidebar selector remains, but it only sets the default.
+    #
+    # Written to a plain key, never to `active_client`: that is the selectbox's
+    # own widget key, and Streamlit raises if you assign to a widget key after
+    # the widget has been instantiated — which it has, far above this function.
+    _typed_brand = str(st.session_state.get("sv_brand", "") or "").strip()
+    if _typed_brand:
+        _hit = next((c for c in CLIENTS if c.strip().lower() == _typed_brand.lower()), "")
+        if _hit:
+            _active = _hit
     _prof = _SV_PROFILES.get(_active, {
         "category": _cc.get("label", "the category"),
         "tagline":  _cc.get("tagline", ""),
@@ -7101,24 +7132,29 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         _in_market = st.selectbox("Market", _mk_names,
                                   index=_mk_names.index(_mk_default) if _mk_default in _mk_names else 0,
                                   label_visibility="collapsed", key="sv_market")
-    # THE TWO IDENTITIES CAN DISAGREE, SO SAY SO.
-    # `_active` is the sidebar client; Brand is a free text field. Everything
-    # that shapes a scan — the competitor list, the trade press, which archive
-    # the run is filed under — follows the CLIENT, while only the report label
-    # follows what is typed. Typing "Rambler" under a Heineken client produces a
-    # brief labelled Rambler, searched with Heineken's competitors, and saved in
-    # Heineken's archive. That is almost never what someone means.
-    if _in_brand.strip() and _in_brand.strip().lower() != str(_active).strip().lower():
-        # An st.info, not an st.warning. The first version was yellow with an
-        # alert icon and read as a blocker — someone stopped mid-scan thinking
-        # the app had refused. Nothing here prevents anything: it is a heads-up
-        # about which profile the run will borrow.
-        st.info(
-            f"Heads-up — this will still run. Brand says **{_in_brand.strip()}**, "
-            f"client selector says **{_active}**, so the scan borrows "
-            f"**{_active}**'s competitors and trade press and files the report "
-            f"under **{_active}**. To research {_in_brand.strip()} properly, "
-            f"switch the client in the sidebar first.")
+    # BRAND IS THE SUBJECT OF THE SEARCH. THE SELECTOR FOLLOWS IT.
+    # There used to be a notice here explaining that the typed Brand and the
+    # sidebar client disagreed, and which one would win. That notice was
+    # treating a design problem as a user problem: a search names its own
+    # subject, so typing a client's name into Brand should simply BE choosing
+    # that client. Now it is.
+    #
+    # Typing a brand we have no profile for is a legitimate thing to do — an
+    # exploratory scan. In that case the run keeps the profile it has for the
+    # trade category, but takes NO competitors, because the previous behaviour
+    # was to borrow the last client's list and go hunting for "Topo Chico soup".
+    # An empty list costs one query; the wrong list costs two and pollutes the
+    # corpus.
+    # An unknown brand is a legitimate exploratory scan. It keeps the trade
+    # category it was given but takes NO competitors, because borrowing the
+    # previous client's list sent a Heinz soup search hunting for "Topo Chico
+    # soup" and burned half the collection budget on it. An empty list costs one
+    # query; the wrong list costs two and pollutes the corpus.
+    # An EMPTY Brand field is not an unknown brand — it just means the search is
+    # running under whatever the selector says, so the profile applies as normal.
+    _known_brand = (not _in_brand.strip()) or any(
+        c.strip().lower() == _in_brand.strip().lower() for c in CLIENTS)
+    _prof_competitors = _prof.get("competitors", "") if _known_brand else ""
 
     with _ic4:
         st.markdown('<div class="sv-input-lbl">&nbsp;</div>', unsafe_allow_html=True)
@@ -7179,13 +7215,20 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # its 20-odd seconds to the total.
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=2) as _pool:
+                # Resolved here, on the main thread, then handed to the worker.
+                try:
+                    _outs_pre = _sv_trade_outlets(_in_cat or _prof["category"],
+                                                  _in_market, _in_prod)
+                except Exception as _oexc:
+                    print(f"[lighthouse] trade outlets failed: {_oexc}")
+                    _outs_pre = []
                 _f_trade = _pool.submit(_sv_gather_trade, _search,
                                         _in_cat or _prof["category"], _in_market,
-                                        _in_prod)
+                                        _in_prod, _outs_pre)
                 _signals, _src_tally = _sv_gather(
                     _search, _active, _in_market, progress=_tick,
                     product=_in_prod, brand=_in_brand or _active,
-                    competitors=_prof.get("competitors", ""))
+                    competitors=_prof_competitors)
                 try:
                     # 150, not 90. The trade pipeline gained a stage today —
                     # reading the article bodies — and its worst case went from
@@ -7371,7 +7414,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # never says "beer".
             _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
                                 "product": _in_prod, "market": _in_market,
-                                "competitors": _prof.get("competitors", "")}
+                                "competitors": _prof_competitors}
             # Verified outlets, from GDELT — not the model's list. Prefixed with
             # "_" so the renderer can tell it apart from generated fields.
             _result["_trade_outlets"] = _trade_outs
