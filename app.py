@@ -4458,34 +4458,52 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
         def _across(fn, total: int):
             """Run a scraper over each query, merged and de-duplicated by URL."""
             per = max(3, total // max(1, len(_sq)))
-            seen, out = set(), []
+            seen, out, errs = set(), [], []
             for q in _sq:
                 try:
                     got = fn(q, per)
-                except Exception:
+                except Exception as exc:
+                    errs.append(exc)
                     continue                 # one dead query must not kill the network
                 for sig in got:
                     if sig.url in seen:
                         continue
                     seen.add(sig.url)
                     out.append(sig)
-            if not out:
-                # Every query failed. Raise the last one so the tally reports it
-                # instead of showing a silent zero.
-                fn(_sq[0], per)
+            if not out and errs:
+                # Every query FAILED — re-raise so the tally reports the cause
+                # instead of showing a silent zero. Only when there were errors:
+                # the first version re-ran the scraper here even when the
+                # queries had simply returned nothing, paying for a fifth call
+                # to learn what four had already said.
+                raise errs[0]
+            # Best first, so a caller that truncates keeps the strongest.
+            out.sort(key=lambda sg: -_sv_weight(sg.raw_meta or {}))
             return out[:total]
 
+        # DEPTH, BECAUSE THE PLATFORMS WILL NOT SORT FOR US.
+        # YouTube is asked for order=viewCount and returns 30M-view videos. X is
+        # asked for search_type=Top. Instagram's tag page hands back the most
+        # RECENT posts, and TikTok's actor takes no sort at all — so those two
+        # return whatever is newest, and the newest post on a large hashtag comes
+        # from a small account. That is the whole reason a Heineken scan showed
+        # a card with six likes.
+        #
+        # We cannot change their ordering, so we change ours: collect twice as
+        # deep and let the engagement sort pick from a pool of 20 instead of 12.
+        # Apify bills per result, so this is roughly US$0.06 → US$0.11 a scan —
+        # inside the budget already approved for three queries and never spent.
         jobs["tiktok"] = lambda: _across(
-            lambda q, n: scrape_tiktok(q, api_token=apify, n=n, fetch_comments=False), 12)
+            lambda q, n: scrape_tiktok(q, api_token=apify, n=n, fetch_comments=False), 20)
         # 12, not 5. The old cap was set when this scraper fired ONE hopeless
         # compound hashtag, so a low limit was pure damage control. Now the
         # budget is split across three plausible tags (~5 posts each), and the
         # deck wants six cards per network — five could never fill one. At
         # roughly US$2.30 per 1000 results this is about US$0.035 a scan.
         jobs["instagram"] = lambda: _across(
-            lambda q, n: scrape_instagram(q, api_token=apify, n=n), 12)
+            lambda q, n: scrape_instagram(q, api_token=apify, n=n), 20)
         jobs["twitter"] = lambda: _across(
-            lambda q, n: scrape_twitter(q, api_token=apify, n=n), 12)
+            lambda q, n: scrape_twitter(q, api_token=apify, n=n), 20)
     else:
         tally["apify"] = "skipped (no APIFY_API_TOKEN)"
     if fckey:
@@ -5099,6 +5117,21 @@ def _sv_engagement(meta: dict) -> str:
         if len(bits) == 2:
             break
     return " \u00b7 ".join(bits)
+
+
+def _sv_key(active: str, brand: str, category: str, product: str, market: str) -> str:
+    """Identity of a search — everything that changes what comes back.
+
+    The session used to remember a brief under the CLIENT alone. But the client
+    is a sidebar selector while brand, category, product and market are typed
+    fields, and the two can disagree: type "Rambler" into Brand with the
+    selector still on Heineken and the session compared Heineken to Heineken,
+    decided the previous brief was still current, and served the whole Heineken
+    report back. Nothing had gone wrong loudly — it just answered a question
+    nobody had asked.
+    """
+    parts = [active, brand, category, product, market]
+    return "\u241f".join(str(p or "").strip().lower() for p in parts)
 
 
 def _sv_save_brief(active: str, result: dict, signals: list) -> None:
@@ -7013,6 +7046,20 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         _in_market = st.selectbox("Market", _mk_names,
                                   index=_mk_names.index(_mk_default) if _mk_default in _mk_names else 0,
                                   label_visibility="collapsed", key="sv_market")
+    # THE TWO IDENTITIES CAN DISAGREE, SO SAY SO.
+    # `_active` is the sidebar client; Brand is a free text field. Everything
+    # that shapes a scan — the competitor list, the trade press, which archive
+    # the run is filed under — follows the CLIENT, while only the report label
+    # follows what is typed. Typing "Rambler" under a Heineken client produces a
+    # brief labelled Rambler, searched with Heineken's competitors, and saved in
+    # Heineken's archive. That is almost never what someone means.
+    if _in_brand.strip() and _in_brand.strip().lower() != str(_active).strip().lower():
+        st.warning(
+            f"Brand says **{_in_brand.strip()}** but the client selector says "
+            f"**{_active}**. The scan will use {_active}'s competitors and trade "
+            f"press, and file the run under {_active}. Switch the client in the "
+            f"sidebar if you meant to research {_in_brand.strip()}.")
+
     with _ic4:
         st.markdown('<div class="sv-input-lbl">&nbsp;</div>', unsafe_allow_html=True)
         # Label stays put — the column is narrow and any suffix wraps to three
@@ -7087,9 +7134,52 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _status.markdown(
                 '<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
                 'Writing the brief…</div>', unsafe_allow_html=True)
-            _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
-                                     _competitors, _in_brand or _active,
-                                     trade=_trade_sigs) if _signals else {}
+            # THE MOST LIKELY OPERATIONAL FAILURE, AND THE WORST EXPLAINED.
+            # An unhandled AuthenticationError climbs all the way out and
+            # Streamlit prints a traceback with the message REDACTED — which is
+            # correct of Streamlit (the text can carry secrets) and useless to
+            # whoever is standing in front of it. Keys get rotated, revoked and
+            # pasted with a trailing space; this deserves a sentence, not a
+            # stack trace.
+            _result, _api_err = {}, ""
+            if _signals:
+                try:
+                    _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
+                                             _competitors, _in_brand or _active,
+                                             trade=_trade_sigs)
+                except Exception as _exc:
+                    _name = type(_exc).__name__
+                    if "Authentication" in _name or "PermissionDenied" in _name:
+                        _api_err = ("**Anthropic rejected the API key.** The scan itself "
+                                    "worked — every source was collected — but the brief "
+                                    "could not be written.\n\n"
+                                    "Check `ANTHROPIC_API_KEY` in the app's secrets: a "
+                                    "trailing space or a stray quote is enough to break it, "
+                                    "and a key that has been rotated or revoked in the "
+                                    "Console stops working immediately. This is not a "
+                                    "credit problem — an empty balance gives a different "
+                                    "error.")
+                    elif "RateLimit" in _name:
+                        _api_err = ("**Anthropic rate limit reached.** Wait a minute and "
+                                    "press Run Lighthouse again. New accounts start on a "
+                                    "low tier, so several scans in a row can trip this.")
+                    elif "credit balance" in str(_exc).lower():
+                        # Credit exhaustion arrives as a BadRequestError, not as
+                        # an auth failure — the key is fine, the account is
+                        # empty. Telling someone to check their key here would
+                        # send them looking in the wrong place.
+                        _api_err = ("**The Anthropic account is out of credit.** The key is "
+                                    "valid and every source was collected — only the brief "
+                                    "could not be written. Top up the balance in the Console, "
+                                    "or point `ANTHROPIC_API_KEY` at an account that has one.")
+                    elif "Connection" in _name or "Timeout" in _name:
+                        _api_err = ("**Could not reach Anthropic.** A network hiccup between "
+                                    "the server and the API — press Run Lighthouse again.")
+                    else:
+                        _api_err = (f"**The brief could not be written** ({_name}). The "
+                                    f"signals were collected; only the synthesis failed. "
+                                    f"Press Run Lighthouse again.")
+                    print(f"[lighthouse] synthesis failed: {_name}: {_exc}")
         _loader.empty()
         _status.empty()
         # The trade section can fail at either of two independent stages, and a
@@ -7224,10 +7314,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # to a real URL in the renderer and in the archive.
             st.session_state["sv_signals"]  = _signals
             st.session_state["sv_client"]   = _active
+            st.session_state["sv_key"]      = _sv_key(
+                _active, _in_brand or _active, _in_cat or _prof["category"],
+                _in_prod, _in_market)
             st.session_state["sv_saved_at"] = datetime.utcnow().isoformat()
             st.session_state.pop("sv_hunch_result", None)   # new search → fresh reading
             _sv_save_brief(_active, _result, _signals)      # archive this run
             st.rerun()
+        elif _api_err:
+            # Shown INSTEAD of the generic synthesis message, because "press Run
+            # again" is bad advice when the key is the problem.
+            st.error(_api_err)
         elif not _signals:
             st.error(f"No signals found for '{_search}'. Try broader terms in Category/Product, "
                      "or check that the APIFY / YouTube / Firecrawl keys are set.")
@@ -7241,9 +7338,15 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # The team ALWAYS starts on a clean slate — a brief only appears after you run
     # a scan or open one from the Archive. Nothing is lost: every run is archived
     # below. Guests on the public link still see the latest published brief.
-    _res  = st.session_state.get("sv_result") if st.session_state.get("sv_client") == _active else None
-    _sigs = st.session_state.get("sv_signals", []) if st.session_state.get("sv_client") == _active else []
-    _saved_at = st.session_state.get("sv_saved_at", "") if st.session_state.get("sv_client") == _active else ""
+    # The stored brief only counts as "the current one" if it answers the search
+    # that is on screen right now — client AND the typed fields. Comparing the
+    # client alone let a Rambler search render the previous Heineken report.
+    _now_key = _sv_key(_active, _in_brand or _active, _in_cat or _prof["category"],
+                       _in_prod, _in_market)
+    _fresh = st.session_state.get("sv_key") == _now_key
+    _res  = st.session_state.get("sv_result") if _fresh else None
+    _sigs = st.session_state.get("sv_signals", []) if _fresh else []
+    _saved_at = st.session_state.get("sv_saved_at", "") if _fresh else ""
 
     # ?report=<id> — an Archive link opened in its own tab. It wins over the
     # session so the tab always shows the report that was asked for.
@@ -7259,6 +7362,14 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             st.session_state["sv_client"]    = _active
             st.session_state["sv_saved_at"]  = _saved_at
             st.session_state["sv_report_id"] = _req_id
+            # An archived report is authoritative for whatever it says it is
+            # about, so its own metadata becomes the key. Without this the next
+            # rerun would compare it against the on-screen fields and blank it.
+            _m = (_res or {}).get("_meta", {}) or {}
+            st.session_state["sv_key"] = _sv_key(
+                _active, _m.get("brand", _active), _m.get("category", ""),
+                _m.get("product", ""), _m.get("market", ""))
+            _now_key = st.session_state["sv_key"]
             st.session_state.pop("sv_hunch_result", None)
 
     # EVERY arrival starts on a clean sheet, guests included. Nobody opens the
