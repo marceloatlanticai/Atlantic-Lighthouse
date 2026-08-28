@@ -6491,6 +6491,18 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
     # input form with nothing to print. The numbering jump to 08 mirrors the
     # screen so the PDF and the page can be read side by side.
     _tmoves = res.get("trade_moves") or []
+    if not (res.get("trade_summary") or _tmoves):
+        # SILENCE IS NOT AN ANSWER ON PAPER EITHER.
+        # The screen already says so when the trade section comes back empty;
+        # the PDF simply dropped the section, so a client received a brief with
+        # a hole in it and no way to tell whether the industry was quiet or the
+        # collection broke.
+        parts.append(_sec("02T", "The Trade Current",
+                          "What the industry press is reporting"))
+        parts.append('<div class="lead">No industry coverage came back for this scan — '
+                     'either the trade press has not written about it recently, or '
+                     'collection did not complete. The Trade section diagnostic in the '
+                     'app records which.</div>')
     if res.get("trade_summary") or _tmoves:
         parts.append(_sec("02T", "The Trade Current",
                           "What the industry press is reporting"))
@@ -7048,6 +7060,26 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # persisted and auto-loaded on open, so credits are only spent on a deliberate
     # re-run — not on every page view.
     _ic1, _ic2, _ic3, _ic5, _ic4 = st.columns([1.1, 1.4, 1.1, 1.1, 1], gap="medium")
+    # THE FIELDS FOLLOW THE CLIENT SELECTOR.
+    # Streamlit only honours `value=` on a widget's FIRST render; once the key
+    # has state, the value argument is ignored forever. So switching the client
+    # in the sidebar left Brand, Category, Product and Market showing the
+    # previous client's answers, and the only way to notice was the mismatch
+    # notice below. Worse, the scan then borrowed the wrong competitor list —
+    # a Heinz soup search went looking for "Topo Chico soup" and burned half
+    # its collection budget on it.
+    #
+    # Changing the client is a change of subject, so the fields reset to that
+    # client's defaults. Typing over them afterwards still works; the override
+    # just does not survive switching client, which is the correct lifetime
+    # for it.
+    if st.session_state.get("_fields_for") != _active:
+        st.session_state["_fields_for"] = _active
+        st.session_state["sv_brand"]  = _active
+        st.session_state["sv_cat"]    = _prof["category"].title()
+        st.session_state["sv_prod"]   = _prof.get("product", "")
+        st.session_state["sv_market"] = _prof.get("market", DEFAULT_MARKET)
+
     with _ic1:
         st.markdown('<div class="sv-input-lbl">Brand</div>', unsafe_allow_html=True)
         _in_brand = st.text_input("Brand", value=_active, label_visibility="collapsed", key="sv_brand")
@@ -7155,10 +7187,20 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     product=_in_prod, brand=_in_brand or _active,
                     competitors=_prof.get("competitors", ""))
                 try:
-                    _trade_sigs, _trade_outs, _trade_diag = _f_trade.result(timeout=90)
+                    # 150, not 90. The trade pipeline gained a stage today —
+                    # reading the article bodies — and its worst case went from
+                    # 49s to 89s against a 90s wait. One second of headroom is
+                    # not headroom, and when the wait expires the whole section
+                    # vanishes from the brief with nothing on screen to say why.
+                    # It runs alongside the main gather, so a longer ceiling
+                    # costs wall-clock only when the gather finishes first.
+                    _trade_sigs, _trade_outs, _trade_diag = _f_trade.result(timeout=150)
                 except Exception as _texc:
                     _trade_sigs, _trade_outs = [], []
                     _trade_diag = {"error": f"trade collection failed: {_texc}"}
+                    # Report it where failures are already read — the progress
+                    # line — instead of only in a panel nobody opens.
+                    _tick("trade", -1, f"{type(_texc).__name__}: {_texc}")
             _status.markdown(
                 '<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
                 'Writing the brief…</div>', unsafe_allow_html=True)
