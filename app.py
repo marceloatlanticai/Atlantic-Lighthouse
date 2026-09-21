@@ -4317,6 +4317,178 @@ def _sv_gather_trade(search_terms: str, category: str, market: str,
     return sigs, confirmed, diag
 
 
+# ── 02N · The Slow Current — independent newsletters ─────────────────────────
+# WHY THIS SECTION EXISTS.
+# The brief had two registers and a hole between them. Consumer Insight is what
+# people say — short, reactive, unargued. The Trade Current is what the industry
+# reports — volume, distribution, launches, no point of view. Neither is anyone
+# THINKING ALOUD about the category.
+#
+# That thinking now happens on Substack and its imitators, and it happens FIRST:
+# an independent writer works out why a shift matters months before the trade
+# press reports the shift as news. For a tool that claims to find countercurrents
+# this is the most upstream source available, and we were not reading it.
+#
+# Cost: zero in the normal case. Newsletters publish their full text in the RSS
+# feed, so the essay arrives free — no scraping, no Firecrawl credit, no key.
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _sv_newsletters(category: str, market: str, product: str = "") -> list:
+    """Ask the cheap model which independent newsletters cover this category.
+
+    Same contract as _sv_trade_outlets: the model PROPOSES, the feed DISPOSES.
+    Nothing is trusted. Every domain is fetched, and one that does not answer
+    with a parseable feed never reaches the brief.
+
+    That guard matters more here than it does for trade. A Substack address is
+    trivially easy to invent — `thefoodinstitute.substack.com` sounds exactly
+    like a real publication and is an empty slot Substack offers to claim. But
+    an invented address serves an HTML "Not Found" page, which fails to parse
+    and drops out silently. Hallucination costs a slot, never a wrong answer.
+
+    Cached for a day per (category, market, product): which newsletters matter
+    in a category does not change hourly.
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return []
+    try:
+        import anthropic
+        cl = anthropic.Anthropic(api_key=key)
+        _prod = (f" The specific product is {product} — favour writers who cover it."
+                 if product else "")
+        prompt = (
+            f"List the independent newsletters and writers a strategist would read "
+            f"to think about the {category} category in {market}.{_prod}\n\n"
+            "Substack first, but Ghost, Beehiiv and self-hosted newsletters count "
+            "too. What matters is that ONE NAMED PERSON with a point of view writes "
+            "it — analysis, criticism and argument, not press releases. NOT trade "
+            "press, NOT consumer magazines, NOT brand-owned content marketing, NOT "
+            "corporate blogs.\n\n"
+            "Respond ONLY with JSON:\n"
+            '{"letters": [{"name": "Snaxshot", "domain": "snaxshot.com", '
+            '"writer": "Andrea Hernandez", '
+            '"covers": "food and beverage trends, packaging, the DTC shelf"}]}\n\n'
+            "Rules: 8 to 12 newsletters. Bare domains — no https://, no www, no "
+            "path. For a Substack that has no custom domain use the full "
+            "subdomain, e.g. bigtechnology.substack.com. NAME ONLY PUBLICATIONS "
+            "YOU ARE CONFIDENT EXIST AT THAT EXACT ADDRESS — a guessed address "
+            "returns nothing and wastes the slot. Prefer a shorter list you are "
+            "sure of over a long one you are not. Leave `writer` empty if unsure."
+        )
+        r = cl.messages.create(model=CLAUDE_MODEL_FAST, max_tokens=1100,
+                               messages=[{"role": "user", "content": prompt}])
+        data = _extract_json(_msg_text(r))
+        out = []
+        for o in (data.get("letters") or [])[:12]:
+            dom = str(o.get("domain", "")).strip().lower()
+            dom = dom.replace("https://", "").replace("http://", "").replace("www.", "").strip("/")
+            dom = dom.split("/")[0]
+            if dom and "." in dom and " " not in dom:
+                out.append({"name": str(o.get("name", dom))[:40],
+                            "domain": dom,
+                            "writer": str(o.get("writer", ""))[:40],
+                            "covers": str(o.get("covers", ""))[:90]})
+        return out
+    except Exception as exc:
+        print(f"[letters] newsletter discovery failed: {exc}")
+        return []
+
+
+def _sv_gather_letters(search_terms: str, category: str, market: str,
+                       product: str = "", letters: Optional[list] = None) -> tuple:
+    """Collect newsletter essays. Returns (signals, confirmed, diagnostic).
+
+    ONE path per publication: `https://{domain}/feed`. Substack, Ghost and
+    Beehiiv all serve there, which is why this is simpler than the trade
+    gatherer's four-guess cascade — and it is the whole article, not a teaser,
+    because scrape_rss now reads content:encoded.
+
+    Parallel for the same reason trade is: the work is network waiting on
+    domains that may not answer at all. In sequence, twelve probes at 6s each
+    would be over a minute; threaded it is roughly the slowest one.
+
+    Relevance is judged more loosely than in trade. A newsletter issue about
+    "the death of the flavour arms race" is exactly what this section is for
+    even when it never types the product name — so a publication that matched
+    nothing still contributes its most recent issue, marked `loose` in the
+    diagnostic. What it must never do is contribute NOTHING silently.
+
+    Nothing in here touches Streamlit; it only returns data.
+    """
+    # RESOLVED BY THE CALLER, ON THE MAIN THREAD — _sv_newsletters is
+    # @st.cache_data and this function runs inside a ThreadPoolExecutor. That
+    # combination has now broken two sections of this app (the archive loader
+    # in _sv_gather, then the whole Trade section after the Streamlit upgrade).
+    # Third time it is written down before it happens rather than after.
+    if letters is None:
+        letters = _sv_newsletters(category, market, product)
+    diag = {"proposed": [l["domain"] for l in letters], "counts": {}, "via": {}}
+    if not letters:
+        diag["error"] = "no newsletters proposed (check ANTHROPIC_API_KEY)"
+        return [], [], diag
+
+    from ingestion import scrape_rss
+    by_domain = {l["domain"]: l for l in letters}
+    _kw = [w for w in (search_terms + " " + category).lower().split() if len(w) > 3]
+
+    def _relevant(sig) -> bool:
+        blob = f"{sig.title} {sig.content}".lower()
+        return (not _kw) or any(k in blob for k in _kw)
+
+    def _one(dom: str):
+        """The publication's feed. Returns (dom, items, via, why)."""
+        name = by_domain[dom]["name"]
+        for path in ("/feed", "/rss.xml", "/feed/"):
+            try:
+                items = scrape_rss(feeds=[(f"https://{dom}{path}", name)],
+                                   max_items_per_feed=10, timeout=6)
+            except Exception as exc:
+                return dom, [], "", [f"{path}: {type(exc).__name__}"]
+            if not items:
+                continue
+            hits = [s for s in items if _relevant(s)]
+            # Loose is legitimate here, and is marked so the diagnostic does not
+            # read as a clean match. An essay that never says "sparkling water"
+            # can still be the sharpest thing written about the category.
+            return dom, (hits or items[:2])[:4], f"rss{path}" + ("" if hits else " (loose)"), []
+        return dom, [], "", ["no feed at /feed, /rss.xml or /feed/"]
+
+    sigs, seen = [], set()
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    doms = list(by_domain)[:12]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_one, d): d for d in doms}
+        try:
+            for fut in as_completed(futures, timeout=40):
+                try:
+                    dom, found, via, why = fut.result()
+                except Exception as exc:
+                    diag["counts"][futures[fut]] = f"error: {exc}"
+                    continue
+                diag["counts"][dom] = len(found)
+                diag["via"][dom] = via or " | ".join(why[:3])
+                if found:
+                    seen.add(dom)
+                    for sig in found:
+                        sigs.append({"title": sig.title, "content": sig.content,
+                                     "source": "letter", "url": sig.url,
+                                     "timestamp": sig.timestamp,
+                                     "letter": by_domain[dom]["name"],
+                                     "writer": by_domain[dom].get("writer", "")})
+        except Exception:
+            pass        # budget spent; whatever landed still counts
+
+    # Newest first. Unlike trade, where every outlet deserves a voice, here the
+    # question is what is being argued RIGHT NOW — an essay from March is
+    # history, not a current.
+    sigs.sort(key=lambda s: str(s.get("timestamp") or ""), reverse=True)
+    sigs = sigs[:16]
+    diag["with_body"] = sum(1 for s in sigs if len(s.get("content") or "") > 600)
+    confirmed = [l for l in letters if l["domain"] in seen]
+    return sigs, confirmed, diag
+
+
 def _sv_social_queries(product: str, brand: str, competitors: str,
                        search_terms: str) -> list:
     """What to actually ASK TikTok, Instagram and X.
@@ -4639,7 +4811,7 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
 
 
 def _sv_synthesize(signals: list, category: str, competitors: list, brand: str = "the brand",
-                   trade: Optional[list] = None) -> dict:
+                   trade: Optional[list] = None, letters: Optional[list] = None) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key or not signals:
         return {}
@@ -4668,6 +4840,27 @@ def _sv_synthesize(signals: list, category: str, competitors: list, brand: str =
         )
         trade_text = (f"\nTRADE PRESS ({len(trade[:20])} articles from the industry titles that "
                       f"cover {category} — what the INDUSTRY reads, not consumers):\n{_tb}\n")
+    # A THIRD, SEPARATELY LABELLED BLOCK. The whole value of this section is
+    # that the model can tell the registers apart: a tweet is a reaction, a
+    # trade item is a fact, a newsletter is an ARGUMENT. Folded in with the
+    # signals, the essays would be mined for quotable lines and their reasoning
+    # thrown away — which is the one thing they have that the others do not.
+    letters_text = ""
+    if letters:
+        _lb = "\n\n".join(
+            f"[N{i}] NEWSLETTER: {l.get('letter','newsletter')}"
+            + (f" | WRITER: {l['writer']}" if l.get("writer") else "")
+            + f" | URL: {l['url']}\n"
+            # 900: these arrive as whole essays via content:encoded, and the
+            # argument is usually made in the first few paragraphs. Ten at 900
+            # is ~2,200 tokens of input, under half a cent.
+            f"TITLE: {l['title'][:110]}\nCONTENT: {l['content'][:900]}"
+            for i, l in enumerate(letters[:10])
+        )
+        letters_text = (
+            f"\nINDEPENDENT NEWSLETTERS ({len(letters[:10])} recent issues by named "
+            f"writers who cover {category} — opinion and analysis, written months "
+            f"ahead of the trade press. These are ARGUMENTS, not news):\n{_lb}\n")
     prompt = f"""You are the editor of "The Lighthouse", a cultural-intelligence brief written for a strategy team working on the brand {brand} in the {category} category. Write with a confident editorial voice and a clear point of view. Headlines should make an ARGUMENT (e.g. "Functional water eats flavored water", "Mineral provenance is the new luxury") — never flat descriptions.
 
 Below are {len(batch)} REAL signals scraped from social media, communities, news and the web.
@@ -4675,6 +4868,7 @@ Below are {len(batch)} REAL signals scraped from social media, communities, news
 SIGNALS:
 {sig_text}
 {trade_text}
+{letters_text}
 
 Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
 {{
@@ -4702,6 +4896,19 @@ Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
     {{"trade_says": "what the industry press treats as the story",
       "street_says": "what real people are actually talking about, from the SIGNALS",
       "gap": "the opening this distance creates for {brand}"}}
+  ],
+  "letters_summary": "3-4 sentences: what are the independent writers ARGUING about {category} right now — not what they report, what they claim and why. Only from the INDEPENDENT NEWSLETTERS block. If that block is absent or empty, return an empty string.",
+  "letters_moves": [
+    {{"letter": "the newsletter name, exactly as given in the NEWSLETTERS block",
+      "writer": "the writer's name if the block gives one, else empty string",
+      "argument": "their claim, stated as a claim someone could disagree with",
+      "signal_index": 2,
+      "why": "why it matters for {brand}"}}
+  ],
+  "letters_ahead": [
+    {{"seeing": "what these writers have already worked out",
+      "not_yet": "who has not caught up — the trade press, the category, the competitors",
+      "window": "what {brand} could do while that gap is still open"}}
   ],
   "competitors_summary": "3-4 sentences: what are competitors ({comp}) doing right now, and what's the predictable pattern everyone follows?",
   "competitors": [
@@ -4755,6 +4962,23 @@ Rules:
   trade_vs_street is the section's whole reason to exist: the industry talks
   volume and distribution while people talk taste and distrust, and the gap
   between the two is where a countercurrent lives.
+- NEWSLETTERS: 3-4 letters_moves and exactly 2 letters_ahead, and ONLY from the
+  INDEPENDENT NEWSLETTERS block. letters_moves.signal_index is the NUMBER INSIDE
+  [N#] — a THIRD sequence, separate from both SIGNALS and [T#]. Never use an N
+  index in insight_quotes or trade_moves, and never move a newsletter into the
+  trade section or vice versa. No single newsletter may supply more than half
+  the letters_moves. If there is no NEWSLETTERS block, return "" and empty
+  arrays.
+  WHAT THIS SECTION IS FOR, in one line: these writers ARGUE, and the argument
+  is the asset. So `argument` must be a claim a reasonable person could contest
+  — "provenance is replacing flavour as the premium cue", not "the newsletter
+  discusses provenance". If you cannot state it as a contestable claim you have
+  summarised instead of read, and the entry should be dropped.
+  letters_ahead is the section's reason to exist: independent writers reach a
+  conclusion months before the trade press reports it as news, so name the thing
+  they have already settled that the rest of the category is still arguing about.
+  Do not repeat a trade_vs_street entry here — that compares industry to
+  consumers; this compares who is EARLY to who is LATE.
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
 - Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly."
@@ -4767,6 +4991,8 @@ a better field, not a lazy one. Never pad a line to reach a number.
   · quote context max 12 words
   · trade_summary max 55 words · trade headline max 12 words · why max 16 words
   · trade_says / street_says max 16 words each · gap max 22 words
+  · letters_summary max 55 words · argument max 14 words · why max 16 words
+  · seeing max 16 words · not_yet max 14 words · window max 20 words
   · competitor move max 8 words · detail max 16 words · cliche max 8 words
   · cliche_map entries max 6 words
   · tension title max 7 words · side_a and side_b max 14 words each · opening max 20 words
@@ -5563,6 +5789,32 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .tvrow .tvside:last-child .tvtxt{color:__BLUE__;font-weight:600;}
 @media(max-width:820px){.tvrow{grid-template-columns:1fr;}
   .tvside{border-left:none;padding:0 0 12px;}}
+/* ── 02N · The Slow Current ──────────────────────────────────────────────────
+   OUTLINED cards, not the filled blue of 01/02T. Three solid-blue card decks in
+   a row (02, 02T, 02N) read as one long block and the reader stops seeing the
+   section breaks. An outline also suits the content: a trade card reports a
+   fact and earns its weight, a newsletter card makes an ARGUMENT and should sit
+   lighter on the page. Same grid, same type scale — only the fill changes. */
+.nlcard{background:#ffffff !important;border:1.5px solid __INK__;padding:20px 22px;}
+.sec:not(.blue) .nlcard .nlarg,
+.sec:not(.blue) .nlcard .cbody{color:__BODY__;}
+.nlhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+  margin-bottom:12px;padding-bottom:9px;border-bottom:1px solid __INK__;}
+.nlname{font-size:10px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;
+  color:__BLUE__;}
+.nlwho{font-size:11px;color:__META__;text-align:right;}
+/* The claim is the asset, so it is set as the card's headline — one step down
+   from .ctitle because a claim runs longer than a trade headline. */
+.nlarg{font-size:16.5px;font-weight:700;line-height:1.3;margin-bottom:9px;color:__INK__;}
+.nllink{display:inline-block;margin-top:12px;font-size:11.5px;font-weight:600;
+  color:__BLUE__;text-decoration:none;border-bottom:1px solid currentColor;padding-bottom:1px;}
+.sec:not(.blue) .nlcard .nllink{color:__BLUE__;}
+/* "What they see first" — two sides and the window, on the .tvrow grid so the
+   two comparison blocks in the brief line up exactly. */
+.nlchipw{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 22px;}
+.nlchip{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  border:1.5px solid __INK__;color:__INK__;padding:5px 9px;}
+.nlchip i{font-style:normal;opacity:.55;font-weight:600;}
 .sec:not(.blue) .map{border:1.5px solid __INK__;}
 .maptitle{font-size:11px;letter-spacing:.16em;text-transform:uppercase;
           color:__RED__;font-weight:700;margin-bottom:12px;}
@@ -5598,7 +5850,7 @@ details .src a{color:__BLUE__;text-decoration:none;}
 
 def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str = "screen",
                  trade_sigs: Optional[list] = None, trend_ages: Optional[list] = None,
-                 faded: Optional[list] = None) -> tuple:
+                 faded: Optional[list] = None, letter_sigs: Optional[list] = None) -> tuple:
     """Render the requested brief sections as HTML.
 
     Returns (html, estimated_height_px). Odd sections get the blue block on
@@ -5617,6 +5869,11 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         """Trade indexes live in their OWN list — the prompt labels them [T0], [T1].
         Resolving them against `sigs` would link to an unrelated social post."""
         try: return (trade_sigs or [])[int(i)]
+        except Exception: return None
+    def lsig(i):
+        """Newsletter indexes are a THIRD sequence — the prompt labels them [N0].
+        Same trap as tsig, one list further along."""
+        try: return (letter_sigs or [])[int(i)]
         except Exception: return None
     def head(num, label, q):
         # The design dropped the big section numbers and the two-column rail:
@@ -5938,6 +6195,82 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                          f'<div class="tvside"><div class="tvlbl">The opening</div>'
                          f'<div class="tvtxt">{e(g.get("gap",""))}</div></div></div>')
             h += len(_gaps) * 130
+        H.append('</section>'); h += 240
+
+    # ── 02N · The Slow Current ───────────────────────────────────────────────
+    # Sits after Trade on purpose, and the three read as a sequence of tempos:
+    # 02 is what people said this week, 02T is what the industry filed this
+    # month, 02N is what someone worked out before either noticed.
+    if ("02N" in which and mode == "screen"
+            and "_letters_sigs" in res
+            and not (res.get("letters_summary") or res.get("letters_moves"))
+            and not letter_sigs):
+        # Same reasoning as the empty Trade block: an absent section and a quiet
+        # week look identical to a reader, so say which one this is.
+        #
+        # `"_letters_sigs" in res` is the guard that keeps this off EVERY BRIEF
+        # IN THE ARCHIVE. A run from before this section existed has no such key
+        # at all, and without the check every historical brief would reopen
+        # carrying an apology for a source it never had the chance to read. A
+        # fresh run that collected nothing writes the key as an empty list, so
+        # the two cases stay distinguishable.
+        H.append(open_sec("02N") + head("02N", "The Slow Current",
+                                        "What independent writers are arguing"))
+        H.append('<div class="lead">No newsletter came back for this scan. Either '
+                 'nothing was published on this category recently, or the feeds '
+                 'did not answer — the Newsletter diagnostic below the brief '
+                 'says which.</div>')
+        H.append('</section>'); h += 300
+    if "02N" in which and (res.get("letters_summary") or res.get("letters_moves")):
+        H.append(open_sec("02N") + head("02N", "The Slow Current",
+                                        "What independent writers are arguing"))
+        if res.get("letters_summary"):
+            H.append(f'<div class="lead">{e(res["letters_summary"])}</div>')
+
+        # Verified publications — the ones whose feed actually answered, not the
+        # model's proposed list. Writer's name rides along: this section's
+        # authority comes from a PERSON having written it, unlike trade.
+        _lts = res.get("_letters") or []
+        if _lts:
+            chips = "".join(
+                f'<span class="nlchip">{e(l.get("name",""))}'
+                + (f' <i>{e(l.get("writer",""))}</i>' if l.get("writer") else "")
+                + '</span>' for l in _lts[:12])
+            H.append(f'<div class="nlchipw">{chips}</div>'); h += 60
+
+        _lm = (res.get("letters_moves") or [])[:4]
+        if _lm:
+            H.append('<div class="row2">')
+            _bylet = {l.get("name", ""): l for l in _lts}
+            for m in _lm:
+                sg = lsig(m.get("signal_index"))
+                _name = m.get("letter", "Newsletter")
+                # Writer from the model, falling back to the verified list —
+                # the model sometimes leaves it blank even when we know it.
+                _who = m.get("writer") or (_bylet.get(_name) or {}).get("writer", "")
+                head_ = (f'<div class="nlhead"><span class="nlname">{e(_name)}</span>'
+                         f'<span class="nlwho">{e(_who)}</span></div>')
+                link = ""
+                if sg and sg.get("url"):
+                    link = (f'<div><a class="nllink" href="{e(sg["url"])}" '
+                            f'target="_blank">Read the issue ↗</a></div>')
+                H.append(f'<div class="card nlcard">{head_}'
+                         f'<div class="nlarg">{e(m.get("argument",""))}</div>'
+                         f'<div class="cbody">{e(m.get("why",""))}</div>{link}</div>')
+            H.append('</div>'); h += len(_lm) * 115
+
+        _ah = (res.get("letters_ahead") or [])[:2]
+        if _ah:
+            H.append('<div class="tvhead">What they see first</div>')
+            for a in _ah:
+                H.append('<div class="tvrow">'
+                         f'<div class="tvside"><div class="tvlbl">Already settled</div>'
+                         f'<div class="tvtxt">{e(a.get("seeing",""))}</div></div>'
+                         f'<div class="tvside"><div class="tvlbl">Still catching up</div>'
+                         f'<div class="tvtxt">{e(a.get("not_yet",""))}</div></div>'
+                         f'<div class="tvside"><div class="tvlbl">The window</div>'
+                         f'<div class="tvtxt">{e(a.get("window",""))}</div></div></div>')
+            h += len(_ah) * 130
         H.append('</section>'); h += 240
 
     if "03" in which:
@@ -6588,6 +6921,72 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
                     f'{e(g.get("gap",""))}</span></td></tr>')
             parts.append('</table>')
 
+    # ── 02N · The Slow Current ───────────────────────────────────────────────
+    # Printed for the same reason Trade is: named publications, named writers
+    # and live links are exactly what survives being read on paper.
+    _lmoves = res.get("letters_moves") or []
+    # TWO GUARDS, AND THE PDF IS WHERE THEY MATTER MOST — this file goes to a
+    # client, so a sentence in it has to be true.
+    #   "_letters_sigs" in res  → the brief is not an archived one from before
+    #                             this section existed.
+    #   not res["_letters_sigs"] → nothing was actually collected. Without this
+    #                             second one the PDF would print "no newsletter
+    #                             came back" on a scan where twelve issues DID
+    #                             come back and only the synthesis slipped —
+    #                             a false statement on a client document. In
+    #                             that case the section is simply omitted and
+    #                             the app's diagnostic carries the explanation.
+    if ("_letters_sigs" in res and not res.get("_letters_sigs")
+            and not (res.get("letters_summary") or _lmoves)):
+        parts.append(_sec("02N", "The Slow Current",
+                          "What independent writers are arguing"))
+        parts.append('<div class="lead">No newsletter came back for this scan — either '
+                     'nothing was published on this category recently, or the feeds did '
+                     'not answer. The Newsletter diagnostic in the app records which.</div>')
+    if res.get("letters_summary") or _lmoves:
+        parts.append(_sec("02N", "The Slow Current",
+                          "What independent writers are arguing"))
+        if res.get("letters_summary"):
+            parts.append(f'<div class="lead">{e(res["letters_summary"])}</div>')
+        _lts = res.get("_letters") or []
+        if _lts:
+            parts.append('<div class="vol" style="text-align:left;margin-bottom:14px;">'
+                         + e(" · ".join(l.get("name", "") for l in _lts[:12]))
+                         + '</div>')
+        _lsigs = res.get("_letters_sigs") or []
+        if _lmoves:
+            _bylet = {l.get("name", ""): l for l in _lts}
+            parts.append('<div class="cards2">')
+            for m in _lmoves[:4]:
+                _name = m.get("letter", "Newsletter")
+                _who = m.get("writer") or (_bylet.get(_name) or {}).get("writer", "")
+                _url = ""
+                try:
+                    _url = (_lsigs[int(m.get("signal_index"))] or {}).get("url", "")
+                except Exception:
+                    pass
+                _lk = (f'<div class="stat"><a href="{e(_url)}" style="color:{GOLD};">'
+                       f'Read the issue ↗</a></div>' if _url else "")
+                parts.append(f'<div class="card"><div class="clabel">{e(_name)}'
+                             + (f' &nbsp;·&nbsp; {e(_who)}' if _who else "")
+                             + f'</div><div class="ctitle">{e(m.get("argument",""))}</div>'
+                               f'<div class="cbody">{e(m.get("why",""))}</div>{_lk}</div>')
+            parts.append('</div>')
+        _lah = (res.get("letters_ahead") or [])[:2]
+        if _lah:
+            parts.append('<div class="sublbl" style="margin:22px 0 8px;">'
+                         'What they see first</div><table>')
+            for a in _lah:
+                parts.append(
+                    f'<tr><td style="width:33%;"><div class="sublbl">Already settled</div>'
+                    f'{e(a.get("seeing",""))}</td>'
+                    f'<td style="width:33%;"><div class="sublbl">Still catching up</div>'
+                    f'{e(a.get("not_yet",""))}</td>'
+                    f'<td><div class="sublbl">The window</div>'
+                    f'<span style="color:{GOLD};font-weight:700;">'
+                    f'{e(a.get("window",""))}</span></td></tr>')
+            parts.append('</table>')
+
     cp = res.get("competitors", [])
     if cp:
         parts.append(_sec("03", "The Competitive Current", "What everyone else is doing"))
@@ -7230,7 +7629,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # no data and waiting for one before starting the other simply added
             # its 20-odd seconds to the total.
             from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=2) as _pool:
+            with ThreadPoolExecutor(max_workers=3) as _pool:
                 # Resolved here, on the main thread, then handed to the worker.
                 try:
                     _outs_pre = _sv_trade_outlets(_in_cat or _prof["category"],
@@ -7238,9 +7637,21 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 except Exception as _oexc:
                     print(f"[lighthouse] trade outlets failed: {_oexc}")
                     _outs_pre = []
+                # Same rule, same reason: @st.cache_data cannot run in a worker.
+                try:
+                    _lets_pre = _sv_newsletters(_in_cat or _prof["category"],
+                                                _in_market, _in_prod)
+                except Exception as _lexc:
+                    print(f"[lighthouse] newsletter discovery failed: {_lexc}")
+                    _lets_pre = []
                 _f_trade = _pool.submit(_sv_gather_trade, _search,
                                         _in_cat or _prof["category"], _in_market,
                                         _in_prod, _outs_pre)
+                # Third lane. Costs no wall-clock in the normal case: it is
+                # pure RSS, typically the first of the three to finish.
+                _f_letters = _pool.submit(_sv_gather_letters, _search,
+                                          _in_cat or _prof["category"], _in_market,
+                                          _in_prod, _lets_pre)
                 _signals, _src_tally = _sv_gather(
                     _search, _active, _in_market, progress=_tick,
                     product=_in_prod, brand=_in_brand or _active,
@@ -7260,6 +7671,15 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     # Report it where failures are already read — the progress
                     # line — instead of only in a panel nobody opens.
                     _tick("trade", -1, f"{type(_texc).__name__}: {_texc}")
+                try:
+                    # 60 is generous for twelve parallel feed reads capped at 6s
+                    # each. Both of the others are already home by now, so this
+                    # ceiling costs wall-clock only if a feed hangs.
+                    _let_sigs, _let_outs, _let_diag = _f_letters.result(timeout=60)
+                except Exception as _lexc2:
+                    _let_sigs, _let_outs = [], []
+                    _let_diag = {"error": f"newsletter collection failed: {_lexc2}"}
+                    _tick("letters", -1, f"{type(_lexc2).__name__}: {_lexc2}")
             _status.markdown(
                 '<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
                 'Writing the brief…</div>', unsafe_allow_html=True)
@@ -7275,7 +7695,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 try:
                     _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
                                              _competitors, _in_brand or _active,
-                                             trade=_trade_sigs)
+                                             trade=_trade_sigs, letters=_let_sigs)
                 except Exception as _exc:
                     _name = type(_exc).__name__
                     if "Authentication" in _name or "PermissionDenied" in _name:
@@ -7406,6 +7826,48 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                    "trade fields. Press Run Lighthouse again — this is "
                                    "usually a one-off.")
 
+            # SAME PANEL, ONE SOURCE ALONG.
+            # Worth its own rather than folding into Trade's: the failure modes
+            # are different. Trade fails on publishers blocking us; newsletters
+            # fail on an address that never existed, and the fix for that is a
+            # better prompt, not a workaround. The per-domain line is what tells
+            # the two apart.
+            _ld = _let_diag or {}
+            _n_lets = len(_let_sigs or [])
+            _has_lf = bool((_result or {}).get("letters_summary")
+                           or (_result or {}).get("letters_moves"))
+            if not (_n_lets and _has_lf):
+                with st.expander("Newsletter section — diagnostic", expanded=False):
+                    st.markdown("**1 · Collection**")
+                    if _ld.get("error"):
+                        st.error(_ld["error"])
+                    elif not _ld.get("proposed"):
+                        st.error("No newsletters proposed. Check ANTHROPIC_API_KEY.")
+                    else:
+                        _ok = len(_let_outs or [])
+                        st.caption(f"{len(_ld.get('proposed', []))} newsletters proposed · "
+                                   f"{_ok} answered · {_n_lets} issues collected · "
+                                   f"{_ld.get('with_body', 0)} with the full essay")
+                        st.code("\n".join(
+                            f"{k:34} {v}   {_ld.get('via', {}).get(k, '')}"
+                            for k, v in (_ld.get("counts") or {}).items()) or "—")
+                        st.caption("One request per publication, to /feed. A line reading "
+                                   "`no feed at …` almost always means the address does "
+                                   "not exist — the model invented a plausible Substack. "
+                                   "That is expected at some rate and costs a slot, never "
+                                   "a wrong answer. `(loose)` means the feed answered but "
+                                   "nothing matched the search terms, so its most recent "
+                                   "issues were kept anyway. This source is free: no key, "
+                                   "no scraping, no credit.")
+                    st.markdown("**2 · Synthesis**")
+                    if not _n_lets:
+                        st.caption("Skipped — nothing was collected to synthesise.")
+                    elif _has_lf:
+                        st.success("Model returned the newsletter fields.")
+                    else:
+                        st.warning("Issues were collected but the model returned no "
+                                   "newsletter fields. Press Run Lighthouse again.")
+
         # A salvaged, truncated response is still a truthy dict — it just has
         # the later sections missing. Check the keys the page actually renders
         # rather than trusting truthiness, so an incomplete brief is reported
@@ -7437,6 +7899,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _result["_trade_sigs"] = [
                 {"title": t["title"][:160], "url": t["url"], "outlet": t.get("outlet", "")}
                 for t in _trade_sigs[:24]
+            ]
+            # Same treatment for the newsletters: only the publications whose
+            # feed actually answered, and a trimmed index so letters_moves'
+            # signal_index resolves to a real URL on screen, in the PDF and in
+            # the archive. The essay bodies are NOT stored — they are large and
+            # the brief only ever needs the link back.
+            _result["_letters"] = _let_outs
+            _result["_letters_sigs"] = [
+                {"title": l["title"][:160], "url": l["url"],
+                 "letter": l.get("letter", ""), "writer": l.get("writer", "")}
+                for l in _let_sigs[:16]
             ]
             st.session_state["sv_result"]   = _result
             # Trade signals are appended so trade_moves' signal_index can resolve
@@ -7542,9 +8015,11 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             print(f"[overview] trend history unavailable: {_aexc}")
             _ages, _faded = [], []
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
-                                     ("01", "02", "02T", "03", "04", "05", "06"), "screen",
+                                     ("01", "02", "02T", "02N", "03", "04", "05", "06"),
+                                     "screen",
                                      trade_sigs=_res.get("_trade_sigs") or [],
-                                     trend_ages=_ages, faded=_faded)
+                                     trend_ages=_ages, faded=_faded,
+                                     letter_sigs=_res.get("_letters_sigs") or [])
         with st.container(key="svfullA"):
             _sv_embed(_html_a, _h_a)
     else:

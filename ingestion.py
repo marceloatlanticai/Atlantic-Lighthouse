@@ -643,7 +643,23 @@ def scrape_rss(
                     title = (item.findtext("title") or "").strip()
                     url = item.findtext("link") or item.findtext("guid") or ""
                     desc = item.findtext("description") or ""
-                    content = _strip_html(desc)[:4000]
+                    # PREFER content:encoded — IT IS THE WHOLE ARTICLE.
+                    # On Substack, <description> is the SUBTITLE and nothing
+                    # else: "beating Kraft at their own game", 33 characters.
+                    # The essay itself sits in content:encoded. Reading only
+                    # description gave the model a teaser and then cost a
+                    # Firecrawl credit to re-fetch a body the feed had already
+                    # handed us for free. Many trade feeds do the same.
+                    #
+                    # Guarded by a length comparison rather than taken blindly:
+                    # a few feeds put a truncated stub in content:encoded and
+                    # the real summary in description, and this keeps whichever
+                    # actually carries the text.
+                    enc = item.findtext(
+                        "{http://purl.org/rss/1.0/modules/content/}encoded") or ""
+                    body = _strip_html(enc)
+                    alt = _strip_html(desc)
+                    content = (body if len(body) > len(alt) else alt)[:4000]
                     ts_raw = item.findtext("pubDate") or ""
                     try:
                         from email.utils import parsedate_to_datetime
@@ -1005,22 +1021,37 @@ def scrape_instagram(
         # that usually exists — #sparklingwater), then a three-word compound, then
         # the longest single words. Dead tags cost nothing; they just return
         # nothing and the next one is tried.
+        # THE COMPOUND IS BUILT FROM THE WRONG END.
+        # This took words[0] + words[1], so "Mineral Sparkling Water" asked for
+        # #mineralsparkling — a tag that barely exists — and never once asked
+        # for #sparklingwater, which is THE tag for the category. The remaining
+        # slots then went to the longest single words, which handed us
+        # #sparkling: glitter, jewellery, makeup, personalities. A scan came
+        # back with Evil Eye keyrings and a German company's staff announcement.
+        #
+        # A search reads category → product, so the product noun is at the END.
+        # Adjacent pairs, last pair first, is the fix: #sparklingwater before
+        # #mineralsparkling. Compounds also beat single words, because a
+        # two-word tag is unambiguous where "sparkling" and "mineral" are not.
         words = [w for w in re.findall(r"[a-z0-9]+", topic.lower()) if len(w) >= 3]
-        tags: list[str] = []
+        # Only the two ENDS, never the middle. The search is category + product
+        # glued together, and a pair straddling that seam is nonsense:
+        # "Soft drinks Zero sugar cola" produced #drinkszero, which describes
+        # nothing. The last pair is the product, the first pair is the category,
+        # and everything between them crosses the join.
+        pairs = []
         if len(words) >= 2:
-            tags.append(words[0] + words[1])
-        # A three-word compound is almost always dead too, so the remaining
-        # slots go to real single words — #sparkling and #mineral exist, and
-        # #sparklingwatermineral does not.
-        # >= 4, not 5. At five, a search like "Food Soup" produced exactly ONE
-        # tag — #foodsoup — because both words are four letters, and the scan
-        # came back with a single Instagram post. #food and #soup are perfectly
-        # good hashtags; the relevance and language gates downstream handle the
-        # breadth they bring.
-        tags += sorted([w for w in words if len(w) >= 4], key=len, reverse=True)
+            pairs.append(words[-2] + words[-1])       # product
+            pairs.append(words[0] + words[1])         # category
+        singles = sorted([w for w in words if len(w) >= 4], key=len, reverse=True)
+        # The last word is the head noun — the most specific single word there
+        # is — so it leads the singles regardless of length.
+        if words and words[-1] in singles:
+            singles.remove(words[-1])
+            singles.insert(0, words[-1])
+        tags = list(dict.fromkeys(pairs + singles))[:3]
         if not tags and words:
             tags = [words[0]]
-        tags = list(dict.fromkeys(tags))[:3]
 
         # COST CONTROL: the actor bills per result and resultsLimit applies PER
         # URL, so the budget is split across the tags rather than multiplied by
