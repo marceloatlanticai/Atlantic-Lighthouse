@@ -4103,6 +4103,55 @@ _SV_SRC_LABEL = {"reddit": "Reddit", "gdelt": "News", "hacker_news": "HN", "yout
                  "web": "Web", "rss": "RSS", "db": "Archive"}
 
 
+# ── What the line says while it works ────────────────────────────────────────
+# Every one of these names something the pipeline actually does, in roughly the
+# order it does it. That constraint is deliberate: a loading line that invents
+# activity is just decoration, and the moment someone notices it is lying the
+# whole page feels less trustworthy. These are true, which means they also
+# double as an explanation of the tool to anyone watching it run.
+_SV_SAYINGS = [
+    "Reticulating the currents…",
+    "Asking nine sources the same question…",
+    "Widening the search until something answers…",
+    "Waiting on the slow ones…",
+    "Stripping the hashtag walls back to sentences…",
+    "Telling posts apart from advertisements…",
+    "Sorting sixteen-million-view videos from three-view ones…",
+    "Reading the trade press so you do not have to…",
+    "Opening newsletters nobody forwarded you…",
+    "Checking whether the industry and the street agree…",
+    "Working out which currents are new this week…",
+    "Looking for what quietly disappeared…",
+    "Weighing the clichés…",
+    "Arguing with itself about the headline…",
+    "Writing the brief…",
+]
+# Each line holds for ~4.5s; the cycle is the whole list. A scan runs two to
+# four minutes, so the list is deliberately longer than one pass — nobody
+# should see the same phrase twice before the brief lands.
+_SV_SAY_EACH = 4.5
+_SV_SAY_TOTAL = round(_SV_SAY_EACH * len(_SV_SAYINGS), 2)
+_SV_SAY_SLICE = 100.0 / len(_SV_SAYINGS)
+# THE PHRASES HAVE TO OVERLAP, or the line goes blank between them.
+# First version faded each one out at the end of its slot and brought the next
+# in 0.54s later — half a second of empty row, fifteen times a cycle, which
+# reads as a stutter rather than a transition. So the outgoing phrase now hangs
+# on past its slot for exactly the length of the incoming fade: one crosses the
+# other and the row is never empty.
+_SV_SAY_FADE = round(0.40 / _SV_SAY_TOTAL * 100, 3)     # 0.4s as a percentage
+_SV_SAY_IN = _SV_SAY_FADE
+_SV_SAY_HOLD = round(_SV_SAY_SLICE, 3)
+_SV_SAY_OUT = round(_SV_SAY_SLICE + _SV_SAY_FADE, 3)
+
+
+def _sv_say_html() -> str:
+    """The rotating line. One span per phrase, each delayed by its own slot."""
+    spans = "".join(
+        f'<span style="animation-delay:{round(i * _SV_SAY_EACH, 2)}s">{e(t)}</span>'
+        for i, t in enumerate(_SV_SAYINGS))
+    return f'<div class="sv-say">{spans}</div>'
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def _sv_trade_outlets(category: str, market: str, product: str = "") -> list:
     """Ask the cheap model which trade publications matter for this category.
@@ -5078,8 +5127,29 @@ a better field, not a lazy one. Never pad a line to reach a number.
     # Output tokens are billed as PRODUCED, never as reserved, so a ceiling that
     # is never reached costs exactly nothing. A ceiling that is reached costs a
     # whole brief. There is no symmetry here to balance.
-    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=24000,
-                                  messages=[{"role": "user", "content": prompt}])
+    #
+    # AND IT HAS TO BE STREAMED, which is what I got wrong raising it.
+    # The SDK refuses a NON-streaming request whose max_tokens implies it could
+    # run past its long-request limit, and it refuses with a bare ValueError —
+    # which surfaced in production as "The brief could not be written
+    # (ValueError)". The scan had worked; nothing was wrong with the signals.
+    # Raising the ceiling without switching to a stream simply traded one
+    # failure for a worse one: truncation loses the end of a brief, this lost
+    # all of it.
+    #
+    # Streaming removes the limit and changes nothing else — get_final_message()
+    # returns the same Message, with the same stop_reason the truncation check
+    # below reads. Wrapped so that an SDK too old to stream still produces a
+    # brief at the previous, safe ceiling rather than an error page.
+    try:
+        with client.messages.stream(
+                model=CLAUDE_MODEL, max_tokens=24000,
+                messages=[{"role": "user", "content": prompt}]) as _stream:
+            resp = _stream.get_final_message()
+    except (AttributeError, TypeError) as _sexc:
+        print(f"[overview] streaming unavailable ({_sexc}); falling back")
+        resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=16000,
+                                      messages=[{"role": "user", "content": prompt}])
     raw = _msg_text(resp)
     # Silent salvage is what disguised the bug. If the model was cut off, say so.
     if getattr(resp, "stop_reason", None) == "max_tokens":
@@ -7480,6 +7550,32 @@ button[kind="primary"]:disabled span,
 @media (prefers-reduced-motion: reduce) {{
   .sv-load::after {{ animation:none; left:0; width:100%; opacity:.35; }}
 }}
+/* ── The phrases, in the manner of a loading screen ────────────────────────
+   CSS ONLY, AND THAT IS THE ENTIRE POINT. A scan spends its longest stretch —
+   two minutes and more — inside one blocking API call, with the Python thread
+   unable to update anything at all. That is precisely when a person is left
+   watching a spinner wondering whether it has died. An animation declared in
+   the stylesheet keeps running regardless of what Python is doing, so the line
+   goes on changing through the silence.
+   (Streamlit strips inline JS from st.markdown but leaves @keyframes alone —
+   the same reason .sv-load above is built this way.)
+   Each phrase names something the tool genuinely does; they are in the order
+   the pipeline does them, so the line is roughly honest as well as alive. */
+.sv-say {{ position:relative; height:19px; max-width:780px; margin:0 0 12px;
+  font-family:{_sans}; font-size:12.5px; color:{_muted}; }}
+.sv-say span {{ position:absolute; left:0; top:0; white-space:nowrap;
+  opacity:0; animation:sv-say-cycle {_SV_SAY_TOTAL}s linear infinite; }}
+@keyframes sv-say-cycle {{
+  0%   {{ opacity:0; transform:translateY(3px); }}
+  {_SV_SAY_IN}%  {{ opacity:1; transform:none; }}
+  {_SV_SAY_HOLD}% {{ opacity:1; transform:none; }}
+  {_SV_SAY_OUT}% {{ opacity:0; transform:translateY(-3px); }}
+  100% {{ opacity:0; transform:translateY(-3px); }}
+}}
+@media (prefers-reduced-motion: reduce) {{
+  .sv-say span {{ animation-duration:0s; opacity:0; }}
+  .sv-say span:first-child {{ opacity:1; }}
+}}
 
 /* Credits notice — red is the reserved negative marker in this design */
 .sv-paused {{ font-family:{_sans}; font-size:12.5px; line-height:1.55; color:{_muted};
@@ -7845,7 +7941,13 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         # st.markdown but leaves @keyframes alone, so an indeterminate bar costs
         # one div instead of a whole embedded document.
         _loader = st.empty()
-        _loader.markdown('<div class="sv-load"></div>', unsafe_allow_html=True)
+        # Bar plus the rotating line, written ONCE. Neither is touched again
+        # during the scan: both are stylesheet animations, so they keep moving
+        # through the two-plus minutes the main thread spends blocked inside
+        # the synthesis call, which is exactly the stretch that used to look
+        # like the app had died.
+        _loader.markdown('<div class="sv-load"></div>' + _sv_say_html(),
+                         unsafe_allow_html=True)
         # Live status. A four-minute wait behind one static line feels broken;
         # the same wait with sources ticking off feels like work being done.
         _status = st.empty()
@@ -7999,6 +8101,18 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     elif "Connection" in _name or "Timeout" in _name:
                         _api_err = ("**Could not reach Anthropic.** A network hiccup between "
                                     "the server and the API — press Run Lighthouse again.")
+                    elif _name == "ValueError":
+                        # This one is ours, not Anthropic's: the SDK rejects a
+                        # non-streamed request whose max_tokens is too large.
+                        # Named explicitly so the next person does not go
+                        # looking at keys, credits or the network.
+                        _api_err = ("**The request was rejected before it was sent** "
+                                    "(ValueError). Every source was collected — only the "
+                                    "brief could not be written.\n\nThis is a configuration "
+                                    "problem in the app rather than anything to do with the "
+                                    "key or the sources: it happens when the output ceiling "
+                                    "is raised without switching the call to a stream. "
+                                    "Running the scan again will not fix it on its own.")
                     else:
                         _api_err = (f"**The brief could not be written** ({_name}). The "
                                     f"signals were collected; only the synthesis failed. "
