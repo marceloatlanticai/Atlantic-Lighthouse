@@ -4724,10 +4724,33 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     else:
         tally["web"] = "skipped (no FIRECRAWL_API_KEY)"
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
-        futs = {pool.submit(fn): name for name, fn in jobs.items()}
-        for fut in as_completed(futs):
+    # A WALL-CLOCK CEILING ON THE WHOLE COLLECTION.
+    # `as_completed(futs)` had no timeout, which meant the scan took exactly as
+    # long as its slowest source, with no upper bound at all. Reddit's Apify
+    # fallback could run for five minutes and the other eight sources — all of
+    # them finished — sat waiting for it behind a spinner that said nothing.
+    #
+    # Note the deliberate absence of `with`. The context manager calls
+    # shutdown(wait=True) on exit, so a timeout here would expire and then block
+    # anyway on the very thread it was meant to escape — a ceiling that reports
+    # lateness without preventing it. Shutting down explicitly, without waiting,
+    # is what actually hands control back.
+    #
+    # A straggler thread keeps running until its own network call returns. That
+    # is acceptable: it only appends to a list nobody reads, and it touches
+    # nothing in Streamlit.
+    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as _FTimeout
+    _GATHER_BUDGET = 190.0        # comfortably past a healthy scan (~110s)
+    pool = ThreadPoolExecutor(max_workers=len(jobs) or 1)
+    futs = {pool.submit(fn): name for name, fn in jobs.items()}
+    if progress:
+        # Tells the caller which sources are actually in flight, so the status
+        # line can name the one it is waiting on. Sources skipped for a missing
+        # key are not in `jobs` and correctly never appear as pending.
+        progress("__start__", 0, ",".join(jobs))
+    try:
+        _iter = as_completed(futs, timeout=_GATHER_BUDGET)
+        for fut in _iter:
             name = futs[fut]
             try:
                 sigs = fut.result()
@@ -4751,6 +4774,21 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             tally[name] = len(sigs)
             if progress:
                 progress(name, len(sigs))
+    except _FTimeout:
+        # Name the sources that did not land. Before this, a source that never
+        # returned simply never appeared on the progress line, and "still
+        # scanning" was indistinguishable from "hung" — which is exactly how a
+        # scan came to be watched for five minutes.
+        for _f, _nm in futs.items():
+            if not _f.done():
+                tally[_nm] = f"TIMED OUT after {int(_GATHER_BUDGET)}s"
+                if progress:
+                    progress(_nm, -1, f"still running after {int(_GATHER_BUDGET)}s "
+                                      f"— dropped so the brief could be written")
+    finally:
+        # cancel_futures clears anything still queued; wait=False means we do
+        # not sit on the ones already in flight.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     # Saved signals stay on the main thread: the loader is @st.cache_data and
     # calling it from a worker warns about a missing script context.
@@ -5206,8 +5244,31 @@ def _sv_strong_terms(terms: list, meta: dict) -> set:
     return strong & set(terms)
 
 
+def _sv_brand_terms(meta: dict, terms: list) -> set:
+    """Just the brand and competitor words out of the strong set.
+
+    A BRAND NAME IS THE LEAST RELIABLE KIND OF EVIDENCE, NOT THE MOST.
+    A product noun is a word for one thing: "water" only ever means water. A
+    brand is a word BORROWED from the language and pointed at a product, so it
+    keeps every meaning it had before — and the borrowing is usually the whole
+    idea behind the name.
+
+    Rambler is the standing example. It cost us a bad search (Google's Rambler
+    AI, a 1967 AMC) which we fixed by qualifying the query — and then the same
+    ambiguity walked back in through the display gate, because "Rambler" alone
+    marked a post as on topic. A brief about sparkling water carried an
+    Instagram card from @cars_of_east_tennessee about a 1964 AMC Rambler.
+    """
+    out = set()
+    for n in (str((meta or {}).get("brand", "")) + ","
+              + str((meta or {}).get("competitors", ""))).split(","):
+        for w in _sv_terms(n):
+            out.add(w)
+    return out & set(terms)
+
+
 def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None,
-                 strong: Optional[set] = None) -> bool:
+                 strong: Optional[set] = None, brands: Optional[set] = None) -> bool:
     """Does this post mention what we searched for?
 
     `text` is the CLEANED body when the caller has one. That matters more than it
@@ -5241,7 +5302,18 @@ def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None,
         return True
     # One strong term is enough. Otherwise a modifier needs a second modifier
     # beside it — "mineral sparkling" is convincing, "sparkling" alone is not.
-    return bool(hits & strong) or len(hits) >= 2
+    #
+    # EXCEPT A BRAND NAME, which now has to bring a friend like a modifier does.
+    # See _sv_brand_terms: a brand is a borrowed word and keeps its old meaning,
+    # so "Rambler" alone proves nothing. "Rambler sparkling water" does.
+    #
+    # The cost is a post that names only a competitor and nothing else — "LaCroix
+    # tastes like TV static" — and it is a cost worth paying here, because this
+    # gate governs RAW TOP-UPS only. The model's own picks never pass through it,
+    # so a genuinely good brand-only post still reaches the brief by the route
+    # that has an editor behind it.
+    _hard = hits & (strong - (brands or set()))
+    return bool(_hard) or len(hits) >= 2
 
 
 def _sv_handle(src: str, meta: dict) -> str:
@@ -5987,6 +6059,9 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         #    whichever the scraper happened to return first.
         _lang = MARKETS.get(str(_mt.get("market", "")), {}).get("lang", "")
         _strong = _sv_strong_terms(_terms, _mt)
+        # Which of the strong terms are brand names — they no longer carry a
+        # post on their own. See _sv_brand_terms for why.
+        _brands = _sv_brand_terms(_mt, _terms)
         cands: dict = {}
         # WHICH GATE IS DOING THE KILLING.
         # A scan collected 8 TikToks and 12 Instagram posts and showed 1 and 0.
@@ -6007,7 +6082,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             if not _clean:
                 _no(k, "empty after cleaning")
                 continue
-            if not (_sv_on_topic(sg, _terms, _clean, _strong)
+            if not (_sv_on_topic(sg, _terms, _clean, _strong, _brands)
                     or _sv_tagged_on_topic(sg, _terms, strong=_strong)):
                 _no(k, "off topic once hashtags removed")
                 continue
@@ -6065,6 +6140,31 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 if len(pools[k]) > rank:
                     in_all.add((k, rank))
             rank += 1
+
+        # HAND THE FINISHED DECKS TO THE PDF.
+        # The export used to rebuild its own quote block from insight_quotes
+        # alone, so a screen showing 31 posts across six network chips printed
+        # four cards. Everything the top-up stage found — the whole reason the
+        # chips exist — never reached paper.
+        #
+        # Writing onto `res` from a renderer is a side effect, and a deliberate
+        # one: these decks are assembled from `sigs` plus four gates, and the
+        # only alternative is a second implementation in the exporter that
+        # would drift out of step with this one the first time a gate changed.
+        # It follows the precedent two dozen lines up, where `_gates` is stashed
+        # the same way. `_sv_sections` always runs before `_sv_export_html` in a
+        # page load, and the scan archives its result BEFORE either renders, so
+        # this never reaches the database.
+        if mode == "screen":
+            res["_decks"] = {
+                k: [{"net": c["net"], "handle": c.get("handle", ""),
+                     "context": c.get("context", ""), "eng": c.get("eng", ""),
+                     "url": (c["sig"] or {}).get("url", ""),
+                     "text": (c.get("body")
+                              or _sv_dehash(_sv_body(c["sig"]))
+                              or _sv_body(c["sig"]))}
+                    for c in pools[k][:PER_NET]]
+                for k in order}
 
         if mode == "screen" and len(order) > 1:
             chips = f'<button data-net="all" class="on">All ({len(in_all)})</button>'
@@ -6808,7 +6908,44 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
         parts.append('</div>')
 
     iq = res.get("insight_quotes", [])
-    if iq:
+    # ── EVERY NETWORK, NOT JUST THE SIX ──────────────────────────────────────
+    # The screen offers a chip per network with up to six posts behind each —
+    # 31 in one Rambler scan. The PDF printed four. Same brief, same run, and
+    # the printed version silently dropped seven eighths of what was found.
+    #
+    # `_decks` is built by the screen renderer and carries the identical cards,
+    # already through the identical gates. Grouped by network here because the
+    # PDF has no chips to filter with: a heading per network is the printed
+    # equivalent. The old insight_quotes path stays as the fallback, for an
+    # archived brief saved before decks existed.
+    _decks = res.get("_decks") or {}
+    if _decks:
+        parts.append(_sec("02", "Consumer Insight", "What people are actually saying"))
+        if res.get("insights_summary"):
+            parts.append(f'<div class="lead">{e(res["insights_summary"])}</div>')
+        _tot = sum(len(v) for v in _decks.values())
+        parts.append('<div class="vol" style="text-align:left;margin-bottom:16px;">'
+                     + e(f"{_tot} posts across {len(_decks)} networks") + '</div>')
+        for _k, _cards in _decks.items():
+            if not _cards:
+                continue
+            parts.append(f'<div class="sublbl" style="margin:20px 0 8px;">'
+                         f'{e(_cards[0].get("net", _k))} &nbsp;·&nbsp; '
+                         f'{len(_cards)}</div><div class="cards">')
+            for _c in _cards:
+                _txt = (_c.get("text") or "")[:260]
+                if not _txt:
+                    continue
+                _lk = (f'<div class="stat"><a href="{e(_c["url"])}" style="color:{GOLD};">'
+                       f'Open the post ↗</a></div>' if _c.get("url") else "")
+                parts.append(f'<div class="card"><div class="qhead">'
+                             f'<span class="qsrc">{e(_c.get("net", ""))}</span>'
+                             f'<span class="qhandle">{e(_c.get("handle", ""))}</span></div>'
+                             f'<div class="qtext">&ldquo;{e(_txt)}&rdquo;</div>'
+                             f'<div class="qmeta">{e(_c.get("context", ""))}<br>'
+                             f'{e(_c.get("eng", ""))}</div>{_lk}</div>')
+            parts.append('</div>')
+    elif iq:
         parts.append(_sec("02", "Consumer Insight", "What people are actually saying"))
         if res.get("insights_summary"):
             parts.append(f'<div class="lead">{e(res["insights_summary"])}</div>')
@@ -7607,8 +7744,21 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         _done: list = []
 
         _fails: list = []
+        # WHAT IS IT STILL WAITING FOR?
+        # The line only ever showed sources that had FINISHED, so the one
+        # holding everything up was the one piece of information it could not
+        # convey — it was absent, and absence looks the same as "not started".
+        # Five minutes were spent staring at a spinner that knew the answer.
+        # Seeded by the gatherer itself, through a __start__ tick, rather than
+        # hardcoded here. Sources are skipped when their key is missing (no
+        # Firecrawl → no `web`), and a hardcoded list would leave those sitting
+        # in "waiting on" forever, inventing a hang that is not happening.
+        _pending: list = []
 
         def _tick(name: str, n: int, why: str = ""):
+            if name == "__start__":
+                _pending[:] = [s for s in why.split(",") if s]
+                return
             # Called from the main thread as each source lands — safe for st.*
             #
             # A failing source used to render as a bare "✕" and the reason lived
@@ -7616,13 +7766,19 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # instagram 0 · tiktok 0" cost us several rounds of guessing, so the
             # reason now rides on the line everyone already watches.
             _done.append(f"{name} {'✕' if n < 0 else n}")
+            if name in _pending:
+                _pending.remove(name)
             if n < 0 and why:
                 _fails.append(f"{name}: {why[:200]}")
+            # Greyed, and after the finished ones, so the reader's eye still
+            # lands on results first. "waiting on reddit" is the whole point.
+            _wait = ("<br><span style=\'font-size:11px;opacity:.5\'>waiting on "
+                     + e(" · ".join(_pending)) + "</span>") if _pending else ""
             _extra = ("<br><span style=\'font-size:11px;opacity:.75\'>"
                       + e(" · ".join(_fails)) + "</span>") if _fails else ""
             _status.markdown(
                 f'<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
-                f'{e(" · ".join(_done))}{_extra}</div>', unsafe_allow_html=True)
+                f'{e(" · ".join(_done))}{_wait}{_extra}</div>', unsafe_allow_html=True)
 
         with st.spinner("🗼 Scanning the currents…"):
             # Trade runs ALONGSIDE the main gather, not after it: the two share
@@ -7656,6 +7812,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     _search, _active, _in_market, progress=_tick,
                     product=_in_prod, brand=_in_brand or _active,
                     competitors=_prof_competitors)
+                # THE OTHER BLIND SPOT, and it is the same one.
+                # Once the nine sources are home the app still waits on the
+                # trade press and the newsletters, and the line simply froze on
+                # its last state — nine tidy numbers and no sign that anything
+                # was still happening. Said here, BEFORE the wait, not after it.
+                _status.markdown(
+                    '<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
+                    + e(" · ".join(_done))
+                    + '<br><span style="font-size:11px;opacity:.5">reading the trade '
+                      'press and the newsletters…</span></div>',
+                    unsafe_allow_html=True)
                 try:
                     # 150, not 90. The trade pipeline gained a stage today —
                     # reading the article bodies — and its worst case went from

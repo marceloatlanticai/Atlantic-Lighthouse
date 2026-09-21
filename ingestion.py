@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import hashlib
+import html as _html
 import json
 import os
 import re
@@ -73,7 +74,28 @@ def _clean_title(raw: str, fallback: str = "", max_len: int = 120) -> str:
 
 
 def _strip_html(text: str) -> str:
-    return re.sub(r"<[^>]+>", " ", text or "").strip()
+    # UNESCAPE AFTER STRIPPING, NOT BEFORE.
+    # Removing the tags leaves the entities behind, and Reddit's Atom feed is
+    # full of `&#32;` — so cards reached a client reading
+    # "…disappearing. & ; submitted by & ; /u/adambomb_atx & ; to & ; r/HEB".
+    # Every one of those "& ;" was a space the feed had encoded twice.
+    #
+    # Order matters: unescaping first would turn an encoded `&lt;b&gt;` into a
+    # real tag and the stripper would then eat the words around it.
+    return _html.unescape(re.sub(r"<[^>]+>", " ", text or "")).strip()
+
+
+# Reddit's RSS appends the same navigation furniture to every post body:
+# "submitted by /u/name to r/sub [link] [comments]". It is not what the person
+# wrote, it repeats metadata the card already shows in its own fields, and at
+# 60-odd characters it can be most of a short post.
+_REDDIT_RSS_TAIL = re.compile(
+    r"\s*submitted\s+by\s*/?u/\S+.*?$", re.I | re.S)
+
+
+def _reddit_rss_body(raw: str) -> str:
+    """Body text of a Reddit RSS entry, without the feed's own furniture."""
+    return _REDDIT_RSS_TAIL.sub("", _strip_html(raw)).strip()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -292,7 +314,7 @@ def _scrape_reddit_rss(topic: str, subs: list, client_tag: Optional[str],
                     continue
                 seen.add(url)
                 title = (ent.findtext("a:title", "", NS) or "").strip()
-                body = _strip_html(ent.findtext("a:content", "", NS) or "")
+                body = _reddit_rss_body(ent.findtext("a:content", "", NS) or "")
                 ts = (ent.findtext("a:updated", "", NS)
                       or datetime.now(tz=timezone.utc).isoformat())
                 content = f"{title}\n\n{body}".strip()
@@ -344,7 +366,17 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
 
     q = urllib.parse.quote(topic)
     urls = [{"url": f"https://www.reddit.com/search/?q={q}&sort=hot&t=month"}]
-    for sub in list(subs)[:6]:
+    # THREE SUBREDDITS, NOT SIX — AND THE CEILING IS NOT THE REASON.
+    # Cutting a run short with timeout_secs aborts it and returns an EMPTY
+    # dataset, so a tight cap on work that genuinely needs longer is the worst
+    # of both worlds: we pay and get nothing. The honest fix is to ask for less
+    # so the run finishes inside the ceiling on its own, and to keep the ceiling
+    # only as a backstop.
+    #
+    # Little is lost. The FIRST url is a global Reddit search — it already
+    # reaches every subreddit. The per-subreddit URLs only sharpen focus, and
+    # returns diminish fast after the top few.
+    for sub in list(subs)[:3]:
         urls.append({"url": f"https://www.reddit.com/r/{sub}/search/?q={q}"
                             f"&sort=hot&restrict_sr=1&t=month"})
 
@@ -355,6 +387,7 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
     cap = max(25, max_items)
     try:
         run = _apify_call(ac.actor("trudax/reddit-scraper"),
+                          cap=_REDDIT_RUN_CAP,
                           run_input={"startUrls": urls, "maxItems": cap,
                                      "proxy": {"useApifyProxy": True}})
     except Exception as exc:
@@ -704,8 +737,23 @@ def scrape_rss(
 # hashtag-discovery experiment, since reverted.
 _APIFY_RUN_CAP = 300      # seconds the actor may run, queue included
 
+# ONE CEILING FOR EVERY ACTOR WAS THE WRONG SHAPE, AND A PAID PLAN EXPOSED IT.
+# 300s was sized for TikTok and Instagram, which carry the brief: they are worth
+# waiting on, and on free credits the queue alone could eat half of it.
+#
+# Reddit is different in two ways. It is a FALLBACK — the third rung after the
+# public API and RSS — and the scan has eight other sources. Five minutes for
+# one recovered source is a bad trade at any price.
+#
+# It only became visible once Apify was upgraded. While the account was on free
+# credits the trudax actor refused instantly ("you must rent a paid Actor"), so
+# Reddit failed in milliseconds and nobody noticed the ceiling behind it. Paying
+# for the plan turned a fast failure into a slow success and the scan went past
+# five minutes. The fix the money bought needed a ceiling the money revealed.
+_REDDIT_RUN_CAP = 110
 
-def _apify_call(actor, **kwargs):
+
+def _apify_call(actor, cap: Optional[int] = None, **kwargs):
     """`.call()` with a run ceiling where the installed client supports one.
 
     Production reported `ActorClient.call() got an unexpected keyword argument
@@ -713,9 +761,11 @@ def _apify_call(actor, **kwargs):
     older than the one I tested against. Pinning a version would fix it for one
     environment and break another, so the ceiling is applied only if the client
     accepts it. This is the whole reason to introspect rather than assume.
+
+    `cap` overrides the default for actors that do not deserve the full budget.
     """
     try:
-        return actor.call(timeout_secs=_APIFY_RUN_CAP, **kwargs)
+        return actor.call(timeout_secs=(cap or _APIFY_RUN_CAP), **kwargs)
     except TypeError as exc:
         if "timeout_secs" not in str(exc):
             raise
