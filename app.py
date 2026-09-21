@@ -4250,7 +4250,11 @@ def _sv_gather_trade(search_terms: str, category: str, market: str,
         return (not _kw) or any(k in blob for k in _kw)
 
     def _same_host(url: str, dom: str) -> bool:
-        return urllib.parse.urlparse(url).netloc.lower().replace("www.", "").endswith(dom)
+        # Same correction as the newsletter search: a bare endswith() would let
+        # "notbevnet.com" answer for "bevnet.com", because it compares
+        # characters and not domain labels.
+        h = urllib.parse.urlparse(url).netloc.lower().replace("www.", "")
+        return h == dom or h.endswith("." + dom)
 
     def _one(dom: str):
         """All three sources for a single outlet. Returns (dom, items, via)."""
@@ -4496,17 +4500,76 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
                 return dom, [], "", [f"{path}: {type(exc).__name__}"]
             if not items:
                 continue
+            # THE LOOSE FALLBACK IS GONE, AND IT WAS MY MISTAKE.
+            # It used to keep a publication's two most recent issues when none
+            # matched the search, on the reasoning that an essay which never
+            # says "sparkling water" could still be the sharpest thing written
+            # about the category. That reasoning is sound for a human editor
+            # and useless as an automatic rule.
+            #
+            # What it produced, four scans running: The Spoon's smart-kitchen
+            # coverage, presented as the independent view on sparkling water,
+            # then soup, then beer, then cars. Every summary opened by
+            # confessing the mismatch — "Michael Wolf isn't writing about
+            # sparkling water directly, but…" — and the model then built a
+            # bridge to the category because the section demanded one.
+            #
+            # That is worse than an empty section. An empty section is legible;
+            # a manufactured one reads exactly like a real insight and a
+            # strategist cannot tell them apart. A newsletter that has not
+            # written about the category has nothing to say about it.
             hits = [s for s in items if _relevant(s)]
-            # Loose is legitimate here, and is marked so the diagnostic does not
-            # read as a clean match. An essay that never says "sparkling water"
-            # can still be the sharpest thing written about the category.
-            return dom, (hits or items[:2])[:4], f"rss{path}" + ("" if hits else " (loose)"), []
+            if not hits:
+                return dom, [], "", ["feed answered, no issue on this topic"]
+            return dom, hits[:4], f"rss{path}", []
         return dom, [], "", ["no feed at /feed, /rss.xml or /feed/"]
+
+    # ── The grounded path: search, do not remember ───────────────────────────
+    # Everything above asks the model which newsletters exist and then checks
+    # its answer. This asks the WEB which newsletters wrote about this topic,
+    # which cannot be misremembered: every result is a real post at a real
+    # address that really mentions the subject. It is the honest primary and
+    # the curated list is the supplement, not the other way round.
+    #
+    # Two Firecrawl credits. The section costs nothing else — the feeds are
+    # free — and two credits against a brief is not a decision worth agonising
+    # over. Skipped silently when no key is set, exactly as trade does.
+    def _searched() -> list:
+        key = os.environ.get("FIRECRAWL_API_KEY", "")
+        if not key:
+            return []
+        from ingestion import scrape_web
+        out = []
+        try:
+            for sig in scrape_web(f"site:substack.com {search_terms}",
+                                  api_key=key, n=6):
+                host = urllib.parse.urlparse(sig.url).netloc.lower().replace("www.", "")
+                # `endswith("substack.com")` is NOT a domain check — it is a
+                # string check, and it accepts "not-substack.com" and anything
+                # else somebody cares to register ending in those characters.
+                # A suffix match on a hostname needs the dot.
+                if not (host == "substack.com" or host.endswith(".substack.com")):
+                    continue
+                # "bigbeer.substack.com" → "Bigbeer". Crude, and better than
+                # printing a bare domain on a card: the publication's own title
+                # is not in a search result, only its address.
+                pub = host.split(".")[0].replace("-", " ").strip().title() or host
+                out.append({"title": sig.title, "content": sig.content,
+                            "source": "letter", "url": sig.url,
+                            "timestamp": sig.timestamp, "letter": pub,
+                            "writer": ""})
+        except Exception as exc:
+            diag["search_error"] = f"{type(exc).__name__}: {exc}"
+        diag["searched"] = len(out)
+        return out
 
     sigs, seen = [], set()
     from concurrent.futures import ThreadPoolExecutor, as_completed
     doms = list(by_domain)[:12]
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    # The search runs as one more worker alongside the feeds, so it costs no
+    # wall-clock of its own.
+    with ThreadPoolExecutor(max_workers=9) as pool:
+        _f_search = pool.submit(_searched)
         futures = {pool.submit(_one, d): d for d in doms}
         try:
             for fut in as_completed(futures, timeout=40):
@@ -4536,6 +4599,14 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
                                      "writer": _by or by_domain[dom].get("writer", "")})
         except Exception:
             pass        # budget spent; whatever landed still counts
+        try:
+            for _s in (_f_search.result(timeout=25) or []):
+                if _s["url"] not in {x["url"] for x in sigs}:
+                    sigs.append(_s)
+                    seen.add(urllib.parse.urlparse(_s["url"]).netloc
+                             .lower().replace("www.", ""))
+        except Exception as _fexc:
+            diag.setdefault("search_error", f"{type(_fexc).__name__}: {_fexc}")
 
     # Newest first. Unlike trade, where every outlet deserves a voice, here the
     # question is what is being argued RIGHT NOW — an essay from March is
@@ -4545,12 +4616,25 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
     diag["with_body"] = sum(1 for s in sigs if len(s.get("content") or "") > 600)
     # The chips carry a writer's name too, so they get the same correction: the
     # byline shown on screen is the feed's, never the model's recollection.
-    _real = {}
+    # BUILT FROM THE SIGNALS THAT SURVIVED, not from the proposed list.
+    # A publication earns its chip by contributing an issue about the subject —
+    # which is also the only way a newsletter found by search can appear, since
+    # it was never on anybody's list to begin with.
+    _by_name: dict = {}
     for s in sigs:
-        if s.get("writer"):
-            _real.setdefault(s["letter"], s["writer"])
-    confirmed = [{**l, "writer": _real.get(l["name"], l.get("writer", ""))}
-                 for l in letters if l["domain"] in seen]
+        _nm = s.get("letter") or ""
+        if not _nm:
+            continue
+        _e = _by_name.setdefault(
+            _nm, {"name": _nm, "writer": "", "covers": "",
+                  "domain": urllib.parse.urlparse(s.get("url", "")).netloc
+                  .lower().replace("www.", "")})
+        if s.get("writer") and not _e["writer"]:
+            _e["writer"] = s["writer"]
+    for l in letters:                    # keep `covers` from the proposal
+        if l["name"] in _by_name and l.get("covers"):
+            _by_name[l["name"]]["covers"] = l["covers"]
+    confirmed = list(_by_name.values())
     return sigs, confirmed, diag
 
 
@@ -8279,18 +8363,23 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                         _ok = len(_let_outs or [])
                         st.caption(f"{len(_ld.get('proposed', []))} newsletters proposed · "
                                    f"{_ok} answered · {_n_lets} issues collected · "
-                                   f"{_ld.get('with_body', 0)} with the full essay")
+                                   f"{_ld.get('with_body', 0)} with the full essay · "
+                                   f"{_ld.get('searched', 0)} found by search")
+                        if _ld.get("search_error"):
+                            st.caption(f"Substack search failed — {_ld['search_error']}")
                         st.code("\n".join(
                             f"{k:34} {v}   {_ld.get('via', {}).get(k, '')}"
                             for k, v in (_ld.get("counts") or {}).items()) or "—")
-                        st.caption("One request per publication, to /feed. A line reading "
-                                   "`no feed at …` almost always means the address does "
-                                   "not exist — the model invented a plausible Substack. "
-                                   "That is expected at some rate and costs a slot, never "
-                                   "a wrong answer. `(loose)` means the feed answered but "
-                                   "nothing matched the search terms, so its most recent "
-                                   "issues were kept anyway. This source is free: no key, "
-                                   "no scraping, no credit.")
+                        st.caption("Two routes. One request per proposed publication to "
+                                   "/feed — `no feed at …` means the address does not "
+                                   "exist and the model invented a plausible Substack; "
+                                   "`feed answered, no issue on this topic` means the "
+                                   "publication is real but has not written about this, "
+                                   "and contributes nothing rather than an unrelated "
+                                   "essay. Separately, a `site:substack.com` search finds "
+                                   "posts that demonstrably exist and mention the subject "
+                                   "— 2 Firecrawl credits, and the more trustworthy of "
+                                   "the two. The feeds themselves cost nothing.")
                     st.markdown("**2 · Synthesis**")
                     if not _n_lets:
                         st.caption("Skipped — nothing was collected to synthesise.")
