@@ -4951,19 +4951,6 @@ Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
       "street_says": "what real people are actually talking about, from the SIGNALS",
       "gap": "the opening this distance creates for {brand}"}}
   ],
-  "letters_summary": "3-4 sentences: what are the independent writers ARGUING about {category} right now — not what they report, what they claim and why. Only from the INDEPENDENT NEWSLETTERS block. If that block is absent or empty, return an empty string.",
-  "letters_moves": [
-    {{"letter": "the newsletter name, exactly as given in the NEWSLETTERS block",
-      "writer": "the writer's name if the block gives one, else empty string",
-      "argument": "their claim, stated as a claim someone could disagree with",
-      "signal_index": 2,
-      "why": "why it matters for {brand}"}}
-  ],
-  "letters_ahead": [
-    {{"seeing": "what these writers have already worked out",
-      "not_yet": "who has not caught up — the trade press, the category, the competitors",
-      "window": "what {brand} could do while that gap is still open"}}
-  ],
   "competitors_summary": "3-4 sentences: what are competitors ({comp}) doing right now, and what's the predictable pattern everyone follows?",
   "competitors": [
     {{"name": "competitor name", "move": "short headline of what they're doing",
@@ -4989,8 +4976,27 @@ Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
     {{"starter": "a bold 'What if {brand}...' provocation question that reverses a category current",
       "cuts_against": "the current/cliché this provocation reverses",
       "the_move": "the concrete, tangible move it implies"}}
+  ],
+  "letters_summary": "3-4 sentences: what are the independent writers ARGUING about {category} right now — not what they report, what they claim and why. Only from the INDEPENDENT NEWSLETTERS block. If that block is absent or empty, return an empty string.",
+  "letters_moves": [
+    {{"letter": "the newsletter name, exactly as given in the NEWSLETTERS block",
+      "writer": "the writer's name if the block gives one, else empty string",
+      "argument": "their claim, stated as a claim someone could disagree with",
+      "signal_index": 2,
+      "why": "why it matters for {brand}"}}
+  ],
+  "letters_ahead": [
+    {{"seeing": "what these writers have already worked out",
+      "not_yet": "who has not caught up — the trade press, the category, the competitors",
+      "window": "what {brand} could do while that gap is still open"}}
   ]
 }}
+
+WRITE THE FIELDS IN THE ORDER GIVEN ABOVE. The order is not cosmetic: if you
+run out of room, whatever is unwritten is lost, and this order decides what
+survives. Tensions, clichés and provocations are what a strategist carries into
+the room, so they come before the newsletter fields, which are the most
+expendable of the set.
 
 Rules:
 - EXACTLY 3 trends. 4-5 competitors (the named ones plus any real player you spot in the signals). 4-6 cliche_map entries.
@@ -5062,7 +5068,17 @@ a better field, not a lazy one. Never pad a line to reach a number.
     # rendered a half-empty page instead of failing: section 01 had cards, every
     # section after it was blank. Output tokens are billed as produced, not as
     # reserved, so a bigger ceiling costs nothing unless it is used.
-    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=16000,
+    # 24000, AND THE HISTORY HERE IS THE ARGUMENT FOR HEADROOM.
+    # 8000 was sized for Haiku and Sonnet overran it. 16000 held until this
+    # cycle added the trade and newsletter fields, and then a Heineken brief was
+    # cut off in the middle of its competitors array — losing tensions, both
+    # cliché sections and every provocation, which is the half a strategist
+    # actually takes into the room.
+    #
+    # Output tokens are billed as PRODUCED, never as reserved, so a ceiling that
+    # is never reached costs exactly nothing. A ceiling that is reached costs a
+    # whole brief. There is no symmetry here to balance.
+    resp = client.messages.create(model=CLAUDE_MODEL, max_tokens=24000,
                                   messages=[{"role": "user", "content": prompt}])
     raw = _msg_text(resp)
     # Silent salvage is what disguised the bug. If the model was cut off, say so.
@@ -8137,14 +8153,19 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         _expected = ("trends", "insights_summary", "insight_quotes", "competitors",
                      "tensions", "cliche_language", "cliche_images", "provocations")
         _missing = [k for k in _expected if not (_result or {}).get(k)]
+        # THE WARNING WAS BEING DRAWN AND THEN THROWN AWAY.
+        # It was rendered right here, and forty lines down the scan calls
+        # st.rerun() — which discards this entire render. So a brief that lost
+        # its last four sections went to the user with no notice at all, and the
+        # missing half was found by eye instead of being announced.
+        #
+        # Recorded ON THE RESULT instead, so it survives the rerun, survives the
+        # archive, and reappears every time that particular brief is reopened —
+        # including through a shared ?report= link, where the person looking at
+        # it has no other way to know the document is short.
         if _result and _missing:
-            st.warning(
-                "⚠️ The brief came back incomplete — these sections are empty: "
-                + ", ".join(_missing)
-                + (". The model ran out of output room; press Run Lighthouse again."
-                   if st.session_state.get("sv_truncated")
-                   else ". Press Run Lighthouse again to retry.")
-            )
+            _result["_incomplete"] = _missing
+            _result["_truncated"] = bool(st.session_state.get("sv_truncated"))
         if _result:
             # Competitors ride along so the relevance gate recognises them: a post
             # about Budweiser IS on topic for a Heineken scan, even though it
@@ -8251,6 +8272,21 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         st.markdown(f'<div style="text-align:center;font-family:{_sans};font-size:10.5px;'
                     f'color:{_faint};letter-spacing:.06em;margin-bottom:6px;">'
                     f'Report from {e(_sv_fmt_date(_saved_at))}</div>', unsafe_allow_html=True)
+
+    # A SHORT BRIEF HAS TO SAY THAT IT IS SHORT.
+    # _extract_json deliberately salvages a cut-off response, which is right —
+    # half a brief beats an error page. What was wrong is that the salvage was
+    # silent: the page simply ended early, and a reader had no way to tell an
+    # incomplete document from a category with nothing more to say. Shown here,
+    # above the brief, on every viewing of it rather than once at scan time.
+    _inc = (_res or {}).get("_incomplete") if isinstance(_res, dict) else None
+    if _inc:
+        st.warning(
+            "⚠️ **This brief is incomplete.** The model was cut off while writing, "
+            "so these sections are missing: " + ", ".join(_inc)
+            + ".\n\nEverything above them was written normally and is safe to read. "
+            "Run the search again to get the full brief — it is not a problem with "
+            "the sources, and the scan does not need repeating for any other reason.")
 
     # Brand / category used for display come from the saved brief's meta when present
     _meta = (_res or {}).get("_meta", {}) if isinstance(_res, dict) else {}
