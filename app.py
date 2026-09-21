@@ -5446,6 +5446,25 @@ def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None,
     return bool(_hard) or len(hits) >= 2
 
 
+# The model does not say "I don't know" — it writes a phrase that LOOKS like an
+# answer. A Heinz brief printed two cards whose author was "unspecified", and a
+# Volvo one credited "unnamed wellness account", both set in the slot where
+# every other card carries a real @handle. A blank there reads as a post without
+# an attribution, which is true and unremarkable; a word reads as the person's
+# name, which is false and looks like a bug.
+_SV_NON_HANDLES = re.compile(
+    r"(?i)^\s*(?:@\s*)?(?:unspecified|unknown|n/?a|none|null|anonymous|"
+    r"not\s+(?:specified|given|available|provided)|"
+    r"(?:un\w+|unnamed|various|multiple|several)\s+\w*\s*(?:account|user|"
+    r"creator|channel|poster|commenter|community)s?)\s*$")
+
+
+def _sv_clean_handle(h: str) -> str:
+    """The model's handle, or nothing if it is a placeholder dressed as one."""
+    h = str(h or "").strip()
+    return "" if (not h or _SV_NON_HANDLES.match(h)) else h
+
+
 def _sv_handle(src: str, meta: dict) -> str:
     """The @name for a card the model did not write. Reddit reads as r/sub and
     YouTube as the channel name; everything else takes the @handle."""
@@ -6210,7 +6229,10 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             # the HN chip announcing itself as Reddit.
             curated.setdefault(k, []).append(
                 {"sig": s_, "net": SRC.get(k, k.replace("_", " ").title()),
-                 "handle": q.get("handle", ""), "context": q.get("context", ""),
+                 # The scraper's own answer beats a placeholder from the model.
+                 "handle": (_sv_clean_handle(q.get("handle", ""))
+                            or _sv_handle(_k0, s_.get("meta") or {})),
+                 "context": q.get("context", ""),
                  "eng": q.get("engagement", "") or _sv_engagement(s_.get("meta") or {}),
                  "idx": q.get("signal_index")})
 
@@ -7148,7 +7170,7 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
             # Label from the SOURCE, not from the model — the same correction the
             # screen needed after a Hacker News post announced itself as Reddit.
             _src = _LBL.get(_k) or q.get("network", "")
-            _handle = q.get("handle", "") or _sv_handle(_k, _m)
+            _handle = _sv_clean_handle(q.get("handle", "")) or _sv_handle(_k, _m)
             _eng = q.get("engagement", "") or _sv_engagement(_m)
             parts.append(f'<div class="card"><div class="qhead">'
                          f'<span class="qsrc">{e(_src)}</span>'
@@ -8233,8 +8255,21 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _n_lets = len(_let_sigs or [])
             _has_lf = bool((_result or {}).get("letters_summary")
                            or (_result or {}).get("letters_moves"))
-            if not (_n_lets and _has_lf):
-                with st.expander("Newsletter section — diagnostic", expanded=False):
+            # SHOWN ON EVERY RUN, not only on failure — which is why I never
+            # once saw it. The section has "worked" in every brief so far: it
+            # produced cards, so the panel stayed hidden. But it worked by
+            # leaning on the ONE publication whose feed answered, three scans
+            # running, across soup, beer and cars. That is the failure, and it
+            # is invisible to a check that only asks whether cards appeared.
+            # The hit rate is the number that decides whether we keep trusting
+            # the model's memory or move to a list the team curates, and a
+            # panel that hides on success can never report it.
+            if True:
+                _lbl = ("Newsletter section — diagnostic"
+                        if not (_n_lets and _has_lf)
+                        else f"Newsletters — {len(_let_outs or [])} of "
+                             f"{len(_ld.get('proposed', []))} answered")
+                with st.expander(_lbl, expanded=False):
                     st.markdown("**1 · Collection**")
                     if _ld.get("error"):
                         st.error(_ld["error"])
