@@ -5631,6 +5631,13 @@ def _sv_save_brief(active: str, result: dict, signals: list) -> None:
                "product": meta.get("product", ""), "signal_count": len(signals or [])}
     try:
         _db.save_dispatch(payload, f"__overview__{active}")
+        # Without this the brief just written would not appear in the Archive
+        # until the memo expired — the one moment a stale read is guaranteed to
+        # be noticed, because the user is looking straight at it.
+        try:
+            _db.invalidate_dispatch_cache()
+        except AttributeError:
+            pass          # older db.py without the memo
     except Exception as _exc:
         print(f"[overview] save error: {_exc}")
 
@@ -7561,8 +7568,9 @@ button[kind="primary"]:disabled span,
    the same reason .sv-load above is built this way.)
    Each phrase names something the tool genuinely does; they are in the order
    the pipeline does them, so the line is roughly honest as well as alive. */
-.sv-say {{ position:relative; height:19px; max-width:780px; margin:0 0 12px;
-  font-family:{_sans}; font-size:12.5px; color:{_muted}; }}
+.sv-say {{ position:relative; height:20px; max-width:780px; margin:0 0 12px;
+  font-family:{_sans}; font-size:12.5px; font-weight:700; color:{_blue};
+  letter-spacing:.005em; }}
 .sv-say span {{ position:absolute; left:0; top:0; white-space:nowrap;
   opacity:0; animation:sv-say-cycle {_SV_SAY_TOTAL}s linear infinite; }}
 @keyframes sv-say-cycle {{

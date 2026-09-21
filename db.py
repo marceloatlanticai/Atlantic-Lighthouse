@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -176,7 +177,47 @@ def bulk_save_signals(signals: list):
 # DISPATCHES
 # ══════════════════════════════════════════════════════════════════════════════
 
-def load_all_dispatches() -> list:
+# ── The archive read, memoised ───────────────────────────────────────────────
+# THIS FUNCTION IS CALLED FOUR TIMES PER PAGE RENDER, and each call downloaded
+# every dispatch ever saved, in full.
+#
+# It was tolerable while a brief stored 80 signals. Raising that to 240 — so the
+# shared link would show the same posts as the PDF — tripled the payload of
+# every one of those four downloads at once, and the page got noticeably slower
+# on EVERY render, not only on a scan. The fix for one problem paid for itself
+# with another, which is the second time that has happened this week.
+#
+# A plain time-based memo rather than @st.cache_data: cached Streamlit functions
+# have no script context inside a worker thread and blow up there, a trap this
+# codebase has now been bitten by three times. This one is just a dict and a
+# lock, so it is safe from anywhere.
+_DISPATCH_CACHE: dict = {"at": 0.0, "rows": None}
+_DISPATCH_TTL = 45.0          # seconds
+_DISPATCH_LOCK = threading.Lock()
+
+
+def invalidate_dispatch_cache() -> None:
+    """Drop the memo — call right after saving, so a new brief appears at once."""
+    with _DISPATCH_LOCK:
+        _DISPATCH_CACHE["rows"] = None
+        _DISPATCH_CACHE["at"] = 0.0
+
+
+def load_all_dispatches(limit: int = 150) -> list:
+    """Load dispatches, newest first. Memoised for a few seconds."""
+    import time as _time
+    with _DISPATCH_LOCK:
+        _rows = _DISPATCH_CACHE["rows"]
+        if _rows is not None and (_time.time() - _DISPATCH_CACHE["at"]) < _DISPATCH_TTL:
+            return _rows
+    rows = _load_all_dispatches_uncached(limit)
+    with _DISPATCH_LOCK:
+        _DISPATCH_CACHE["rows"] = rows
+        _DISPATCH_CACHE["at"] = _time.time()
+    return rows
+
+
+def _load_all_dispatches_uncached(limit: int = 150) -> list:
     """Load all dispatches, newest first."""
     sb = _get_sb()
     if sb:
@@ -185,6 +226,10 @@ def load_all_dispatches() -> list:
                 sb.table("dispatches")
                 .select("*")
                 .order("timestamp", desc=True)
+                # There was no limit at all. The Archive shows 40 and nothing
+                # else reads further back, so every row beyond this was being
+                # downloaded and parsed for nobody.
+                .limit(limit)
                 .execute()
             )
             records = []
