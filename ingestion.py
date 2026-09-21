@@ -688,6 +688,14 @@ def scrape_rss(
                     # a few feeds put a truncated stub in content:encoded and
                     # the real summary in description, and this keeps whichever
                     # actually carries the text.
+                    # WHO ACTUALLY WROTE IT, from the feed.
+                    # The newsletter section prints a named human being as the
+                    # author of an argument, and that name was coming out of the
+                    # model's memory — so a brief could credit a real person
+                    # with something they never wrote. dc:creator is the feed's
+                    # own answer, and it cannot be invented.
+                    author = (item.findtext(
+                        "{http://purl.org/dc/elements/1.1/}creator") or "").strip()
                     enc = item.findtext(
                         "{http://purl.org/rss/1.0/modules/content/}encoded") or ""
                     body = _strip_html(enc)
@@ -702,7 +710,8 @@ def scrape_rss(
                     signals.append(Signal(
                         id=_make_id(url, ts), title=_clean_title(title, content),
                         content=content, source="rss", url=url, timestamp=ts,
-                        client_tag=client_tag, raw_meta={"feed_name": feed_name},
+                        client_tag=client_tag,
+                        raw_meta={"feed_name": feed_name, "author": author},
                     ))
         except Exception as exc:
             if callback:

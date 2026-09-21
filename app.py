@@ -4471,11 +4471,20 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
                 if found:
                     seen.add(dom)
                     for sig in found:
+                        # THE FEED'S ANSWER BEATS THE MODEL'S MEMORY.
+                        # This section prints a named person as the author of an
+                        # argument. When that name came from _sv_newsletters it
+                        # came from the model's recollection, and a brief going
+                        # to a client could credit a real writer with something
+                        # they never wrote. dc:creator is what the publication
+                        # itself says. The model's guess survives only as a
+                        # fallback for feeds that carry no author at all.
+                        _by = str((sig.raw_meta or {}).get("author") or "").strip()
                         sigs.append({"title": sig.title, "content": sig.content,
                                      "source": "letter", "url": sig.url,
                                      "timestamp": sig.timestamp,
                                      "letter": by_domain[dom]["name"],
-                                     "writer": by_domain[dom].get("writer", "")})
+                                     "writer": _by or by_domain[dom].get("writer", "")})
         except Exception:
             pass        # budget spent; whatever landed still counts
 
@@ -4485,7 +4494,14 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
     sigs.sort(key=lambda s: str(s.get("timestamp") or ""), reverse=True)
     sigs = sigs[:16]
     diag["with_body"] = sum(1 for s in sigs if len(s.get("content") or "") > 600)
-    confirmed = [l for l in letters if l["domain"] in seen]
+    # The chips carry a writer's name too, so they get the same correction: the
+    # byline shown on screen is the feed's, never the model's recollection.
+    _real = {}
+    for s in sigs:
+        if s.get("writer"):
+            _real.setdefault(s["letter"], s["writer"])
+    confirmed = [{**l, "writer": _real.get(l["name"], l.get("writer", ""))}
+                 for l in letters if l["domain"] in seen]
     return sigs, confirmed, diag
 
 
@@ -5162,6 +5178,34 @@ def _sv_in_language(txt: str, lang: str) -> bool:
         return False
     return any(w in words for w in seen)
 
+# ── Commerce, not conversation ───────────────────────────────────────────────
+# A Volvo brief printed this as a consumer insight:
+#
+#   @5x108.heavyweight — "For Sale! Lot: 3743  BBS RGII  Bolt pattern: 5x108
+#   /redrilled  F: 17 x 8 ET35  Price: $1950  Location: Eastside/Seattle"   2 likes
+#
+# Every gate passed it honestly. It was tagged for the brand, so it was on
+# topic; it was in English; it had words in it. The gates ask "is this about the
+# subject", and a classified ad for Volvo wheels genuinely is.
+#
+# The missing question is what this section actually promises: What people are
+# ACTUALLY SAYING. A listing is not somebody saying something — it is somebody
+# selling something, and it carries no opinion to read. So this asks a different
+# question from the others, and needs two hits rather than one: a marketplace
+# post stacks these phrases, while a real person might mention a price once.
+_SV_SELLING = re.compile(
+    r"(?i)\b(for\s*sale|dm\s*(?:me\s*)?to\s*(?:buy|order)|shop\s*now|buy\s*now"
+    r"|link\s*in\s*bio|order\s*(?:now|here)|in\s*stock|free\s*shipping"
+    r"|bolt\s*pattern|shipping\s*available|price\s*:|asking\s*\$|obo)\b"
+    r"|\$\s?\d{3,}")
+
+
+def _sv_is_listing(txt: str) -> bool:
+    """Is this an advert or a classified rather than a voice?"""
+    return len(set(_SV_SELLING.findall(txt or ""))) >= 2 or \
+        len(_SV_SELLING.findall(txt or "")) >= 2
+
+
 _SV_STOP = {"the", "and", "for", "with", "from", "that", "this", "your", "our",
             "new", "best", "top", "how", "why", "what", "who", "all", "more",
             "brand", "brands", "product", "products", "category", "market"}
@@ -5476,10 +5520,24 @@ def _sv_key(active: str, brand: str, category: str, product: str, market: str) -
 def _sv_save_brief(active: str, result: dict, signals: list) -> None:
     """Archive a generated brief. Every run is kept, so the Archive section can
     reopen any past report at zero API cost."""
+    # 240, NOT 80 — AND THE CAP WAS SILENTLY REWRITING THE BRIEF.
+    # The archive does not store a rendered page, it stores the SIGNALS, and the
+    # decks are rebuilt from them every time a report is reopened. So a cap here
+    # is not a storage detail: it decides what a reopened brief contains.
+    #
+    # A Volvo scan collected 127 signals. Eighty were kept, and the ones cut were
+    # the ones that arrived last — which on that run was the whole of Reddit. The
+    # exported PDF showed 33 posts across seven networks; the shared link showed
+    # 25 across six, with no Reddit chip at all. Same brief, same run, two
+    # different documents, and the one being sent to people was the poorer one.
+    #
+    # Each signal is already trimmed to a 160-character title and 400 of body,
+    # so 240 of them is roughly 150 KB — nothing against the Pro plan's 8 GB, and
+    # far cheaper than a brief that quietly loses a source.
     trimmed = [{"title": s.get("title", "")[:160], "content": s.get("content", "")[:400],
                 "source": s.get("source", ""), "url": s.get("url", ""),
                 "timestamp": s.get("timestamp", ""),
-                "meta": s.get("meta") or {}} for s in (signals or [])[:80]]
+                "meta": s.get("meta") or {}} for s in (signals or [])[:240]]
     meta = (result or {}).get("_meta", {}) or {}
     payload = {"_overview": True, "_client": active, "sv_result": result,
                "sv_signals": trimmed, "saved_at": datetime.utcnow().isoformat(),
@@ -6011,6 +6069,9 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         _mt = (res or {}).get("_meta", {}) or {}
         _terms = _sv_terms(" ".join(str(_mt.get(k, "")) for k in
                                     ("category", "product", "brand", "competitors")))
+        # Resolved BEFORE the curated loop, because the model's picks now have
+        # to clear the language gate too. See the comment there.
+        _lang = MARKETS.get(str(_mt.get("market", "")), {}).get("lang", "")
         # Brand and competitor names, for the floor exemption. Split on commas
         # so "Topo Chico" survives as one name instead of two useless words.
         _names = tuple(n for n in
@@ -6037,6 +6098,19 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             if not _sv_clears_floor(_k0, [(0, s_, "")], _names):
                 _dropped_curated += 1
                 continue
+            # AND THE LANGUAGE GATE, which the model's picks used to skip.
+            # A US brief carried an Instagram card reading "Der Volvo läuft wie
+            # eine Hummel. Großglockner Hochalpenstraße…" — a lovely post, and
+            # unreadable to the client it was written for.
+            #
+            # Only this gate, not the topic one. Relevance is a judgement call
+            # and the model saw the whole post, so it is allowed to make an
+            # oblique choice. What language the words are in is not a judgement
+            # call, and no amount of editorial merit makes a German sentence
+            # useful in a brief for the United States.
+            if not _sv_in_language(_sv_dehash(_sv_body(s_)), _lang):
+                _dropped_curated += 1
+                continue
             k = str(s_.get("source", "") or "").lower() or "other"
             # The LABEL comes from the source, not from the model. It wrote
             # "Reddit" for a Hacker News post once, and the card then sat under
@@ -6057,7 +6131,6 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         #    Candidates are gathered first and sorted by engagement, so the
         #    16M-view TikTok beats the 3-view one to the deck instead of
         #    whichever the scraper happened to return first.
-        _lang = MARKETS.get(str(_mt.get("market", "")), {}).get("lang", "")
         _strong = _sv_strong_terms(_terms, _mt)
         # Which of the strong terms are brand names — they no longer carry a
         # post on their own. See _sv_brand_terms for why.
@@ -6088,6 +6161,9 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 continue
             if not _sv_in_language(_clean, _lang):
                 _no(k, "wrong language for the market")
+                continue
+            if _sv_is_listing(_clean):
+                _no(k, "a listing, not a voice")
                 continue
             cands.setdefault(k, []).append((i2, sg, _clean))
         for k, lst in cands.items():
@@ -7656,7 +7732,23 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # client's defaults. Typing over them afterwards still works; the override
     # just does not survive switching client, which is the correct lifetime
     # for it.
-    if st.session_state.get("_fields_for") != _active:
+    #
+    # AND THEY FOLLOW AN OPENED REPORT, which is the case that reached a client.
+    # A shared ?report= link showed "Brand: Rambler · Category: Mineral
+    # Sparkling Water" above a brief headed "What is trending in Mobility" —
+    # because the report loads further down the script than these widgets are
+    # drawn, so the first pass had nothing to show but the previous subject.
+    # It is handed back here through a pending slot and one rerun; a widget's
+    # key can be written before the widget exists, never after.
+    _pending = st.session_state.pop("_sv_fields_from_report", None)
+    if _pending:
+        st.session_state["_fields_for"] = _active
+        st.session_state["sv_brand"] = _pending.get("brand") or _active
+        st.session_state["sv_cat"]   = _pending.get("category") or ""
+        st.session_state["sv_prod"]  = _pending.get("product") or ""
+        if _pending.get("market") in MARKETS:
+            st.session_state["sv_market"] = _pending["market"]
+    elif st.session_state.get("_fields_for") != _active:
         st.session_state["_fields_for"] = _active
         st.session_state["sv_brand"]  = _active
         st.session_state["sv_cat"]    = _prof["category"].title()
@@ -8140,6 +8232,14 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 _m.get("product", ""), _m.get("market", ""))
             _now_key = st.session_state["sv_key"]
             st.session_state.pop("sv_hunch_result", None)
+            # Hand the report's own subject to the input row and start the pass
+            # again, so the fields describe the brief underneath them instead of
+            # whatever was last searched. One extra rerun, and only ever on the
+            # first load of a ?report= link — no scan, no API call, no cost.
+            st.session_state["_sv_fields_from_report"] = {
+                k: str(_m.get(k, "") or "") for k in
+                ("brand", "category", "product", "market")}
+            st.rerun()
 
     # EVERY arrival starts on a clean sheet, guests included. Nobody opens the
     # page onto someone else's run and mistakes it for their own.
