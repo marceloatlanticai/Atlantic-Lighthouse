@@ -4144,6 +4144,84 @@ _SV_SAY_HOLD = round(_SV_SAY_SLICE, 3)
 _SV_SAY_OUT = round(_SV_SAY_SLICE + _SV_SAY_FADE, 3)
 
 
+def _sv_expected_scan(active: str) -> tuple:
+    """How long a scan usually takes here, in seconds: (collection, writing).
+
+    READ OFF THE ARCHIVE, NOT GUESSED. Every brief now stores its own stage
+    timings, so the app already knows what a scan costs on this account, with
+    these sources, at this time of day — and that is a far better estimate than
+    any constant I could pick. It also self-corrects: add a source and the bar
+    slows down on its own within a few runs.
+
+    Median, not mean: one four-minute outlier should not stretch the estimate
+    for every run after it.
+    """
+    _co, _wr = [], []
+    try:
+        for b in _sv_list_briefs(active, limit=12):
+            _st = ((b.get("result") or {}).get("_diag") or {}).get("stage")
+            if not _st:
+                continue
+            # Tolerates the pre-fix dict shape, which JSONB reordered.
+            pairs = (list(_st.items()) if isinstance(_st, dict)
+                     else [(str(a), float(b2)) for a, b2 in _st])
+            marks = dict(pairs)
+            _c = next((v for k, v in marks.items() if "sources" in k), 0.0)
+            _t = max(marks.values()) if marks else 0.0
+            if _c > 5 and _t > _c:
+                _co.append(_c)
+                _wr.append(_t - _c)
+    except Exception as exc:
+        print(f"[overview] scan estimate unavailable: {exc}")
+
+    def _med(xs, fallback):
+        if not xs:
+            return fallback
+        xs = sorted(xs)
+        return xs[len(xs) // 2]
+
+    # Fallbacks are the observed shape of a healthy scan, used only until the
+    # archive has something to say.
+    return _med(_co, 110.0), _med(_wr, 140.0)
+
+
+def _sv_progress_html(pct: float, secs: float = 0.0, to: float = 0.0) -> str:
+    """The bar and its number.
+
+    Two modes, because the two halves of a scan are different problems.
+
+    DURING COLLECTION the percentage is REAL: nine sources land one at a time,
+    on the main thread, and each one moves the bar by its own share.
+
+    DURING WRITING there is no signal at all — one blocking API call for two
+    minutes — so the bar animates on the clock instead, from where collection
+    left it towards 99, over the time this account's own history says writing
+    takes. The easing decelerates, so an underestimate creeps the last few
+    percent rather than sitting at 100 pretending to be finished. It reaches
+    100 only when the brief actually exists and this element is replaced.
+
+    The counter is a registered custom property, which is the one way to
+    animate a NUMBER in CSS. It matters here for the same reason the phrases
+    are CSS: Python is blocked and cannot update anything.
+    """
+    if secs > 0:
+        # cubic-bezier(0,0,.4,1) — a plain ease-out, chosen by plotting it.
+        # My first pick, (.16,.84,.3,1), reached 85% after a QUARTER of the
+        # writing time and then crawled for the remaining three quarters, which
+        # reads as a stall — the precise feeling the bar exists to prevent.
+        # This one climbs steadily and is still visibly moving at 70% of the
+        # way through: 43 → 60 → 73 → 86 → 94 → 99.
+        _CURVE = "cubic-bezier(0,0,.4,1)"
+        inner = (f'<i style="animation:sv-fill {secs:.0f}s {_CURVE} forwards;'
+                 f'--from:{pct:.0f}%;--to:{to:.0f}%"></i>')
+        num = (f'<span class="sv-pct" style="animation:sv-count {secs:.0f}s '
+               f'{_CURVE} forwards;--n0:{pct:.0f};--n1:{to:.0f}"></span>')
+    else:
+        inner = f'<i style="width:{pct:.0f}%"></i>'
+        num = f'<span class="sv-pct-plain">{pct:.0f}%</span>'
+    return f'<div class="sv-bar">{inner}</div><div class="sv-num">{num}</div>'
+
+
 def _sv_say_html() -> str:
     """The rotating line. One span per phrase, each delayed by its own slot."""
     spans = "".join(
@@ -5242,15 +5320,24 @@ Rules:
   they have already settled that the rest of the category is still arguing about.
   Do not repeat a trade_vs_street entry here — that compares industry to
   consumers; this compares who is EARLY to who is LATE.
-  IF YOU FIND YOURSELF WRITING THAT THESE WRITERS ARE NOT DISCUSSING THE
-  CATEGORY DIRECTLY, STOP AND RETURN AN EMPTY SECTION. Openings of the form
-  "X isn't writing about {category} directly, but the argument transfers" have
-  appeared in this brief repeatedly, and what follows them is a bridge you built
-  because the section asked for one — not something a writer actually claimed.
-  A strategist cannot tell a constructed bridge from a real finding by reading
-  it, which is what makes it worse than an empty section. Returning "" and empty
-  arrays is a correct, useful answer here: it says nobody independent wrote about
-  this category this week, which is itself worth knowing. Never stretch.
+  NEVER OPEN BY APOLOGISING FOR THE SOURCES. Sentences of the form "X isn't
+  writing about {category} directly, but…" and "None discuss {brand} or the
+  product, however…" have appeared in this brief repeatedly. Delete the clause
+  and state the argument: "Independent food writers are reframing comfort as
+  ritual rather than recipe" stands on its own, and a reader who wants to know
+  how close the source sits can open the issue — every card links to it.
+  There are two different situations and only one of them is a problem:
+  · The writers work in the SAME WORLD but have not named the product —
+    food writers on comfort eating, for a soup brand; drinks writers on
+    provenance, for a mineral water. That is exactly what this section is for.
+    Write it with confidence and no preamble.
+  · The writers work in ANOTHER WORLD entirely — smart-kitchen hardware, for a
+    sparkling water brand. Then there is no finding, and any connection you draw
+    is a bridge you built because the section asked for one. Return "" and empty
+    arrays. That is a correct and useful answer: it says nobody independent
+    wrote about this category this week, which is itself worth knowing.
+  The test is whether a writer would recognise their own argument in your
+  sentence. If you have to reach for the link, do not write it.
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
 - Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly."
@@ -7981,6 +8068,31 @@ button[kind="primary"]:disabled span,
 @media (prefers-reduced-motion: reduce) {{
   .sv-load::after {{ animation:none; left:0; width:100%; opacity:.35; }}
 }}
+/* ── The bar and the number ────────────────────────────────────────────────
+   Replaces the old indeterminate stripe, which moved without meaning. This one
+   is honest for the first half (real sources landing) and time-based for the
+   second (a blocked thread cannot report anything), and it never claims 100 —
+   only finishing does that, by removing the element. */
+.sv-bar {{ position:relative; height:3px; background:#ececec; overflow:hidden;
+  margin:4px 0 8px; max-width:780px; }}
+.sv-bar i {{ position:absolute; left:0; top:0; height:100%; width:0;
+  background:{_blue}; display:block; }}
+@keyframes sv-fill {{ from {{ width:var(--from); }} to {{ width:var(--to); }} }}
+.sv-num {{ max-width:780px; text-align:right; margin:0 0 4px;
+  font-family:{_sans}; font-size:11px; font-weight:700; color:{_blue};
+  letter-spacing:.04em; height:14px; }}
+/* A registered custom property is animatable, which is what lets a NUMBER
+   count in CSS at all. Browsers without @property simply show nothing here —
+   the bar and the phrases still carry the message, so the degradation is
+   quiet rather than broken. */
+@property --n {{ syntax:'<integer>'; initial-value:0; inherits:false; }}
+.sv-pct {{ --n:0; counter-reset:svn var(--n); }}
+.sv-pct::after {{ content:counter(svn) '%'; }}
+@keyframes sv-count {{ from {{ --n:var(--n0); }} to {{ --n:var(--n1); }} }}
+@media (prefers-reduced-motion: reduce) {{
+  .sv-bar i, .sv-pct {{ animation:none !important; }}
+}}
+
 /* ── The phrases, in the manner of a loading screen ────────────────────────
    CSS ONLY, AND THAT IS THE ENTIRE POINT. A scan spends its longest stretch —
    two minutes and more — inside one blocking API call, with the Python thread
@@ -8373,12 +8485,15 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         # st.markdown but leaves @keyframes alone, so an indeterminate bar costs
         # one div instead of a whole embedded document.
         _loader = st.empty()
-        # Bar plus the rotating line, written ONCE. Neither is touched again
-        # during the scan: both are stylesheet animations, so they keep moving
-        # through the two-plus minutes the main thread spends blocked inside
-        # the synthesis call, which is exactly the stretch that used to look
-        # like the app had died.
-        _loader.markdown('<div class="sv-load"></div>' + _sv_say_html(),
+        # What this account's own history says a scan costs. Read once, before
+        # anything blocks, because it is a Supabase call.
+        _exp_col, _exp_wri = _sv_expected_scan(_active)
+        # The collection share of the bar, proportional to the real split. If
+        # collection is 110s of a 250s scan it owns 44% of the bar, so the two
+        # halves move at roughly the same apparent speed instead of one
+        # sprinting and the other crawling.
+        _COL_PCT = max(20.0, min(70.0, 100.0 * _exp_col / max(1.0, _exp_col + _exp_wri)))
+        _loader.markdown(_sv_progress_html(0.0) + _sv_say_html(),
                          unsafe_allow_html=True)
         # Live status. A four-minute wait behind one static line feels broken;
         # the same wait with sources ticking off feels like work being done.
@@ -8410,6 +8525,14 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _done.append(f"{name} {'✕' if n < 0 else n}")
             if name in _pending:
                 _pending.remove(name)
+            # REAL progress: each source that lands is a real fraction of the
+            # collection phase, and this runs on the main thread, so the number
+            # is measured rather than animated.
+            _tot = len(_done) + len(_pending)
+            if _tot:
+                _loader.markdown(
+                    _sv_progress_html(_COL_PCT * len(_done) / _tot) + _sv_say_html(),
+                    unsafe_allow_html=True)
             if n < 0 and why:
                 _fails.append(f"{name}: {why[:200]}")
             # Greyed, and after the finished ones, so the reader's eye still
@@ -8516,6 +8639,14 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _status.markdown(
                 '<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
                 'Writing the brief…</div>', unsafe_allow_html=True)
+            # THE HANDOVER. From here the main thread is inside one API call for
+            # two minutes and can report nothing, so the bar is handed to the
+            # stylesheet: it runs from wherever collection left it to 99 over
+            # the time this account's own scans say writing takes. Written once,
+            # immediately before the call that blocks.
+            _loader.markdown(
+                _sv_progress_html(_COL_PCT, secs=max(20.0, _exp_wri), to=99.0)
+                + _sv_say_html(), unsafe_allow_html=True)
             # THE MOST LIKELY OPERATIONAL FAILURE, AND THE WORST EXPLAINED.
             # An unhandled AuthenticationError climbs all the way out and
             # Streamlit prints a traceback with the message REDACTED — which is
