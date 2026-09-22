@@ -21,7 +21,7 @@ import re as _re_global
 import re          # _sv_body and the relevance gate use it at module level
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import streamlit as st
@@ -4487,10 +4487,28 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
     from ingestion import scrape_rss
     by_domain = {l["domain"]: l for l in letters}
     _kw = [w for w in (search_terms + " " + category).lower().split() if len(w) > 3]
-
+    # ONE GENERIC WORD IS NOT A TOPIC, the same lesson the social cards learned.
+    # A single hit on "water" admitted a travel newsletter and a cocktail one to
+    # a mineral-water brief, and the model then opened the section apologising
+    # that the writers were not really discussing the category.
+    #
+    # My first attempt exempted the product's head noun, on the reasoning that
+    # "sparkling water" convinces where "sparkling" alone does not. It changed
+    # nothing, and the test said so: for THIS product the head noun IS "water",
+    # so the exemption re-admitted every case it was written to exclude. The
+    # rule had cancelled itself out and I would not have seen it by reading.
+    #
+    # Two distinct hits, then — unless the single hit is a word that names a
+    # whole domain rather than a product. "Soup" on its own is a subject;
+    # "food" on its own is a section of a newspaper.
     def _relevant(sig) -> bool:
         blob = f"{sig.title} {sig.content}".lower()
-        return (not _kw) or any(k in blob for k in _kw)
+        if not _kw:
+            return True
+        hits = {k for k in _kw if k in blob}
+        if len(hits) >= 2:
+            return True
+        return bool(hits) and not (hits & _SV_BROAD)
 
     def _one(dom: str):
         """The publication's feed. Returns (dom, items, via, why)."""
@@ -5202,6 +5220,15 @@ Rules:
   they have already settled that the rest of the category is still arguing about.
   Do not repeat a trade_vs_street entry here — that compares industry to
   consumers; this compares who is EARLY to who is LATE.
+  IF YOU FIND YOURSELF WRITING THAT THESE WRITERS ARE NOT DISCUSSING THE
+  CATEGORY DIRECTLY, STOP AND RETURN AN EMPTY SECTION. Openings of the form
+  "X isn't writing about {category} directly, but the argument transfers" have
+  appeared in this brief repeatedly, and what follows them is a bridge you built
+  because the section asked for one — not something a writer actually claimed.
+  A strategist cannot tell a constructed bridge from a real finding by reading
+  it, which is what makes it worse than an empty section. Returning "" and empty
+  arrays is a correct, useful answer here: it says nobody independent wrote about
+  this category this week, which is itself worth knowing. Never stretch.
 - NEVER invent statistics — use real figures from the signals or qualitative phrasing.
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
 - Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly."
@@ -5405,6 +5432,17 @@ def _sv_is_listing(txt: str) -> bool:
     return len(set(_SV_SELLING.findall(txt or ""))) >= 2 or \
         len(_SV_SELLING.findall(txt or "")) >= 2
 
+
+# Words that name a whole domain rather than a product. A newsletter that says
+# "water" once might be about hydrology, travel, cocktails or drought; one that
+# says "soup" once is about soup. Short and judgemental on purpose — it only has
+# to cover the category words this tool is actually pointed at.
+_SV_BROAD = {
+    "water", "food", "drink", "drinks", "beverage", "beverages", "sport",
+    "sports", "health", "wellness", "beauty", "fashion", "style", "tech",
+    "technology", "travel", "money", "home", "auto", "car", "cars",
+    "mobility", "retail", "energy", "media", "culture", "lifestyle",
+}
 
 _SV_STOP = {"the", "and", "for", "with", "from", "that", "this", "your", "our",
             "new", "best", "top", "how", "why", "what", "who", "all", "more",
@@ -5910,11 +5948,38 @@ def _sv_list_briefs(active: str, limit: int = 40) -> list:
     return out
 
 
+# Every timestamp is STORED in UTC, which is right — it is the only clock that
+# means the same thing in New York and in Lisbon. What was wrong is that it was
+# DISPLAYED in UTC too, unlabelled, so the archive read like local time and
+# quietly was not.
+#
+# Nobody noticed for months because the two agreed on the date. The first scan
+# run late enough for UTC to roll past midnight put "22 Sep · 00:19" against a
+# report made on the 21st, and it looked like the app had changed something.
+# It had not; this had always been true and had simply never been visible.
+#
+# DISPLAY_TZ sets the clock the team reads. An IANA name — "Europe/Lisbon",
+# "America/New_York". Left unset it stays UTC and says so, because an
+# unlabelled wrong time is worse than a labelled right one.
+DISPLAY_TZ = os.environ.get("DISPLAY_TZ", "").strip()
+
+
 def _sv_fmt_date(iso: str) -> str:
-    """'2026-07-29T16:28:44' → '29 Jul 2026 · 16:28'."""
+    """'2026-07-29T16:28:44' → '29 Jul 2026 · 16:28', in the display clock."""
     try:
         d = datetime.fromisoformat(str(iso).replace("Z", "").split(".")[0])
-        return d.strftime("%d %b %Y · %H:%M")
+        d = d.replace(tzinfo=timezone.utc)
+        label = "UTC"
+        if DISPLAY_TZ:
+            try:
+                from zoneinfo import ZoneInfo
+                d = d.astimezone(ZoneInfo(DISPLAY_TZ))
+                label = d.strftime("%Z") or DISPLAY_TZ
+            except Exception as exc:
+                # A bad tz name must not cost the timestamp. Stay on UTC and
+                # say which, rather than rendering nothing.
+                print(f"[overview] DISPLAY_TZ {DISPLAY_TZ!r} unusable: {exc}")
+        return d.strftime("%d %b %Y · %H:%M") + f" {label}"
     except Exception:
         return str(iso)[:16].replace("T", " · ")
 
@@ -8134,6 +8199,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 f'<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
                 f'{e(" · ".join(_done))}{_wait}{_extra}</div>', unsafe_allow_html=True)
 
+        # STOP GUESSING WHERE THE TIME GOES.
+        # Three rounds have now been spent reasoning about which stage was slow
+        # from a single stopwatch number, and twice the answer was somewhere I
+        # had not thought to look. One clock per stage ends the argument.
+        import time as _tmod
+        _t0 = _tmod.monotonic()
+        _stage: dict = {}
+
+        def _mark(name: str):
+            _stage[name] = round(_tmod.monotonic() - _t0, 1)
+
         with st.spinner("🗼 Scanning the currents…"):
             # Trade runs ALONGSIDE the main gather, not after it: the two share
             # no data and waiting for one before starting the other simply added
@@ -8154,6 +8230,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 except Exception as _lexc:
                     print(f"[lighthouse] newsletter discovery failed: {_lexc}")
                     _lets_pre = []
+                _mark("outlet + newsletter lists (Haiku, main thread)")
                 _f_trade = _pool.submit(_sv_gather_trade, _search,
                                         _in_cat or _prof["category"], _in_market,
                                         _in_prod, _outs_pre)
@@ -8166,6 +8243,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     _search, _active, _in_market, progress=_tick,
                     product=_in_prod, brand=_in_brand or _active,
                     competitors=_prof_competitors)
+                _mark("nine sources collected")
                 # THE OTHER BLIND SPOT, and it is the same one.
                 # Once the nine sources are home the app still waits on the
                 # trade press and the newsletters, and the line simply froze on
@@ -8201,6 +8279,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     _let_sigs, _let_outs = [], []
                     _let_diag = {"error": f"newsletter collection failed: {_lexc2}"}
                     _tick("letters", -1, f"{type(_lexc2).__name__}: {_lexc2}")
+                _mark("trade + newsletters home")
             _status.markdown(
                 '<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
                 'Writing the brief…</div>', unsafe_allow_html=True)
@@ -8262,6 +8341,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                     f"signals were collected; only the synthesis failed. "
                                     f"Press Run Lighthouse again.")
                     print(f"[lighthouse] synthesis failed: {_name}: {_exc}")
+            _mark("brief written")
         _loader.empty()
         _status.empty()
         # The trade section can fail at either of two independent stages, and a
@@ -8272,6 +8352,26 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         #
         # Shown to the team, and on the public route only with ?debug=1.
         if _show_diag:
+            # FIRST PANEL, because "why is it slow" has been the recurring
+            # question and every answer so far has been a guess. Cumulative
+            # marks, so each line is also the elapsed clock at that moment;
+            # the gap between two lines is what that stage actually cost.
+            if _stage:
+                with st.expander(
+                        f"Timing — {list(_stage.values())[-1]}s total", expanded=True):
+                    _prev, _rows = 0.0, []
+                    for _k, _v in _stage.items():
+                        _rows.append(f"{_v - _prev:6.1f}s   {_k}")
+                        _prev = _v
+                    _rows.append(f"{'':6}    {'─' * 28}")
+                    _rows.append(f"{_prev:6.1f}s   total")
+                    st.code("\n".join(_rows))
+                    st.caption("Trade and the newsletters run alongside the nine "
+                               "sources, so their line is only the time they added "
+                               "AFTER collection finished — usually near zero. If "
+                               "'brief written' dominates, the model is simply "
+                               "writing, and nothing in the pipeline will help.")
+
             # Where every signal came from. Shown on EVERY run, not only on
             # failure: "$0.01 of Apify" reads as efficiency until you see that
             # two of the three scrapers returned nothing.
