@@ -5948,6 +5948,203 @@ def _sv_list_briefs(active: str, limit: int = 40) -> list:
     return out
 
 
+def _sv_diagnostics(res: dict) -> None:
+    """The engineering panels, rendered from a brief's stashed diagnostic.
+
+    THEY USED TO BE DRAWN INSIDE THE SCAN, and the scan ends with st.rerun() —
+    which throws away everything that render produced. Every panel in here has
+    therefore been invisible since the day it was written. That is why "I could
+    not find the boxes you mentioned, even with ?debug=1" was reported once and
+    never resolved: the boxes were real, drawn correctly, and discarded a few
+    lines later.
+
+    Now the numbers ride on the result, and the panels are drawn from there —
+    which also means they survive into the archive, so a scan can be examined
+    days later instead of only in the seconds before a rerun wipes it.
+    """
+    _d = (res or {}).get("_diag") or {}
+    if not _d:
+        return
+    _stage      = _d.get("stage") or {}
+    _src_tally  = _d.get("tally") or {}
+    _trade_diag = _d.get("trade") or {}
+    _let_diag   = _d.get("letters") or {}
+    # Only the COUNTS were kept, not the signals themselves: the panels ask how
+    # many there were, and storing the bodies again would bloat every archived
+    # row for nothing.
+    _trade_sigs = [None] * int(_d.get("n_trade", 0))
+    _let_sigs   = [None] * int(_d.get("n_letters", 0))
+    _let_outs   = [None] * int(_d.get("n_letters_ok", 0))
+    _result     = res
+    if True:
+            # FIRST PANEL, because "why is it slow" has been the recurring
+            # question and every answer so far has been a guess. Cumulative
+            # marks, so each line is also the elapsed clock at that moment;
+            # the gap between two lines is what that stage actually cost.
+            if _stage:
+                with st.expander(
+                        f"Timing — {list(_stage.values())[-1]}s total", expanded=True):
+                    _prev, _rows = 0.0, []
+                    for _k, _v in _stage.items():
+                        _rows.append(f"{_v - _prev:6.1f}s   {_k}")
+                        _prev = _v
+                    _rows.append(f"{'':6}    {'─' * 28}")
+                    _rows.append(f"{_prev:6.1f}s   total")
+                    st.code("\n".join(_rows))
+                    st.caption("Trade and the newsletters run alongside the nine "
+                               "sources, so their line is only the time they added "
+                               "AFTER collection finished — usually near zero. If "
+                               "'brief written' dominates, the model is simply "
+                               "writing, and nothing in the pipeline will help.")
+
+            # Where every signal came from. Shown on EVERY run, not only on
+            # failure: "$0.01 of Apify" reads as efficiency until you see that
+            # two of the three scrapers returned nothing.
+            with st.expander("Sources — what each one returned", expanded=False):
+                _t = _src_tally or {}
+                _paid = {"tiktok", "instagram", "twitter"}
+                _rows = []
+                for k in ("reddit", "gdelt", "hacker_news", "youtube", "web",
+                          "tiktok", "instagram", "twitter", "archive", "apify"):
+                    if k not in _t:
+                        continue
+                    v = _t[k]
+                    mark = ""
+                    if isinstance(v, int):
+                        if v == 0:
+                            mark = "  ← nothing" + ("  (billed source!)" if k in _paid else "")
+                    else:
+                        mark = "  ←"
+                    _rows.append(f"{k:14} {v}{mark}")
+                st.code("\n".join(_rows) or "no data")
+                _billed = sum(v for k, v in _t.items()
+                              if k in _paid and isinstance(v, int))
+                st.caption(f"Streamlit {st.__version__} · component height: "
+                           f"{'measured by Streamlit (st.iframe)' if hasattr(st, 'iframe') else 'PYTHON ESTIMATE — st.iframe missing, expect blank space under the brief'}")
+                st.caption(f"Apify returned {_billed} items this run. The caps in the "
+                           f"code are TikTok 8 · Instagram 12 · X 8 = 28. Well under "
+                           f"that means a scraper is failing quietly, not that the "
+                           f"scan was cheap.")
+
+            # WHY A NETWORK CAME BACK THIN.
+            # The collection line already says how many signals arrived; this
+            # says how many survived the four display gates and where the rest
+            # died. Without it, "tiktok 8" on the progress line and one card on
+            # screen look like a bug with no visible cause.
+            _g = (_result or {}).get("_gates") or {}
+            if _g:
+                with st.expander("Consumer Insight — why signals did not become cards",
+                                 expanded=False):
+                    for _net, _reasons in sorted(_g.items()):
+                        st.code(f"{_net}\n" + "\n".join(
+                            f"   {v:>3}  {why}" for why, v in sorted(
+                                _reasons.items(), key=lambda x: -x[1])))
+                    st.caption("Gates run in order: text left after cleaning → on topic "
+                               "→ market language → engagement floor. The floor now ranks "
+                               "rather than erases: a network that cleared the first three "
+                               "keeps its best two whatever the numbers.")
+
+            _d = _trade_diag or {}
+            _n_sigs = len(_trade_sigs or [])
+            _r = _result or {}
+            _has_fields = bool(_r.get("trade_summary") or _r.get("trade_moves"))
+            if not (_n_sigs and _has_fields):
+                with st.expander("Trade section — diagnostic", expanded=False):
+                    st.markdown("**1 · Collection**")
+                    if _d.get("error"):
+                        st.error(_d["error"])
+                    elif not _d.get("proposed"):
+                        st.error("No outlets proposed. Check ANTHROPIC_API_KEY.")
+                    else:
+                        st.caption(f"{len(_d.get('proposed', []))} outlets proposed · "
+                                   f"{_n_sigs} articles collected")
+                        st.code("\n".join(
+                            f"{k:28} {v}   {_d.get('via', {}).get(k, '')}"
+                            for k, v in (_d.get("counts") or {}).items()) or "—")
+                        _tx = _d.get("text") or {}
+                        if _tx:
+                            st.caption(
+                                f"Article bodies read: {_tx.get('http',0)} by plain HTTP "
+                                f"(free) · {_tx.get('firecrawl',0)} via Firecrawl "
+                                f"({_tx.get('firecrawl',0)} credits) · "
+                                f"{_tx.get('failed',0)} unavailable. Without a body the "
+                                f"model only sees the headline.")
+                        st.caption("Sources tried per outlet, in order: GDELT → the "
+                                   "outlet's own RSS feed → Firecrawl. The first two are "
+                                   "free; the third only runs if FIRECRAWL_API_KEY is set"
+                                   + (" (it is not)." if not os.environ.get("FIRECRAWL_API_KEY")
+                                      else "."))
+                    st.markdown("**2 · Synthesis**")
+                    if not _n_sigs:
+                        st.caption("Skipped — nothing was collected to synthesise.")
+                    elif _has_fields:
+                        st.success("Model returned the trade fields.")
+                    else:
+                        st.warning("Articles were collected but the model returned no "
+                                   "trade fields. Press Run Lighthouse again — this is "
+                                   "usually a one-off.")
+
+            # SAME PANEL, ONE SOURCE ALONG.
+            # Worth its own rather than folding into Trade's: the failure modes
+            # are different. Trade fails on publishers blocking us; newsletters
+            # fail on an address that never existed, and the fix for that is a
+            # better prompt, not a workaround. The per-domain line is what tells
+            # the two apart.
+            _ld = _let_diag or {}
+            _n_lets = len(_let_sigs or [])
+            _has_lf = bool((_result or {}).get("letters_summary")
+                           or (_result or {}).get("letters_moves"))
+            # SHOWN ON EVERY RUN, not only on failure — which is why I never
+            # once saw it. The section has "worked" in every brief so far: it
+            # produced cards, so the panel stayed hidden. But it worked by
+            # leaning on the ONE publication whose feed answered, three scans
+            # running, across soup, beer and cars. That is the failure, and it
+            # is invisible to a check that only asks whether cards appeared.
+            # The hit rate is the number that decides whether we keep trusting
+            # the model's memory or move to a list the team curates, and a
+            # panel that hides on success can never report it.
+            if True:
+                _lbl = ("Newsletter section — diagnostic"
+                        if not (_n_lets and _has_lf)
+                        else f"Newsletters — {len(_let_outs or [])} of "
+                             f"{len(_ld.get('proposed', []))} answered")
+                with st.expander(_lbl, expanded=False):
+                    st.markdown("**1 · Collection**")
+                    if _ld.get("error"):
+                        st.error(_ld["error"])
+                    elif not _ld.get("proposed"):
+                        st.error("No newsletters proposed. Check ANTHROPIC_API_KEY.")
+                    else:
+                        _ok = len(_let_outs or [])
+                        st.caption(f"{len(_ld.get('proposed', []))} newsletters proposed · "
+                                   f"{_ok} answered · {_n_lets} issues collected · "
+                                   f"{_ld.get('with_body', 0)} with the full essay · "
+                                   f"{_ld.get('searched', 0)} found by search")
+                        if _ld.get("search_error"):
+                            st.caption(f"Substack search failed — {_ld['search_error']}")
+                        st.code("\n".join(
+                            f"{k:34} {v}   {_ld.get('via', {}).get(k, '')}"
+                            for k, v in (_ld.get("counts") or {}).items()) or "—")
+                        st.caption("Two routes. One request per proposed publication to "
+                                   "/feed — `no feed at …` means the address does not "
+                                   "exist and the model invented a plausible Substack; "
+                                   "`feed answered, no issue on this topic` means the "
+                                   "publication is real but has not written about this, "
+                                   "and contributes nothing rather than an unrelated "
+                                   "essay. Separately, a `site:substack.com` search finds "
+                                   "posts that demonstrably exist and mention the subject "
+                                   "— 2 Firecrawl credits, and the more trustworthy of "
+                                   "the two. The feeds themselves cost nothing.")
+                    st.markdown("**2 · Synthesis**")
+                    if not _n_lets:
+                        st.caption("Skipped — nothing was collected to synthesise.")
+                    elif _has_lf:
+                        st.success("Model returned the newsletter fields.")
+                    else:
+                        st.warning("Issues were collected but the model returned no "
+                                   "newsletter fields. Press Run Lighthouse again.")
+
+
 # Every timestamp is STORED in UTC, which is right — it is the only clock that
 # means the same thing in New York and in Lisbon. What was wrong is that it was
 # DISPLAYED in UTC too, unlabelled, so the archive read like local time and
@@ -8351,174 +8548,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         #   SYNTHESIS  — given articles, did the model fill the trade fields?
         #
         # Shown to the team, and on the public route only with ?debug=1.
-        if _show_diag:
-            # FIRST PANEL, because "why is it slow" has been the recurring
-            # question and every answer so far has been a guess. Cumulative
-            # marks, so each line is also the elapsed clock at that moment;
-            # the gap between two lines is what that stage actually cost.
-            if _stage:
-                with st.expander(
-                        f"Timing — {list(_stage.values())[-1]}s total", expanded=True):
-                    _prev, _rows = 0.0, []
-                    for _k, _v in _stage.items():
-                        _rows.append(f"{_v - _prev:6.1f}s   {_k}")
-                        _prev = _v
-                    _rows.append(f"{'':6}    {'─' * 28}")
-                    _rows.append(f"{_prev:6.1f}s   total")
-                    st.code("\n".join(_rows))
-                    st.caption("Trade and the newsletters run alongside the nine "
-                               "sources, so their line is only the time they added "
-                               "AFTER collection finished — usually near zero. If "
-                               "'brief written' dominates, the model is simply "
-                               "writing, and nothing in the pipeline will help.")
-
-            # Where every signal came from. Shown on EVERY run, not only on
-            # failure: "$0.01 of Apify" reads as efficiency until you see that
-            # two of the three scrapers returned nothing.
-            with st.expander("Sources — what each one returned", expanded=False):
-                _t = _src_tally or {}
-                _paid = {"tiktok", "instagram", "twitter"}
-                _rows = []
-                for k in ("reddit", "gdelt", "hacker_news", "youtube", "web",
-                          "tiktok", "instagram", "twitter", "archive", "apify"):
-                    if k not in _t:
-                        continue
-                    v = _t[k]
-                    mark = ""
-                    if isinstance(v, int):
-                        if v == 0:
-                            mark = "  ← nothing" + ("  (billed source!)" if k in _paid else "")
-                    else:
-                        mark = "  ←"
-                    _rows.append(f"{k:14} {v}{mark}")
-                st.code("\n".join(_rows) or "no data")
-                _billed = sum(v for k, v in _t.items()
-                              if k in _paid and isinstance(v, int))
-                st.caption(f"Streamlit {st.__version__} · component height: "
-                           f"{'measured by Streamlit (st.iframe)' if hasattr(st, 'iframe') else 'PYTHON ESTIMATE — st.iframe missing, expect blank space under the brief'}")
-                st.caption(f"Apify returned {_billed} items this run. The caps in the "
-                           f"code are TikTok 8 · Instagram 12 · X 8 = 28. Well under "
-                           f"that means a scraper is failing quietly, not that the "
-                           f"scan was cheap.")
-
-            # WHY A NETWORK CAME BACK THIN.
-            # The collection line already says how many signals arrived; this
-            # says how many survived the four display gates and where the rest
-            # died. Without it, "tiktok 8" on the progress line and one card on
-            # screen look like a bug with no visible cause.
-            _g = (_result or {}).get("_gates") or {}
-            if _g:
-                with st.expander("Consumer Insight — why signals did not become cards",
-                                 expanded=False):
-                    for _net, _reasons in sorted(_g.items()):
-                        st.code(f"{_net}\n" + "\n".join(
-                            f"   {v:>3}  {why}" for why, v in sorted(
-                                _reasons.items(), key=lambda x: -x[1])))
-                    st.caption("Gates run in order: text left after cleaning → on topic "
-                               "→ market language → engagement floor. The floor now ranks "
-                               "rather than erases: a network that cleared the first three "
-                               "keeps its best two whatever the numbers.")
-
-            _d = _trade_diag or {}
-            _n_sigs = len(_trade_sigs or [])
-            _r = _result or {}
-            _has_fields = bool(_r.get("trade_summary") or _r.get("trade_moves"))
-            if not (_n_sigs and _has_fields):
-                with st.expander("Trade section — diagnostic", expanded=False):
-                    st.markdown("**1 · Collection**")
-                    if _d.get("error"):
-                        st.error(_d["error"])
-                    elif not _d.get("proposed"):
-                        st.error("No outlets proposed. Check ANTHROPIC_API_KEY.")
-                    else:
-                        st.caption(f"{len(_d.get('proposed', []))} outlets proposed · "
-                                   f"{_n_sigs} articles collected")
-                        st.code("\n".join(
-                            f"{k:28} {v}   {_d.get('via', {}).get(k, '')}"
-                            for k, v in (_d.get("counts") or {}).items()) or "—")
-                        _tx = _d.get("text") or {}
-                        if _tx:
-                            st.caption(
-                                f"Article bodies read: {_tx.get('http',0)} by plain HTTP "
-                                f"(free) · {_tx.get('firecrawl',0)} via Firecrawl "
-                                f"({_tx.get('firecrawl',0)} credits) · "
-                                f"{_tx.get('failed',0)} unavailable. Without a body the "
-                                f"model only sees the headline.")
-                        st.caption("Sources tried per outlet, in order: GDELT → the "
-                                   "outlet's own RSS feed → Firecrawl. The first two are "
-                                   "free; the third only runs if FIRECRAWL_API_KEY is set"
-                                   + (" (it is not)." if not os.environ.get("FIRECRAWL_API_KEY")
-                                      else "."))
-                    st.markdown("**2 · Synthesis**")
-                    if not _n_sigs:
-                        st.caption("Skipped — nothing was collected to synthesise.")
-                    elif _has_fields:
-                        st.success("Model returned the trade fields.")
-                    else:
-                        st.warning("Articles were collected but the model returned no "
-                                   "trade fields. Press Run Lighthouse again — this is "
-                                   "usually a one-off.")
-
-            # SAME PANEL, ONE SOURCE ALONG.
-            # Worth its own rather than folding into Trade's: the failure modes
-            # are different. Trade fails on publishers blocking us; newsletters
-            # fail on an address that never existed, and the fix for that is a
-            # better prompt, not a workaround. The per-domain line is what tells
-            # the two apart.
-            _ld = _let_diag or {}
-            _n_lets = len(_let_sigs or [])
-            _has_lf = bool((_result or {}).get("letters_summary")
-                           or (_result or {}).get("letters_moves"))
-            # SHOWN ON EVERY RUN, not only on failure — which is why I never
-            # once saw it. The section has "worked" in every brief so far: it
-            # produced cards, so the panel stayed hidden. But it worked by
-            # leaning on the ONE publication whose feed answered, three scans
-            # running, across soup, beer and cars. That is the failure, and it
-            # is invisible to a check that only asks whether cards appeared.
-            # The hit rate is the number that decides whether we keep trusting
-            # the model's memory or move to a list the team curates, and a
-            # panel that hides on success can never report it.
-            if True:
-                _lbl = ("Newsletter section — diagnostic"
-                        if not (_n_lets and _has_lf)
-                        else f"Newsletters — {len(_let_outs or [])} of "
-                             f"{len(_ld.get('proposed', []))} answered")
-                with st.expander(_lbl, expanded=False):
-                    st.markdown("**1 · Collection**")
-                    if _ld.get("error"):
-                        st.error(_ld["error"])
-                    elif not _ld.get("proposed"):
-                        st.error("No newsletters proposed. Check ANTHROPIC_API_KEY.")
-                    else:
-                        _ok = len(_let_outs or [])
-                        st.caption(f"{len(_ld.get('proposed', []))} newsletters proposed · "
-                                   f"{_ok} answered · {_n_lets} issues collected · "
-                                   f"{_ld.get('with_body', 0)} with the full essay · "
-                                   f"{_ld.get('searched', 0)} found by search")
-                        if _ld.get("search_error"):
-                            st.caption(f"Substack search failed — {_ld['search_error']}")
-                        st.code("\n".join(
-                            f"{k:34} {v}   {_ld.get('via', {}).get(k, '')}"
-                            for k, v in (_ld.get("counts") or {}).items()) or "—")
-                        st.caption("Two routes. One request per proposed publication to "
-                                   "/feed — `no feed at …` means the address does not "
-                                   "exist and the model invented a plausible Substack; "
-                                   "`feed answered, no issue on this topic` means the "
-                                   "publication is real but has not written about this, "
-                                   "and contributes nothing rather than an unrelated "
-                                   "essay. Separately, a `site:substack.com` search finds "
-                                   "posts that demonstrably exist and mention the subject "
-                                   "— 2 Firecrawl credits, and the more trustworthy of "
-                                   "the two. The feeds themselves cost nothing.")
-                    st.markdown("**2 · Synthesis**")
-                    if not _n_lets:
-                        st.caption("Skipped — nothing was collected to synthesise.")
-                    elif _has_lf:
-                        st.success("Model returned the newsletter fields.")
-                    else:
-                        st.warning("Issues were collected but the model returned no "
-                                   "newsletter fields. Press Run Lighthouse again.")
-
+        # The numbers, handed to the renderer instead of drawn here. See
+        # _sv_diagnostics: anything drawn in this branch is discarded by the
+        # st.rerun() below, which is why these panels were never once seen.
+        if _result:
+            _result["_diag"] = {
+                "stage": _stage, "tally": _src_tally,
+                "trade": _trade_diag, "letters": _let_diag,
+                "n_trade": len(_trade_sigs or []),
+                "n_letters": len(_let_sigs or []),
+                "n_letters_ok": len(_let_outs or []),
+            }
         # A salvaged, truncated response is still a truthy dict — it just has
         # the later sections missing. Check the keys the page actually renders
         # rather than trusting truthiness, so an incomplete brief is reported
@@ -8655,6 +8695,11 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # silent: the page simply ended early, and a reader had no way to tell an
     # incomplete document from a category with nothing more to say. Shown here,
     # above the brief, on every viewing of it rather than once at scan time.
+    # The engineering panels, drawn where they survive the rerun. See
+    # _sv_diagnostics for why they never appeared before.
+    if _show_diag and isinstance(_res, dict):
+        _sv_diagnostics(_res)
+
     _inc = (_res or {}).get("_incomplete") if isinstance(_res, dict) else None
     if _inc:
         st.warning(
