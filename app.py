@@ -4304,8 +4304,24 @@ def _sv_gather_trade(search_terms: str, category: str, market: str,
     sigs, seen = [], set()
     from concurrent.futures import ThreadPoolExecutor, as_completed
     doms = list(by_domain)[:8]   # parallel, so more outlets cost time, not much
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(_one, d): d for d in doms}
+    # TWO SLOW OUTLETS USED TO DESTROY THE WHOLE SECTION.
+    # The per-future failures are caught below, but the `as_completed` TIMEOUT
+    # was not: when it fired it raised straight out of this function, the caller
+    # saw an exception, and the entire Trade Current vanished — including the
+    # six outlets that had already answered.
+    #
+    # The diagnostic said so in plain words for weeks: "trade collection failed:
+    # 2 (of 8) futures unfinished". Nobody read it, because until today these
+    # panels were drawn inside the scan and thrown away by the rerun. Two bugs
+    # that hid each other: one broke the section, the other hid the reason.
+    #
+    # Now the timeout is a deadline, not a failure. Whatever landed is kept, the
+    # stragglers are named, and — as in the main gather — the pool is shut down
+    # WITHOUT waiting, because a `with` block would sit on the very threads the
+    # deadline exists to escape.
+    pool = ThreadPoolExecutor(max_workers=6)
+    futures = {pool.submit(_one, d): d for d in doms}
+    try:
         for fut in as_completed(futures, timeout=45):
             try:
                 dom, found, via, why = fut.result()
@@ -4326,6 +4342,12 @@ def _sv_gather_trade(search_terms: str, category: str, market: str,
                     sigs.append({"title": sig.title, "content": sig.content, "source": "trade",
                                  "url": sig.url, "timestamp": sig.timestamp,
                                  "outlet": by_domain[dom]["name"]})
+    except Exception:
+        for _f, _d in futures.items():
+            if not _f.done():
+                diag["counts"][_d] = "timed out after 45s"
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     sigs = sigs[:24]
 
@@ -5982,10 +6004,14 @@ def _sv_diagnostics(res: dict) -> None:
             # marks, so each line is also the elapsed clock at that moment;
             # the gap between two lines is what that stage actually cost.
             if _stage:
-                with st.expander(
-                        f"Timing — {list(_stage.values())[-1]}s total", expanded=True):
+                # Tolerates the old dict shape, so a brief archived before the
+                # ordering fix still renders. It will be out of order — that is
+                # the bug preserved, not a crash.
+                _pairs = (list(_stage.items()) if isinstance(_stage, dict)
+                          else [(str(a), float(b)) for a, b in _stage])
+                with st.expander(f"Timing — {_pairs[-1][1]}s total", expanded=True):
                     _prev, _rows = 0.0, []
-                    for _k, _v in _stage.items():
+                    for _k, _v in _pairs:
                         _rows.append(f"{_v - _prev:6.1f}s   {_k}")
                         _prev = _v
                     _rows.append(f"{'':6}    {'─' * 28}")
@@ -8402,10 +8428,20 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         # had not thought to look. One clock per stage ends the argument.
         import time as _tmod
         _t0 = _tmod.monotonic()
-        _stage: dict = {}
+        # A LIST OF PAIRS, NOT A DICT — because Postgres reorders JSONB keys.
+        # The panel reads as a timeline, so its order carries meaning, and I
+        # stored it in a dict. JSONB normalises object keys by length and then
+        # bytewise, so the brief came back with "brief written" first and
+        # "outlet + newsletter lists (Haiku, main thread)" last, purely by name
+        # length. The panel then subtracted cumulative marks in the wrong order
+        # and printed negative durations and a 0.0s total.
+        #
+        # Nothing was wrong with the measurements; the storage silently changed
+        # their meaning. A JSON array keeps its order.
+        _stage: list = []
 
         def _mark(name: str):
-            _stage[name] = round(_tmod.monotonic() - _t0, 1)
+            _stage.append([name, round(_tmod.monotonic() - _t0, 1)])
 
         with st.spinner("🗼 Scanning the currents…"):
             # Trade runs ALONGSIDE the main gather, not after it: the two share

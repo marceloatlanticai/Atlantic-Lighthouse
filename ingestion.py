@@ -657,8 +657,16 @@ def scrape_rss(
             is_atom = root.tag == "{http://www.w3.org/2005/Atom}feed"
 
             if is_atom:
+                # The masthead and byline, same as the RSS branch below reads.
+                # Without them an Atom newsletter reached the brief carrying the
+                # name derived from its subdomain — "Beyondbabylon" where the
+                # publication calls itself something else — and with no author
+                # at all, which invites the model to infer one.
+                _chan = (root.findtext("atom:title", "", ns) or "").strip()
                 for entry in root.findall("atom:entry", ns)[:max_items_per_feed]:
                     title = entry.findtext("atom:title", "", ns).strip()
+                    _au = entry.find("atom:author/atom:name", ns)
+                    author = (_au.text or "").strip() if _au is not None else ""
                     link = entry.find("atom:link", ns)
                     url = link.get("href", "") if link is not None else ""
                     summary = entry.findtext("atom:summary", "", ns)
@@ -668,7 +676,9 @@ def scrape_rss(
                     signals.append(Signal(
                         id=_make_id(url, ts), title=_clean_title(title, content),
                         content=content, source="rss", url=url, timestamp=ts,
-                        client_tag=client_tag, raw_meta={"feed_name": feed_name},
+                        client_tag=client_tag,
+                        raw_meta={"feed_name": feed_name, "author": author,
+                                  "channel": _chan},
                     ))
             else:
                 channel = root.find("channel") or root
