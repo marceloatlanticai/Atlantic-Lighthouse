@@ -4477,9 +4477,12 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
     if letters is None:
         letters = _sv_newsletters(category, market, product)
     diag = {"proposed": [l["domain"] for l in letters], "counts": {}, "via": {}}
+    # NO LONGER AN EARLY RETURN. The proposed list used to be the only way in,
+    # so an empty one ended the section. Search is now the primary route and
+    # does not need the model's list at all — if the model proposes nothing,
+    # or has no key, the search still finds real posts about the subject.
     if not letters:
-        diag["error"] = "no newsletters proposed (check ANTHROPIC_API_KEY)"
-        return [], [], diag
+        diag["note"] = "no newsletters proposed — search only"
 
     from ingestion import scrape_rss
     by_domain = {l["domain"]: l for l in letters}
@@ -4491,7 +4494,7 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
 
     def _one(dom: str):
         """The publication's feed. Returns (dom, items, via, why)."""
-        name = by_domain[dom]["name"]
+        name = (by_domain.get(dom) or {}).get("name") or dom
         for path in ("/feed", "/rss.xml", "/feed/"):
             try:
                 items = scrape_rss(feeds=[(f"https://{dom}{path}", name)],
@@ -4563,13 +4566,31 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
         diag["searched"] = len(out)
         return out
 
+    # SEARCH FIRST, THEN READ FEEDS — including the feeds it just found.
+    # The first version ran the search in parallel with the feeds and used its
+    # results directly, which worked but produced cards headed "Joinjules" and
+    # "Beabettertraveler": a search result carries a URL and no masthead, so
+    # the publication's name had to be guessed from its subdomain. Worse, with
+    # no author in the data the model filled the byline by inference from that
+    # same slug — "Victorcoutard" became "Victor Coutard" — which is the exact
+    # invention the dc:creator fix was meant to end.
+    #
+    # Running the search first costs its few seconds, and every discovered
+    # publication then goes through the same feed read as a proposed one: real
+    # masthead, real byline, the full essay instead of a search snippet, and
+    # the same topical filter. Search decides WHO to read; the feed says WHAT.
+    _found = _searched()
+    for _s in _found:
+        _h = urllib.parse.urlparse(_s["url"]).netloc.lower().replace("www.", "")
+        if _h and _h not in by_domain:
+            by_domain[_h] = {"name": _s.get("letter") or _h, "domain": _h,
+                             "writer": "", "covers": ""}
+    diag["proposed"] = list(by_domain)
+
     sigs, seen = [], set()
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    doms = list(by_domain)[:12]
-    # The search runs as one more worker alongside the feeds, so it costs no
-    # wall-clock of its own.
-    with ThreadPoolExecutor(max_workers=9) as pool:
-        _f_search = pool.submit(_searched)
+    doms = list(by_domain)[:14]
+    with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {pool.submit(_one, d): d for d in doms}
         try:
             for fut in as_completed(futures, timeout=40):
@@ -4591,22 +4612,31 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
                         # they never wrote. dc:creator is what the publication
                         # itself says. The model's guess survives only as a
                         # fallback for feeds that carry no author at all.
-                        _by = str((sig.raw_meta or {}).get("author") or "").strip()
+                        _rm = sig.raw_meta or {}
+                        _by = str(_rm.get("author") or "").strip()
+                        # The masthead from the feed, falling back to whatever
+                        # we called it before we had one.
+                        _nm = (str(_rm.get("channel") or "").strip()
+                               or by_domain[dom]["name"])
                         sigs.append({"title": sig.title, "content": sig.content,
                                      "source": "letter", "url": sig.url,
                                      "timestamp": sig.timestamp,
-                                     "letter": by_domain[dom]["name"],
+                                     "letter": _nm,
                                      "writer": _by or by_domain[dom].get("writer", "")})
         except Exception:
             pass        # budget spent; whatever landed still counts
-        try:
-            for _s in (_f_search.result(timeout=25) or []):
-                if _s["url"] not in {x["url"] for x in sigs}:
-                    sigs.append(_s)
-                    seen.add(urllib.parse.urlparse(_s["url"]).netloc
-                             .lower().replace("www.", ""))
-        except Exception as _fexc:
-            diag.setdefault("search_error", f"{type(_fexc).__name__}: {_fexc}")
+
+    # A post the search found whose publication has no readable feed. Kept —
+    # it is still a real, on-topic essay — but it arrives without a masthead or
+    # a byline, and those fields stay EMPTY rather than being guessed at.
+    _have = {s["url"] for s in sigs}
+    _hosts = {urllib.parse.urlparse(s["url"]).netloc.lower().replace("www.", "")
+              for s in sigs}
+    for _s in _found:
+        _h = urllib.parse.urlparse(_s["url"]).netloc.lower().replace("www.", "")
+        if _s["url"] not in _have and _h not in _hosts:
+            sigs.append(_s)
+            seen.add(_h)
 
     # Newest first. Unlike trade, where every outlet deserves a voice, here the
     # question is what is being argued RIGHT NOW — an essay from March is
@@ -5113,7 +5143,7 @@ Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
   "letters_summary": "3-4 sentences: what are the independent writers ARGUING about {category} right now — not what they report, what they claim and why. Only from the INDEPENDENT NEWSLETTERS block. If that block is absent or empty, return an empty string.",
   "letters_moves": [
     {{"letter": "the newsletter name, exactly as given in the NEWSLETTERS block",
-      "writer": "the writer's name if the block gives one, else empty string",
+      "writer": "copy the WRITER from the block VERBATIM, or empty string if it has none. NEVER work a name out from the address — a post at victorcoutard.substack.com does not license 'Victor Coutard'. An empty byline is a post without an attribution, which is ordinary; an inferred one is a real person credited with something we have not confirmed they wrote.",
       "argument": "their claim, stated as a claim someone could disagree with",
       "signal_index": 2,
       "why": "why it matters for {brand}"}}

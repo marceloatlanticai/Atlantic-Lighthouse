@@ -672,6 +672,11 @@ def scrape_rss(
                     ))
             else:
                 channel = root.find("channel") or root
+                # The publication's own name for itself. Needed because a feed
+                # discovered by search has no name attached — only a URL — and
+                # deriving one from the subdomain produces "Joinjules" and
+                # "Beabettertraveler" where the masthead says "Join Jules".
+                _chan = (channel.findtext("title") or "").strip()
                 for item in channel.findall("item")[:max_items_per_feed]:
                     title = (item.findtext("title") or "").strip()
                     url = item.findtext("link") or item.findtext("guid") or ""
@@ -711,7 +716,8 @@ def scrape_rss(
                         id=_make_id(url, ts), title=_clean_title(title, content),
                         content=content, source="rss", url=url, timestamp=ts,
                         client_tag=client_tag,
-                        raw_meta={"feed_name": feed_name, "author": author},
+                        raw_meta={"feed_name": feed_name, "author": author,
+                                  "channel": _chan},
                     ))
         except Exception as exc:
             if callback:
