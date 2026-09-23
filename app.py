@@ -4144,8 +4144,61 @@ _SV_SAY_HOLD = round(_SV_SAY_SLICE, 3)
 _SV_SAY_OUT = round(_SV_SAY_SLICE + _SV_SAY_FADE, 3)
 
 
-def _sv_expected_scan(active: str) -> tuple:
+def _sv_ago(iso: str) -> str:
+    """'3 days ago', 'yesterday', '20 minutes ago' — for the waiting screen."""
+    try:
+        d = datetime.fromisoformat(str(iso).replace("Z", "").split(".")[0])
+        secs = (datetime.utcnow() - d).total_seconds()
+    except Exception:
+        return ""
+    if secs < 90:
+        return "moments ago"
+    if secs < 5400:
+        return f"{int(secs // 60)} minutes ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)} hours ago"
+    days = int(secs // 86400)
+    return "yesterday" if days == 1 else f"{days} days ago"
+
+
+def _sv_last_currents(briefs: list, category: str, product: str) -> tuple:
+    """The headlines the previous scan of this same search produced.
+
+    NOT A PREDICTION, and the wording on screen has to keep saying so. It is
+    tempting to present this as "what it's about to find" — but the tool has not
+    found anything yet, and dressing up the past as a forecast would be the same
+    dishonesty as a fabricated section, just wearing nicer clothes.
+
+    What it actually is, is better than a forecast: it is the thing the reader
+    should be holding in mind when the new brief lands. The whole week-over-week
+    idea — what is still running, what quietly dropped out — only works if you
+    remember what last week said, and nobody does. So the four minutes of
+    waiting are spent reminding them.
+
+    Matched on category AND product, because the team runs several products
+    through the tool in an afternoon and last week's soup is no use to a
+    sparkling water scan.
+    """
+    cat, prod = (category or "").strip().lower(), (product or "").strip().lower()
+    for b in briefs:                       # newest first
+        if cat and str(b.get("category", "")).strip().lower() != cat:
+            continue
+        if prod and str(b.get("product", "")).strip().lower() != prod:
+            continue
+        titles = [str(t.get("title", "")).strip()
+                  for t in ((b.get("result") or {}).get("trends") or [])[:3]]
+        titles = [t for t in titles if t]
+        if titles:
+            return titles, _sv_ago(b.get("saved_at", ""))
+    return [], ""
+
+
+def _sv_expected_scan(active: str, briefs: Optional[list] = None) -> tuple:
     """How long a scan usually takes here, in seconds: (collection, writing).
+
+    `briefs` lets the caller hand in an archive read it has already done — the
+    waiting screen needs the same list for last week's headlines, and one
+    Supabase round trip is enough for both.
 
     READ OFF THE ARCHIVE, NOT GUESSED. Every brief now stores its own stage
     timings, so the app already knows what a scan costs on this account, with
@@ -4158,7 +4211,7 @@ def _sv_expected_scan(active: str) -> tuple:
     """
     _co, _wr = [], []
     try:
-        for b in _sv_list_briefs(active, limit=12):
+        for b in (briefs if briefs is not None else _sv_list_briefs(active, limit=12)):
             _st = ((b.get("result") or {}).get("_diag") or {}).get("stage")
             if not _st:
                 continue
@@ -4185,7 +4238,41 @@ def _sv_expected_scan(active: str) -> tuple:
     return _med(_co, 110.0), _med(_wr, 140.0)
 
 
-def _sv_progress_html(pct: float, secs: float = 0.0, to: float = 0.0) -> str:
+def _sv_eta(total: float) -> str:
+    """'about 4 minutes' — deliberately vague, because it is an average.
+
+    Rounded to the half minute and hedged in words. A precise-looking "4:11"
+    would be a promise the tool cannot keep: the figure is a median of past
+    runs, and a slow source or a talkative model moves it by a minute either
+    way. Vague and right beats precise and wrong.
+    """
+    mins = total / 60.0
+    if mins < 1.4:
+        return "about a minute"
+    half = round(mins * 2) / 2
+    txt = f"{half:g}"
+    return f"about {txt} minutes"
+
+
+def _sv_preview_html(titles: list, ago: str) -> str:
+    """Last scan's headlines, shown while this one runs.
+
+    Framed as memory, never as prediction — see _sv_last_currents. The closing
+    line is the point of the whole block: it tells the reader what to do with
+    what they have just read.
+    """
+    if not titles:
+        return ""
+    rows = "".join(f'<div class="sv-prev-t">{e(t)}</div>' for t in titles[:3])
+    when = f" &nbsp;·&nbsp; {e(ago)}" if ago else ""
+    return (f'<div class="sv-prev"><div class="sv-prev-h">Last scan of this '
+            f'search found{when}</div>{rows}'
+            f'<div class="sv-prev-f">This one will tell you which of these are '
+            f'still running — and what has quietly dropped out.</div></div>')
+
+
+def _sv_progress_html(pct: float, secs: float = 0.0, to: float = 0.0,
+                      eta: str = "") -> str:
     """The bar and its number.
 
     Two modes, because the two halves of a scan are different problems.
@@ -4219,7 +4306,9 @@ def _sv_progress_html(pct: float, secs: float = 0.0, to: float = 0.0) -> str:
     else:
         inner = f'<i style="width:{pct:.0f}%"></i>'
         num = f'<span class="sv-pct-plain">{pct:.0f}%</span>'
-    return f'<div class="sv-bar">{inner}</div><div class="sv-num">{num}</div>'
+    _eta = f'<span class="sv-eta">{e(eta)}</span>' if eta else ""
+    return (f'<div class="sv-bar">{inner}</div>'
+            f'<div class="sv-num">{_eta}{num}</div>')
 
 
 def _sv_say_html() -> str:
@@ -5922,6 +6011,138 @@ def _sv_save_brief(active: str, result: dict, signals: list) -> None:
         print(f"[overview] save error: {_exc}")
 
 
+# Shared by the age labels and the Tideline, so both read continuity the same
+# way. Token overlap, not a model call: free, deterministic, and incapable of
+# inventing a continuity that was never there.
+def _sv_trend_tokens(t: dict, drop: frozenset = frozenset()) -> set:
+    """Words that distinguish one current from another in the same category.
+
+    `drop` is the category and product vocabulary, and removing it is the whole
+    point. EVERY current in a sparkling-water brief contains "sparkling" and
+    "water", so leaving them in means every pair starts out looking similar. In
+    testing it merged two genuinely different currents — "sparkling water is a
+    sober-curious default" and "sparkling water is becoming a stimulant
+    vehicle" — into one five-week run that never happened. The shared words were
+    the subject of the brief, not evidence of continuity.
+    """
+    txt = f"{t.get('title','')} {t.get('summary','')}".lower()
+    return {w for w in re.findall(r"[a-z0-9]+", txt)
+            if len(w) >= 4 and w not in _SV_STOP and w not in drop}
+
+
+def _sv_trend_same(a: set, b: set) -> bool:
+    """Same current, re-worded? Overlap AND a floor of two shared words.
+
+    The ratio alone is unreliable on short headlines: two three-word sets that
+    happen to share one word clear 0.22 easily. One word in common is a
+    coincidence; two is an argument.
+    """
+    if not a or not b:
+        return False
+    shared = a & b
+    # 0.15, not 0.22 — the two changes above had to be paid for together.
+    # Dropping the category vocabulary shrinks every intersection without
+    # shrinking the union much, so the old ratio started rejecting continuations
+    # it used to accept: a five-week provenance story, re-worded each week,
+    # split into two separate runs and the tideline reported a death that never
+    # happened. The ≥2 floor is what does the discriminating now; the ratio is
+    # only there to stop two long, rambling summaries matching on incidentals.
+    return len(shared) >= 2 and len(shared) / len(a | b) >= 0.15
+
+
+def _sv_pretty_day(day: str) -> str:
+    try:
+        return datetime.strptime(day, "%Y-%m-%d").strftime("%-d %b")
+    except Exception:
+        return day
+
+
+def _sv_tideline(active: str, trends: list, category: str = "", product: str = "",
+                 current_saved_at: str = "") -> dict:
+    """Every current this search has produced, laid out on a time axis.
+
+    WHY THIS IS THE ONE WORTH BUILDING. A brief answers "what is happening".
+    The archive can answer something a single brief structurally cannot: WHICH
+    OF THESE IS REAL. A story that shows up once is a post; a story that keeps
+    coming back for five weeks is a shift. Persistence is the closest thing to
+    proof this tool can offer, and it costs nothing — the data has been sitting
+    in Supabase since the first scan, serving only to reopen old reports.
+
+    It is deliberately NOT a forecast. With five to ten scans per brand, most of
+    them run on the same afternoon, there is no series to extrapolate from, and
+    a predicted trend would be the one thing in this product with nothing to
+    link to. Every bar here is a brief that exists and can be opened.
+
+    Returns {"days": [...], "runs": [...]}, each run carrying the days it
+    appeared on, so the renderer only draws.
+    """
+    try:
+        past = _sv_list_briefs(active, limit=40)
+    except Exception as exc:
+        print(f"[overview] tideline unavailable: {exc}")
+        return {}
+
+    cat, prod = (category or "").strip().lower(), (product or "").strip().lower()
+    # The subject of the brief is not evidence that two currents are the same.
+    _drop = frozenset(_sv_terms(f"{category} {product}"))
+    by_day: dict = {}
+    for b in past:
+        day = str(b.get("saved_at", ""))[:10]
+        if not day:
+            continue
+        if cat and str(b.get("category", "")).strip().lower() != cat:
+            continue
+        if prod and str(b.get("product", "")).strip().lower() != prod:
+            continue
+        # Newest-first list, so the first entry for a day wins: several runs in
+        # one afternoon are one day's reading, not several days of history.
+        by_day.setdefault(day, (b.get("result") or {}).get("trends") or [])
+
+    # Today's currents belong on the axis even though this brief may not be
+    # archived yet — the reader is looking at them right now.
+    today = str(current_saved_at or "")[:10] or datetime.utcnow().strftime("%Y-%m-%d")
+    by_day[today] = trends or by_day.get(today, [])
+
+    days = sorted(by_day)[-8:]                 # oldest → newest, at most eight
+    if len(days) < 2:
+        return {}                              # one column is not a timeline
+
+    runs: list = []
+    for di, day in enumerate(days):
+        for t in (by_day.get(day) or [])[:3]:
+            toks = _sv_trend_tokens(t, _drop)
+            if not toks:
+                continue
+            hit = next((r for r in runs if _sv_trend_same(toks, r["toks"])), None)
+            if hit:
+                hit["days"].add(di)
+                # The most recent wording wins. A current's headline is
+                # rewritten every week; showing the oldest phrasing would date
+                # the row and make a live story look stale.
+                hit["title"] = t.get("title", "") or hit["title"]
+                hit["toks"] = hit["toks"] | toks
+            else:
+                runs.append({"title": t.get("title", ""), "toks": toks,
+                             "days": {di}})
+
+    last = len(days) - 1
+    out = []
+    for r in runs:
+        ds = sorted(r["days"])
+        out.append({
+            "title": r["title"],
+            "cells": [i in r["days"] for i in range(len(days))],
+            "first": ds[0], "last": ds[-1],
+            "hits": len(ds),
+            "live": last in r["days"],
+            "span": _sv_pretty_day(days[ds[0]]),
+        })
+    # Live first, then the longest-running, then the most recent to fade. The
+    # eye should land on what is still true before what has stopped.
+    out.sort(key=lambda r: (not r["live"], -(r["last"] - r["first"]), -r["last"]))
+    return {"days": [_sv_pretty_day(d) for d in days], "runs": out[:10]}
+
+
 def _sv_trend_history(active: str, trends: list, category: str = "", product: str = "",
                       current_saved_at: str = "") -> tuple:
     """How long each current has been running, and which ones just disappeared.
@@ -5942,15 +6163,9 @@ def _sv_trend_history(active: str, trends: list, category: str = "", product: st
     Comparison is token overlap, not a model call — free, deterministic, and it
     cannot invent a continuity that was never there.
     """
-    def _toks(t: dict) -> set:
-        txt = f"{t.get('title','')} {t.get('summary','')}".lower()
-        return {w for w in re.findall(r"[a-z0-9]+", txt)
-                if len(w) >= 4 and w not in _SV_STOP}
-
-    def _same(a: set, b: set) -> bool:
-        if not a or not b:
-            return False
-        return len(a & b) / len(a | b) >= 0.22
+    _drop = frozenset(_sv_terms(f"{category} {product}"))
+    def _toks(t): return _sv_trend_tokens(t, _drop)
+    _same = _sv_trend_same
 
     try:
         past = _sv_list_briefs(active, limit=40)
@@ -6520,6 +6735,38 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .tvrow .tvside:last-child .tvtxt{color:__BLUE__;font-weight:600;}
 @media(max-width:820px){.tvrow{grid-template-columns:1fr;}
   .tvside{border-left:none;padding:0 0 12px;}}
+/* ── 09 · The Tideline ───────────────────────────────────────────────────────
+   One row per current, one column per scan. The bar spans from the first time
+   a current appeared to the last, filled where it was present and hollow where
+   it lapsed — so a five-week run and a one-day flare are told apart at a
+   glance, without reading a word. */
+.tlwrap{overflow-x:auto;margin-top:22px;}
+.tl{min-width:640px;}
+.tlhead,.tlrow{display:grid;grid-template-columns:minmax(210px,2fr) 1fr;
+  gap:18px;align-items:center;}
+.tlrow{padding:9px 0;border-top:1px solid rgba(255,255,255,.22);}
+.sec:not(.blue) .tlrow{border-top-color:rgba(0,0,0,.12);}
+.tlhead{padding-bottom:7px;}
+.tldays{display:grid;gap:0;}
+.tlday{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+  font-weight:700;opacity:.62;text-align:center;}
+.tlname{font-size:13.5px;font-weight:700;line-height:1.3;}
+.tlname i{font-style:normal;font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;opacity:.55;margin-left:8px;font-weight:700;}
+.tltrack{display:grid;gap:0;align-items:center;height:16px;position:relative;}
+.tltrack b{grid-row:1;height:3px;background:currentColor;opacity:.22;}
+.tltrack u{grid-row:1;height:3px;background:currentColor;opacity:1;
+  text-decoration:none;}
+.tltrack s{grid-row:1;height:3px;text-decoration:none;}
+/* the dot marking a scan where the current was present */
+.tldot{grid-row:1;width:9px;height:9px;border-radius:50%;background:currentColor;
+  justify-self:center;align-self:center;position:relative;z-index:2;}
+.tldot.off{width:5px;height:5px;opacity:.28;}
+.tlfoot{font-size:11.5px;line-height:1.55;margin-top:18px;opacity:.75;
+  max-width:780px;}
+@media(max-width:820px){.tlhead,.tlrow{grid-template-columns:1fr;gap:6px;}
+  .tlrow{padding:12px 0;}}
+
 /* ── 02N · The Slow Current ──────────────────────────────────────────────────
    OUTLINED cards, not the filled blue of 01/02T. Three solid-blue card decks in
    a row (02, 02T, 02N) read as one long block and the reader stops seeing the
@@ -7134,6 +7381,54 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                      f'<div class="mlabel">The move</div>'
                      f'<div class="mbody">{e(p.get("the_move",""))}</div></div>')
         H.append('</div></section>'); h += 1000
+
+    # ── 09 · The Tideline ────────────────────────────────────────────────────
+    # The only section that is not about this scan. Everything above answers
+    # "what is happening"; this answers the question a single brief structurally
+    # cannot — WHICH OF THESE IS REAL. One appearance is a post. Five weeks of
+    # appearances is a shift. It reads without instructions, which is the whole
+    # design brief: a long bar is a long story.
+    _tl = res.get("_tideline") or {}
+    _tl_days, _tl_runs = _tl.get("days") or [], _tl.get("runs") or []
+    if "09" in which and len(_tl_days) >= 2 and _tl_runs:
+        H.append(open_sec("09") + head("09", "The Tideline",
+                                       "Which currents are actually holding"))
+        H.append('<div class="lead">Every current this search has produced, on a '
+                 'time axis. A filled dot is a scan where it appeared. The bar '
+                 'runs from first sighting to last — so persistence, not '
+                 'loudness, is what you are looking at.</div>')
+        _n = len(_tl_days)
+        _cols = f'grid-template-columns:repeat({_n},1fr)'
+        H.append('<div class="tlwrap"><div class="tl">')
+        H.append(f'<div class="tlhead"><div></div><div class="tldays" style="{_cols}">'
+                 + "".join(f'<div class="tlday">{e(d)}</div>' for d in _tl_days)
+                 + '</div></div>')
+        for r in _tl_runs:
+            _cells = r.get("cells") or []
+            _f, _l = int(r.get("first", 0)), int(r.get("last", 0))
+            # The rule underneath the dots, drawn as one cell-wide segment per
+            # column: solid inside the run, invisible outside it. Simpler than
+            # positioning an absolute bar and it cannot drift out of alignment
+            # with the dots, because it sits on the same grid.
+            seg = "".join(
+                ('<u></u>' if _f <= i <= _l else '<s></s>') for i in range(_n))
+            dots = "".join(
+                f'<span class="tldot{"" if on else " off"}"'
+                f' style="grid-column:{i+1}"></span>'
+                for i, on in enumerate(_cells))
+            _age = ("" if not r.get("live")
+                    else f'<i>{e("since " + str(r.get("span", "")))}</i>')
+            _stop = "" if r.get("live") else '<i>stopped</i>'
+            H.append(f'<div class="tlrow"><div class="tlname">{e(r.get("title",""))}'
+                     f'{_age}{_stop}</div>'
+                     f'<div class="tltrack" style="{_cols}">{seg}{dots}</div></div>')
+        H.append('</div></div>')
+        _live = sum(1 for r in _tl_runs if r.get("live"))
+        H.append(f'<div class="tlfoot">{_live} of {len(_tl_runs)} currents are still '
+                 f'running. The rest appeared, held for a while and stopped — which is '
+                 f'often the more useful signal: it says a story you were briefing '
+                 f'against has ended.</div>')
+        H.append('</section>'); h += 260 + len(_tl_runs) * 46
 
     # Auto-fit: components.v1.html needs a fixed height, and any estimate is
     # eventually wrong — long copy got clipped in 05 and 08. Streamlit renders
@@ -7864,6 +8159,36 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
                          f'<div class="sublbl">The move</div><div class="cbody">{e(p.get("the_move",""))}</div></div>')
         parts.append('</div>')
 
+    # ── 09 · The Tideline ────────────────────────────────────────────────────
+    # A table on paper rather than the grid of dots the screen draws. Same data,
+    # a form that survives printing: filled and hollow marks per column read as
+    # clearly in black and white as the bar does on screen.
+    _tl = res.get("_tideline") or {}
+    _tld, _tlr = _tl.get("days") or [], _tl.get("runs") or []
+    if len(_tld) >= 2 and _tlr:
+        parts.append(_sec("09", "The Tideline", "Which currents are actually holding"))
+        parts.append('<div class="lead">Every current this search has produced, on a '
+                     'time axis. A filled mark is a scan where it appeared — so what '
+                     'you are reading is persistence, not loudness.</div>')
+        parts.append('<table><tr><th>Current</th>'
+                     + "".join(f'<th style="text-align:center;">{e(d)}</th>' for d in _tld)
+                     + '</tr>')
+        for r in _tlr:
+            _live = r.get("live")
+            _tag = (f'<span style="color:{GOLD};font-weight:700;"> · since '
+                    f'{e(str(r.get("span","")))}</span>' if _live
+                    else f'<span style="color:{FAINT};"> · stopped</span>')
+            cells = "".join(
+                f'<td style="text-align:center;color:'
+                + (f'{GOLD};font-weight:700;">●' if on else f'{FAINT};">·')
+                + '</td>' for on in (r.get("cells") or []))
+            parts.append(f'<tr><td>{e(r.get("title",""))}{_tag}</td>{cells}</tr>')
+        parts.append('</table>')
+        _lv = sum(1 for r in _tlr if r.get("live"))
+        parts.append(f'<div class="cbody" style="margin-top:14px;">{_lv} of {len(_tlr)} '
+                     f'currents are still running. The rest appeared, held for a while '
+                     f'and stopped — often the more useful signal.</div>')
+
     parts.append('</div></body></html>')
     return "".join(parts)
 
@@ -8078,9 +8403,25 @@ button[kind="primary"]:disabled span,
 .sv-bar i {{ position:absolute; left:0; top:0; height:100%; width:0;
   background:{_blue}; display:block; }}
 @keyframes sv-fill {{ from {{ width:var(--from); }} to {{ width:var(--to); }} }}
-.sv-num {{ max-width:780px; text-align:right; margin:0 0 4px;
-  font-family:{_sans}; font-size:11px; font-weight:700; color:{_blue};
-  letter-spacing:.04em; height:14px; }}
+.sv-num {{ max-width:780px; margin:0 0 4px; font-family:{_sans}; font-size:11px;
+  font-weight:700; color:{_blue}; letter-spacing:.04em; height:14px;
+  display:flex; justify-content:space-between; align-items:baseline; }}
+/* The estimate sits opposite the percentage: one says how far, the other how
+   long. Quieter than the number, because it is an average and not a fact. */
+.sv-eta {{ font-weight:600; color:{_muted}; letter-spacing:.02em; }}
+.sv-num > :only-child {{ margin-left:auto; }}
+/* What the previous scan of this same search found. Calm, low-contrast, and
+   below the moving parts — it is there to be read during the wait, not to
+   compete with the bar. */
+.sv-prev {{ max-width:780px; margin:16px 0 4px; padding-top:12px;
+  border-top:1px solid rgba(0,0,0,.12); font-family:{_sans}; }}
+.sv-prev-h {{ font-size:9.5px; letter-spacing:.16em; text-transform:uppercase;
+  font-weight:700; color:{_faint}; margin-bottom:9px; }}
+.sv-prev-t {{ font-size:13.5px; font-weight:700; line-height:1.35; color:{_ink};
+  margin-bottom:6px; padding-left:14px; position:relative; }}
+.sv-prev-t::before {{ content:"\\00B7"; position:absolute; left:0; top:-2px;
+  font-size:17px; color:{_blue}; }}
+.sv-prev-f {{ font-size:11.5px; line-height:1.5; color:{_muted}; margin-top:10px; }}
 /* A registered custom property is animatable, which is what lets a NUMBER
    count in CSS at all. Browsers without @property simply show nothing here —
    the bar and the phrases still carry the message, so the degradation is
@@ -8485,16 +8826,26 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         # st.markdown but leaves @keyframes alone, so an indeterminate bar costs
         # one div instead of a whole embedded document.
         _loader = st.empty()
-        # What this account's own history says a scan costs. Read once, before
-        # anything blocks, because it is a Supabase call.
-        _exp_col, _exp_wri = _sv_expected_scan(_active)
+        # ONE archive read, two uses: how long this usually takes, and what the
+        # last scan of this same search found. Done here, before anything
+        # blocks, because it is a Supabase call.
+        try:
+            _past = _sv_list_briefs(_active, limit=12)
+        except Exception as _pexc:
+            print(f"[overview] archive unavailable for the waiting screen: {_pexc}")
+            _past = []
+        _exp_col, _exp_wri = _sv_expected_scan(_active, briefs=_past)
+        _eta_txt = _sv_eta(_exp_col + _exp_wri)
+        _prev_titles, _prev_ago = _sv_last_currents(_past, _in_cat or _prof["category"],
+                                                    _in_prod)
+        _prev_html = _sv_preview_html(_prev_titles, _prev_ago)
         # The collection share of the bar, proportional to the real split. If
         # collection is 110s of a 250s scan it owns 44% of the bar, so the two
         # halves move at roughly the same apparent speed instead of one
         # sprinting and the other crawling.
         _COL_PCT = max(20.0, min(70.0, 100.0 * _exp_col / max(1.0, _exp_col + _exp_wri)))
-        _loader.markdown(_sv_progress_html(0.0) + _sv_say_html(),
-                         unsafe_allow_html=True)
+        _loader.markdown(_sv_progress_html(0.0, eta=_eta_txt) + _sv_say_html()
+                         + _prev_html, unsafe_allow_html=True)
         # Live status. A four-minute wait behind one static line feels broken;
         # the same wait with sources ticking off feels like work being done.
         _status = st.empty()
@@ -8531,8 +8882,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _tot = len(_done) + len(_pending)
             if _tot:
                 _loader.markdown(
-                    _sv_progress_html(_COL_PCT * len(_done) / _tot) + _sv_say_html(),
-                    unsafe_allow_html=True)
+                    _sv_progress_html(_COL_PCT * len(_done) / _tot, eta=_eta_txt)
+                    + _sv_say_html() + _prev_html, unsafe_allow_html=True)
             if n < 0 and why:
                 _fails.append(f"{name}: {why[:200]}")
             # Greyed, and after the finished ones, so the reader's eye still
@@ -8645,8 +8996,9 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # the time this account's own scans say writing takes. Written once,
             # immediately before the call that blocks.
             _loader.markdown(
-                _sv_progress_html(_COL_PCT, secs=max(20.0, _exp_wri), to=99.0)
-                + _sv_say_html(), unsafe_allow_html=True)
+                _sv_progress_html(_COL_PCT, secs=max(20.0, _exp_wri), to=99.0,
+                                  eta=_eta_txt)
+                + _sv_say_html() + _prev_html, unsafe_allow_html=True)
             # THE MOST LIKELY OPERATIONAL FAILURE, AND THE WORST EXPLAINED.
             # An unhandled AuthenticationError climbs all the way out and
             # Streamlit prints a traceback with the message REDACTED — which is
@@ -8905,6 +9257,18 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         except Exception as _aexc:
             print(f"[overview] trend history unavailable: {_aexc}")
             _ages, _faded = [], []
+        # The Tideline, from the same archive read (it is memoised in db.py, so
+        # this costs nothing extra). Stashed on the result so the PDF gets the
+        # identical picture — the same route `_decks` takes.
+        try:
+            _res["_tideline"] = _sv_tideline(
+                _active, (_res.get("trends") or [])[:3],
+                category=_meta.get("category", ""),
+                product=_meta.get("product", ""),
+                current_saved_at=_meta.get("saved_at", ""))
+        except Exception as _texc2:
+            print(f"[overview] tideline unavailable: {_texc2}")
+            _res["_tideline"] = {}
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
                                      ("01", "02", "02T", "02N", "03", "04", "05", "06"),
                                      "screen",
@@ -9071,7 +9435,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 
     # ── Section 08 — rendered as an HTML component (blue block) ───────────
     if _res:
-        _html_b, _h_b = _sv_sections(_res, _sigs, _disp_cat, ("08",), "screen")
+        # 08 and 09 together: the provocations, then the long view behind them.
+        _html_b, _h_b = _sv_sections(_res, _sigs, _disp_cat, ("08", "09"), "screen")
         with st.container(key="svfullB"):
             _sv_embed(_html_b, _h_b)
 
