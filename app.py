@@ -6062,7 +6062,22 @@ def _sv_trend_same(a: set, b: set) -> bool:
     if small < 2:
         return False          # a one-word set would match half the brief
     shared = a & b
-    return bool(shared) and len(shared) / small >= 0.25
+    # FOUR SHARED WORDS IS NOT A COINCIDENCE, whatever the ratio says.
+    #
+    # The near-miss panel earned its keep on its first run. Six pairs sat just
+    # under the line at 0.18–0.22, and every single one was the same provenance
+    # story told again: "Provenance is eating flavor as the premium cue" /
+    # "Mineral provenance beats flavor gimmicks" / "Minerality is the new flavor
+    # war" / "Real minerals beat manufactured fizz". Each pair shared FOUR
+    # distinctive words — provenance, minerality, flavor, taste — and was still
+    # being split into separate runs, two of them marked stopped.
+    #
+    # Lowering the ratio again would have been the fourth blind tweak. An
+    # absolute count is the better instrument here: it does not care how long
+    # the summaries are, and in every observed pair that must NOT merge the
+    # shared count was zero or one. So the ratio keeps catching short, sharply
+    # similar headlines, and the count catches long ones that ratios dilute.
+    return len(shared) >= 4 or len(shared) / small >= 0.25
 
 
 def _sv_pretty_day(day: str) -> str:
@@ -6168,9 +6183,13 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
             sh = r1["toks"] & r2["toks"]
             sm = min(len(r1["toks"]), len(r2["toks"])) or 1
             score = len(sh) / sm
-            if 0.10 <= score < 0.25:
+            # Band widened down to 0.04: the first run showed everything
+            # between 0.10 and 0.25 was a true merge, which means the
+            # interesting question moved BELOW the old floor. A panel that only
+            # shows near-hits cannot tell you where the real boundary is.
+            if 0.04 <= score < 0.25 and len(sh) < 4:
                 near.append({"a": r1["title"][:44], "b": r2["title"][:44],
-                             "score": round(score, 2), "shared": sorted(sh)[:4]})
+                             "score": round(score, 2), "shared": sorted(sh)[:5]})
     near.sort(key=lambda n: -n["score"])
     return {"days": [_sv_pretty_day(d) for d in days], "runs": out[:10],
             "near": near[:6]}
