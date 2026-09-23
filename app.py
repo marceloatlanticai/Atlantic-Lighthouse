@@ -6114,6 +6114,74 @@ def _sv_pretty_day(day: str) -> str:
         return day
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _sv_group_currents(titles: tuple, category: str) -> list:
+    """Which of these headlines are the same running story, said differently?
+
+    FOUR ATTEMPTS AT A LEXICAL MATCHER ENDED HERE, and the reason is structural
+    rather than a threshold I kept getting wrong. The model rewrites every
+    headline from scratch on every run, so there is no stable vocabulary to
+    match on. Measured on one real archive, three of the four pairs a strategist
+    would call the same story shared ZERO words:
+
+        "Gimmick water is winning attention, not trust"
+        "Minerality is the new flavor war"
+
+    Those are the same argument about substance versus theatre, and no amount of
+    token overlap will ever join them. Recognising it is semantics, so it needs
+    something that reads. This is the one job in the Tideline that a dictionary
+    cannot do — and it is cheap, because grouping twenty-five short headlines is
+    a Haiku call costing a fraction of a cent.
+
+    It invents nothing: it only groups labels that already exist, and every row
+    still resolves to briefs that were really run. Returns a list of index
+    groups, or [] to fall back to the lexical matcher.
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key or len(titles) < 2:
+        return []
+    try:
+        import anthropic
+        cl = anthropic.Anthropic(api_key=key)
+        listing = "\n".join(f"{i}. {t}" for i, t in enumerate(titles))
+        prompt = (
+            f"These are trend headlines written for the {category} category over "
+            f"several weeks by the same tool. It rewrites its headlines every run, "
+            f"so the SAME ongoing story often appears under completely different "
+            f"wording.\n\n{listing}\n\n"
+            "Group the numbers that are the same ongoing story told again.\n\n"
+            "Group only when a strategist would say it is one argument re-worded: "
+            "same claim, same tension, same thing being asserted about the "
+            "category. Two DIFFERENT arguments that happen to share a subject stay "
+            "apart — 'provenance beats flavour' and 'nobody agrees what this "
+            "product is' are both about authenticity and are not the same story.\n"
+            "When unsure, leave it on its own. A wrongly merged pair claims a "
+            "continuity that never happened, which is worse than a story shown "
+            "twice.\n\n"
+            'Respond ONLY with JSON: {"groups": [[0,4,9],[1],[2,7]]}\n'
+            "Every number exactly once. Singletons included."
+        )
+        r = cl.messages.create(model=CLAUDE_MODEL_FAST, max_tokens=900,
+                               messages=[{"role": "user", "content": prompt}])
+        data = _extract_json(_msg_text(r))
+        seen, out = set(), []
+        for g in (data.get("groups") or []):
+            grp = [int(i) for i in g
+                   if isinstance(i, (int, float)) and 0 <= int(i) < len(titles)
+                   and int(i) not in seen]
+            seen.update(grp)
+            if grp:
+                out.append(grp)
+        # Anything the model forgot becomes its own row rather than vanishing:
+        # a missing current is a hole in the timeline, a singleton is only a
+        # missed merge.
+        out.extend([[i] for i in range(len(titles)) if i not in seen])
+        return out
+    except Exception as exc:
+        print(f"[tideline] grouping failed, falling back to token overlap: {exc}")
+        return []
+
+
 def _sv_tideline(active: str, trends: list, category: str = "", product: str = "",
                  current_saved_at: str = "") -> dict:
     """Every current this search has produced, laid out on a time axis.
@@ -6164,8 +6232,41 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
     if len(days) < 2:
         return {}                              # one column is not a timeline
 
+    # ── Grouping ─────────────────────────────────────────────────────────────
+    # The model reads the headlines and says which are the same story. The
+    # token matcher below stays as the fallback for when there is no key, the
+    # call fails, or the archive is too small to be worth a request — so the
+    # section degrades to its previous behaviour rather than disappearing.
+    cards = [(di, t) for di, day in enumerate(days)
+             for t in (by_day.get(day) or [])[:3] if (t.get("title") or "").strip()]
+    _titles = tuple(t.get("title", "") for _di, t in cards)
+    _groups = []
+    try:
+        _groups = _sv_group_currents(_titles, category or "")
+    except Exception as exc:
+        print(f"[tideline] grouping unavailable: {exc}")
+
     runs: list = []
+    if _groups:
+        for grp in _groups:
+            idx = sorted(grp)
+            # The LAST card in a group is the most recent wording, and that is
+            # the one the row is labelled with.
+            _last_card = cards[idx[-1]][1]
+            # Tokens are still collected, unused by the grouping itself, so the
+            # near-miss panel can show where the MODEL split something the
+            # dictionary would have joined — the one comparison that tells us
+            # whether the model is being too cautious.
+            _gt = set()
+            for i in idx:
+                _gt |= _sv_trend_tokens(cards[i][1], _drop)
+            runs.append({"title": _last_card.get("title", ""),
+                         "toks": _gt, "ttoks": set(),
+                         "days": {cards[i][0] for i in idx},
+                         "members": [cards[i][1].get("title", "") for i in idx]})
     for di, day in enumerate(days):
+        if _groups:
+            break
         for t in (by_day.get(day) or [])[:3]:
             toks = _sv_trend_tokens(t, _drop)
             ttoks = _sv_trend_tokens({"title": t.get("title", "")}, _drop)
@@ -6234,7 +6335,9 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
                              "score": round(score, 2), "shared": sorted(sh)[:5]})
     near.sort(key=lambda n: -n["score"])
     return {"days": [_sv_pretty_day(d) for d in days], "runs": out[:10],
-            "near": near[:6]}
+            "near": near[:6], "by": "model" if _groups else "tokens",
+            "grouped": [r.get("members") for r in runs
+                        if len(r.get("members") or []) > 1][:8]}
 
 
 def _sv_trend_history(active: str, trends: list, category: str = "", product: str = "",
@@ -6418,19 +6521,32 @@ def _sv_diagnostics(res: dict) -> None:
             # matcher, and a row wrongly marked "stopped" is the worst thing it
             # can print — so the borderline calls are shown rather than hidden.
             _tlq = (_result or {}).get("_tideline") or {}
-            if _tlq.get("near"):
+            if _tlq.get("runs"):
+                _by = _tlq.get("by", "tokens")
                 with st.expander(
-                        f"Tideline — {len(_tlq.get('runs') or [])} currents, "
-                        f"{len(_tlq['near'])} near misses", expanded=False):
-                    st.code("\n".join(
-                        f"{n['score']:.2f}  {n['a']}\n      {n['b']}\n      shared: "
-                        + ", ".join(n["shared"]) for n in _tlq["near"]))
-                    st.caption("Pairs that scored between 0.10 and 0.25 — just below "
-                               "the line at which two headlines are treated as the same "
-                               "running current. If these look like the same story, the "
-                               "threshold is too high and the Tideline is splitting one "
-                               "current into several and reporting deaths that did not "
-                               "happen. If they look unrelated, it is set correctly.")
+                        f"Tideline — {len(_tlq['runs'])} currents, grouped by "
+                        f"{'the model' if _by == 'model' else 'word overlap'}",
+                        expanded=False):
+                    if _tlq.get("grouped"):
+                        st.markdown("**What was merged into one row**")
+                        st.code("\n\n".join(
+                            "\n".join(f"  · {m}" for m in g)
+                            for g in _tlq["grouped"]))
+                    else:
+                        st.caption("Nothing was merged — every headline is its own row.")
+                    if _by != "model":
+                        st.warning("Falling back to word overlap. The model grouping "
+                                   "did not run — check ANTHROPIC_API_KEY. Rows will "
+                                   "be split more than they should be.")
+                    if _tlq.get("near"):
+                        st.markdown("**Separate rows the dictionary would have joined**")
+                        st.code("\n".join(
+                            f"{n['score']:.2f}  {n['a']}\n      {n['b']}\n      shared: "
+                            + ", ".join(n["shared"]) for n in _tlq["near"]))
+                        st.caption("If these read as the same story, the model is being "
+                                   "too cautious. If they read as different arguments "
+                                   "that happen to share vocabulary, it is right and the "
+                                   "old token matcher would have merged them wrongly.")
 
             # Where every signal came from. Shown on EVERY run, not only on
             # failure: "$0.01 of Apify" reads as efficiency until you see that
