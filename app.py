@@ -6030,6 +6030,33 @@ def _sv_trend_tokens(t: dict, drop: frozenset = frozenset()) -> set:
             if len(w) >= 4 and w not in _SV_STOP and w not in drop}
 
 
+def _sv_trend_match(t1: dict, t2: dict, drop: frozenset = frozenset()) -> bool:
+    """Are these two trend cards the same running current?
+
+    THE TITLE CARRIES THE SIGNAL AND THE SUMMARY DROWNS IT.
+    Judging one merged bag of words let a thirty-word summary dilute the six
+    words that actually identify a current. The tideline printed
+    "Functional water is colonizing sparkling water's shelf" as live with
+    "Functional add-ins are colonizing the fizz aisle" below it marked stopped —
+    two headlines sharing BOTH of their distinctive words, scoring 0.12 once
+    their summaries were stirred in.
+
+    So the title is asked first, on its own terms. Titles are short and written
+    to be distinct, which makes a strong overlap between two of them worth more
+    than any amount of summary agreement. The combined text is the fallback for
+    the opposite case: headlines phrased completely differently about a story
+    whose vocabulary shows up all through both summaries.
+    """
+    ta, tb = _sv_trend_tokens({"title": t1.get("title", "")}, drop), \
+        _sv_trend_tokens({"title": t2.get("title", "")}, drop)
+    if len(ta) >= 2 and len(tb) >= 2:
+        sh = ta & tb
+        # Two shared words out of a handful is a rewrite of the same claim.
+        if len(sh) >= 2 and len(sh) / min(len(ta), len(tb)) >= 0.4:
+            return True
+    return _sv_trend_same(_sv_trend_tokens(t1, drop), _sv_trend_tokens(t2, drop))
+
+
 def _sv_trend_same(a: set, b: set) -> bool:
     """Same current, re-worded? Overlap AND a floor of two shared words.
 
@@ -6141,9 +6168,23 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
     for di, day in enumerate(days):
         for t in (by_day.get(day) or [])[:3]:
             toks = _sv_trend_tokens(t, _drop)
+            ttoks = _sv_trend_tokens({"title": t.get("title", "")}, _drop)
             if not toks:
                 continue
-            hit = next((r for r in runs if _sv_trend_same(toks, r["toks"])), None)
+            # Title first, combined text as the fallback — see _sv_trend_match.
+            # The run's title set is the LATEST wording rather than every
+            # wording it has ever had: accumulating them would grow the set
+            # each week and quietly make the run easier to join.
+            hit = None
+            for r in runs:
+                sh = ttoks & r["ttoks"]
+                if (len(ttoks) >= 2 and len(r["ttoks"]) >= 2 and len(sh) >= 2
+                        and len(sh) / min(len(ttoks), len(r["ttoks"])) >= 0.4):
+                    hit = r
+                    break
+                if _sv_trend_same(toks, r["toks"]):
+                    hit = r
+                    break
             if hit:
                 hit["days"].add(di)
                 # The most recent wording wins. A current's headline is
@@ -6151,9 +6192,10 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
                 # the row and make a live story look stale.
                 hit["title"] = t.get("title", "") or hit["title"]
                 hit["toks"] = hit["toks"] | toks
+                hit["ttoks"] = ttoks or hit["ttoks"]
             else:
                 runs.append({"title": t.get("title", ""), "toks": toks,
-                             "days": {di}})
+                             "ttoks": ttoks, "days": {di}})
 
     last = len(days) - 1
     out = []
@@ -6216,8 +6258,6 @@ def _sv_trend_history(active: str, trends: list, category: str = "", product: st
     cannot invent a continuity that was never there.
     """
     _drop = frozenset(_sv_terms(f"{category} {product}"))
-    def _toks(t): return _sv_trend_tokens(t, _drop)
-    _same = _sv_trend_same
 
     try:
         past = _sv_list_briefs(active, limit=40)
@@ -6259,11 +6299,10 @@ def _sv_trend_history(active: str, trends: list, category: str = "", product: st
 
     ages = []
     for t in trends:
-        mine = _toks(t)
         streak, first_day = 0, ""
         for day in days:                            # walk back until it breaks
             prev = (by_day[day].get("result") or {}).get("trends") or []
-            if any(_same(mine, _toks(p)) for p in prev):
+            if any(_sv_trend_match(t, p, _drop) for p in prev):
                 streak += 1
                 first_day = day
             else:
@@ -6274,11 +6313,9 @@ def _sv_trend_history(active: str, trends: list, category: str = "", product: st
     # was there yesterday and is gone today is news. Reaching further back would
     # keep re-reporting the same disappearance every day.
     last_day = days[0]
-    now = [_toks(t) for t in trends]
     faded = []
     for p in ((by_day[last_day].get("result") or {}).get("trends") or []):
-        pt = _toks(p)
-        if not any(_same(pt, n) for n in now):
+        if not any(_sv_trend_match(p, t, _drop) for t in trends):
             faded.append({"title": p.get("title", ""), "day": _pretty(last_day)})
     return ages, faded
 
