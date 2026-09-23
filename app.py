@@ -6037,17 +6037,32 @@ def _sv_trend_same(a: set, b: set) -> bool:
     happen to share one word clear 0.22 easily. One word in common is a
     coincidence; two is an argument.
     """
+    # OVERLAP, NOT JACCARD — and the first real Tideline is what proved it.
+    #
+    # Jaccard divides by the UNION, so it punishes length: two thirty-word
+    # summaries that share the five words which actually matter score 0.09 and
+    # are judged unrelated. The result was a tideline with ten rows for four
+    # stories, where "Mineral provenance is the new luxury" ran live while
+    # "Provenance is eating flavor as the premium cue" sat below it marked
+    # STOPPED. Reporting a death that did not happen is the worst thing this
+    # section can do, because persistence is its entire claim.
+    #
+    # The overlap coefficient divides by the SMALLER set instead, which asks
+    # the right question for a re-wording: of the shorter headline's
+    # vocabulary, how much is echoed in the longer one? Length stops mattering.
+    #
+    # The floor drops to ONE shared word, which was the other half of the bug.
+    # Measured against the ten real headlines from that brief: every pair a
+    # strategist would call the same story shared at least one distinctive word
+    # ("provenance", "functional"), and every pair that must NOT merge shared
+    # exactly zero. Two was never the line — one plus a strong ratio is.
     if not a or not b:
         return False
+    small = min(len(a), len(b))
+    if small < 2:
+        return False          # a one-word set would match half the brief
     shared = a & b
-    # 0.15, not 0.22 — the two changes above had to be paid for together.
-    # Dropping the category vocabulary shrinks every intersection without
-    # shrinking the union much, so the old ratio started rejecting continuations
-    # it used to accept: a five-week provenance story, re-worded each week,
-    # split into two separate runs and the tideline reported a death that never
-    # happened. The ≥2 floor is what does the discriminating now; the ratio is
-    # only there to stop two long, rambling summaries matching on incidentals.
-    return len(shared) >= 2 and len(shared) / len(a | b) >= 0.15
+    return bool(shared) and len(shared) / small >= 0.25
 
 
 def _sv_pretty_day(day: str) -> str:
@@ -6140,7 +6155,25 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
     # Live first, then the longest-running, then the most recent to fade. The
     # eye should land on what is still true before what has stopped.
     out.sort(key=lambda r: (not r["live"], -(r["last"] - r["first"]), -r["last"]))
-    return {"days": [_sv_pretty_day(d) for d in days], "runs": out[:10]}
+
+    # THE NEAR MISSES, so the next calibration is not another guess.
+    # This matcher has now been tuned three times, twice against invented
+    # examples, and each time the real data said something different. Any pair
+    # of separate runs that came CLOSE to merging is recorded with its score:
+    # a list full of 0.2s means the threshold is too high and stories are being
+    # split; pairs at 0.9 that obviously differ means it is too low.
+    near = []
+    for i, r1 in enumerate(runs):
+        for r2 in runs[i + 1:]:
+            sh = r1["toks"] & r2["toks"]
+            sm = min(len(r1["toks"]), len(r2["toks"])) or 1
+            score = len(sh) / sm
+            if 0.10 <= score < 0.25:
+                near.append({"a": r1["title"][:44], "b": r2["title"][:44],
+                             "score": round(score, 2), "shared": sorted(sh)[:4]})
+    near.sort(key=lambda n: -n["score"])
+    return {"days": [_sv_pretty_day(d) for d in days], "runs": out[:10],
+            "near": near[:6]}
 
 
 def _sv_trend_history(active: str, trends: list, category: str = "", product: str = "",
@@ -6324,6 +6357,24 @@ def _sv_diagnostics(res: dict) -> None:
                                "AFTER collection finished — usually near zero. If "
                                "'brief written' dominates, the model is simply "
                                "writing, and nothing in the pipeline will help.")
+
+            # Which currents nearly merged. The Tideline lives or dies on this
+            # matcher, and a row wrongly marked "stopped" is the worst thing it
+            # can print — so the borderline calls are shown rather than hidden.
+            _tlq = (_result or {}).get("_tideline") or {}
+            if _tlq.get("near"):
+                with st.expander(
+                        f"Tideline — {len(_tlq.get('runs') or [])} currents, "
+                        f"{len(_tlq['near'])} near misses", expanded=False):
+                    st.code("\n".join(
+                        f"{n['score']:.2f}  {n['a']}\n      {n['b']}\n      shared: "
+                        + ", ".join(n["shared"]) for n in _tlq["near"]))
+                    st.caption("Pairs that scored between 0.10 and 0.25 — just below "
+                               "the line at which two headlines are treated as the same "
+                               "running current. If these look like the same story, the "
+                               "threshold is too high and the Tideline is splitting one "
+                               "current into several and reporting deaths that did not "
+                               "happen. If they look unrelated, it is set correctly.")
 
             # Where every signal came from. Shown on EVERY run, not only on
             # failure: "$0.01 of Apify" reads as efficiency until you see that
@@ -9214,6 +9265,23 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # silent: the page simply ended early, and a reader had no way to tell an
     # incomplete document from a category with nothing more to say. Shown here,
     # above the brief, on every viewing of it rather than once at scan time.
+    # The Tideline is computed HERE, before the panels, not down with the
+    # sections — because the diagnostic reports on it and a panel cannot report
+    # on something that does not exist yet. Cheap: the archive read behind it is
+    # memoised in db.py, so this is the same round trip the sections use.
+    if isinstance(_res, dict) and "_tideline" not in _res:
+        _m0 = (_res.get("_meta") or {})
+        try:
+            _res["_tideline"] = _sv_tideline(
+                _active, (_res.get("trends") or [])[:3],
+                category=_m0.get("category", ""), product=_m0.get("product", ""),
+                # `_meta` is assigned further down; `_saved_at` is the same
+                # value and is already resolved here.
+                current_saved_at=_saved_at or _m0.get("saved_at", ""))
+        except Exception as _texc3:
+            print(f"[overview] tideline unavailable: {_texc3}")
+            _res["_tideline"] = {}
+
     # The engineering panels, drawn where they survive the rerun. See
     # _sv_diagnostics for why they never appeared before.
     if _show_diag and isinstance(_res, dict):
@@ -9257,18 +9325,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         except Exception as _aexc:
             print(f"[overview] trend history unavailable: {_aexc}")
             _ages, _faded = [], []
-        # The Tideline, from the same archive read (it is memoised in db.py, so
-        # this costs nothing extra). Stashed on the result so the PDF gets the
-        # identical picture — the same route `_decks` takes.
-        try:
-            _res["_tideline"] = _sv_tideline(
-                _active, (_res.get("trends") or [])[:3],
-                category=_meta.get("category", ""),
-                product=_meta.get("product", ""),
-                current_saved_at=_meta.get("saved_at", ""))
-        except Exception as _texc2:
-            print(f"[overview] tideline unavailable: {_texc2}")
-            _res["_tideline"] = {}
+        # (The Tideline was computed further up, before the diagnostic panels.)
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
                                      ("01", "02", "02T", "02N", "03", "04", "05", "06"),
                                      "screen",
