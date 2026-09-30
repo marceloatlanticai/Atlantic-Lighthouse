@@ -6464,6 +6464,233 @@ def _sv_list_briefs(active: str, limit: int = 40) -> list:
     return out
 
 
+def _sv_curation_rows(res: dict, sigs: list) -> list:
+    """Everything in this brief that can be saved, with its evidence attached.
+
+    WHY THE EVIDENCE TRAVELS WITH THE ITEM.
+    The board is meant to be assembled over days or weeks and then defended in
+    a room. "Provenance is eating flavour" on its own is a claim nobody can
+    stand behind three weeks later; the same line with the four posts under it,
+    dated, is an argument. So each row carries the sources that produced it.
+
+    Returns dicts, not widgets: the panel renders them and the board reads the
+    same shape back out of the database.
+    """
+    out: list = []
+    _tsigs = res.get("_trade_sigs") or []
+    _lsigs = res.get("_letters_sigs") or []
+    _LBL = {"reddit": "Reddit", "gdelt": "News", "hacker_news": "HN",
+            "youtube": "YouTube", "tiktok": "TikTok", "instagram": "Instagram",
+            "twitter": "X/Twitter", "web": "Web", "rss": "RSS", "db": "Archive"}
+
+    def _from_signals(idxs):
+        src = []
+        for i in (idxs or [])[:6]:
+            try:
+                s = sigs[int(i)]
+            except Exception:
+                continue
+            if s:
+                src.append({"label": _LBL.get(str(s.get("source", "")).lower(),
+                                              str(s.get("source", "")).title()),
+                            "title": s.get("title", ""), "url": s.get("url", "")})
+        return src
+
+    for t in (res.get("trends") or [])[:3]:
+        out.append({"type": "current", "title": t.get("title", ""),
+                    "summary": " · ".join(p for p in (t.get("summary", ""),
+                                                      t.get("stat", "")) if p),
+                    "sources": _from_signals(t.get("signal_indexes"))})
+
+    for q in (res.get("insight_quotes") or [])[:6]:
+        s = None
+        try:
+            s = sigs[int(q.get("signal_index"))]
+        except Exception:
+            pass
+        if not s:
+            continue
+        _txt = _sv_dehash(_sv_body(s)) or _sv_body(s)
+        if not _txt:
+            continue
+        out.append({"type": "voice", "title": _txt[:110],
+                    "summary": q.get("context", ""),
+                    "sources": _from_signals([q.get("signal_index")])})
+
+    for m in (res.get("trade_moves") or [])[:4]:
+        _u = ""
+        try:
+            _u = (_tsigs[int(m.get("signal_index"))] or {}).get("url", "")
+        except Exception:
+            pass
+        out.append({"type": "trade", "title": m.get("headline", ""),
+                    "summary": m.get("why", ""),
+                    "sources": [{"label": m.get("outlet", "Trade"),
+                                 "title": "", "url": _u}] if _u else []})
+
+    for m in (res.get("letters_moves") or [])[:4]:
+        _u = ""
+        try:
+            _u = (_lsigs[int(m.get("signal_index"))] or {}).get("url", "")
+        except Exception:
+            pass
+        out.append({"type": "argument", "title": m.get("argument", ""),
+                    "summary": m.get("why", ""),
+                    "sources": [{"label": " · ".join(p for p in
+                                                     (m.get("letter", ""), m.get("writer", "")) if p),
+                                 "title": "", "url": _u}] if _u else []})
+
+    for g in (res.get("trade_vs_street") or [])[:3]:
+        out.append({"type": "gap", "title": g.get("gap", ""),
+                    "summary": f"Trade says {g.get('trade_says','')} · "
+                               f"Street says {g.get('street_says','')}",
+                    "sources": []})
+
+    for p in (res.get("provocations") or [])[:4]:
+        out.append({"type": "provocation", "title": p.get("starter", ""),
+                    "summary": f"{p.get('the_move','')} · cuts against "
+                               f"{p.get('cuts_against','')}",
+                    "sources": []})
+
+    return [r for r in out if (r.get("title") or "").strip()]
+
+
+_SV_CUR_LABEL = {"current": "Currents", "voice": "Voices", "trade": "Trade",
+                 "argument": "Arguments", "gap": "Openings",
+                 "provocation": "Provocations"}
+
+# One shared board for now, deliberately. Splitting it per person is a whole
+# product question — whose board does the workshop use? — and the answer only
+# becomes obvious once there is a real board to look at.
+_SV_BOARD_USER = "atlantic"
+
+
+def _sv_board_items(search_key: str = "") -> list:
+    """Everything on the board, newest first. `search_key` filters by search."""
+    try:
+        items = [i for i in _db.load_curadoria()
+                 if str(i.get("user", "")) == _SV_BOARD_USER]
+    except Exception as exc:
+        print(f"[board] unavailable: {exc}")
+        return []
+    if search_key:
+        items = [i for i in items
+                 if str(i.get("category", "")).strip().lower() == search_key.strip().lower()]
+    # saved_at is "24 Sep 2026 · 14:02" — sortable only by parsing it back.
+    def _when(i):
+        try:
+            return datetime.strptime(str(i.get("saved_at", "")).replace("·", ""),
+                                     "%d %b %Y  %H:%M")
+        except Exception:
+            return datetime.min
+    return sorted(items, key=_when, reverse=True)
+
+
+def _sv_curation_panel(res: dict, sigs: list, search_key: str) -> None:
+    """Pick what is worth keeping from this brief, and save it with its sources.
+
+    RENDERED NATIVELY, BELOW THE BRIEF — not as an icon on each card.
+    The brief is one HTML document inside an iframe, and nothing in there can
+    call Python; that constraint is why the loader had to be pure CSS too. A
+    native panel is also the better shape for the job: curating a fortnight of
+    scans means ticking several things at once, not clicking sixteen icons.
+    """
+    rows = _sv_curation_rows(res, sigs)
+    if not rows:
+        return
+    _saved_titles = {str(i.get("title", "")).strip()
+                     for i in _sv_board_items()}
+
+    with st.expander(f"⊕ Keep something from this brief "
+                     f"({len(rows)} available)", expanded=False):
+        st.caption("Ticked items go to the Atlantic board with the posts that "
+                   "produced them, so they can still be defended weeks later. "
+                   "This is how a board is built before a client session — a "
+                   "fortnight of scans, edited down by a human.")
+        picks: list = []
+        for kind, label in _SV_CUR_LABEL.items():
+            group = [r for r in rows if r["type"] == kind]
+            if not group:
+                continue
+            st.markdown(f"**{label}**")
+            for n, r in enumerate(group):
+                _already = r["title"].strip() in _saved_titles
+                _key = f"cur_{kind}_{n}_{abs(hash(r['title'])) % 99999}"
+                _lbl = r["title"][:150] + ("  ·  already on the board" if _already else "")
+                if st.checkbox(_lbl, key=_key, disabled=_already):
+                    picks.append(r)
+        if st.button("Save to the Atlantic board", type="primary",
+                     disabled=not picks, key="cur_save"):
+            _ok = 0
+            for r in picks:
+                try:
+                    if _db.add_curadoria_item(
+                            _SV_BOARD_USER, r["type"], r["title"],
+                            _db.pack_evidence(r.get("summary", ""), r.get("sources")),
+                            url=(r.get("sources") or [{}])[0].get("url", ""),
+                            category=search_key):
+                        _ok += 1
+                except Exception as exc:
+                    st.error(f"Could not save “{r['title'][:40]}…” — {exc}")
+            if _ok:
+                st.success(f"{_ok} saved to the board.")
+                st.rerun()
+
+
+def _sv_board_section(search_key: str, disp: str) -> list:
+    """The Atlantic board — what a human decided was worth keeping.
+
+    THIS IS THE EDIT, AND THE ARCHIVE IS THE RAW MATERIAL.
+    Every brief is kept automatically; that is a filing cabinet. This is the
+    opposite: a small, deliberate set that somebody chose, with the evidence
+    still attached and the date it was chosen. It is what makes "this kept
+    coming back over three weeks" a defensible sentence rather than a feeling.
+
+    Returns the items so the hypothesis test can weigh a hunch against them.
+    """
+    items = _sv_board_items(search_key)
+    st.markdown('<div class="sv07-q">THE BOARD</div>'
+                '<div class="sv07-rule"></div>', unsafe_allow_html=True)
+    if not items:
+        st.markdown(
+            '<div class="sv-empty">Nothing kept for this search yet. Use '
+            '<b>Keep something from this brief</b> above — over a fortnight of '
+            'scans this becomes the material a client session is built on.</div>',
+            unsafe_allow_html=True)
+        return []
+
+    st.caption(f"{len(items)} kept for {disp} · the edit, not the archive")
+    for kind, label in _SV_CUR_LABEL.items():
+        group = [i for i in items if str(i.get("type", "")) == kind]
+        if not group:
+            continue
+        st.markdown(f"**{label}** &nbsp;·&nbsp; {len(group)}",
+                    unsafe_allow_html=True)
+        for it in group:
+            _summary, _src = _db.unpack_evidence(it.get("content", ""))
+            with st.container(border=True):
+                c1, c2 = st.columns([11, 1])
+                with c1:
+                    st.markdown(f"**{it.get('title','')}**")
+                    if _summary.strip():
+                        st.caption(_summary[:300])
+                    st.caption(f"kept {it.get('saved_at','')}"
+                               + (f" · {len(_src)} sources" if _src else ""))
+                    if _src:
+                        with st.expander("The evidence", expanded=False):
+                            for line in _src:
+                                st.caption(line)
+                with c2:
+                    if st.button("✕", key=f"brd_rm_{it.get('id')}",
+                                 help="Remove from the board"):
+                        try:
+                            _db.remove_curadoria_item(it.get("id"))
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not remove it — {exc}")
+    return items
+
+
 def _sv_diagnostics(res: dict) -> None:
     """The engineering panels, rendered from a brief's stashed diagnostic.
 
@@ -9513,6 +9740,19 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     'above, then press Run Lighthouse.</div>', unsafe_allow_html=True)
 
 
+    # ── Curation and the board ───────────────────────────────────────────────
+    # Sits between the brief and the hypothesis test on purpose: you read, you
+    # decide what is worth keeping, and only then do you weigh an idea against
+    # what has been kept.
+    _search_key = " · ".join(p for p in (_disp_brand, _disp_cat,
+                                         _meta.get("product", "")) if p)
+    if _res:
+        _sv_curation_panel(_res, _sigs, _search_key)
+
+    _board: list = []
+    with st.container(key="svboard"):
+        _board = _sv_board_section(_search_key, _disp_brand or _disp_cat)
+
     # ── Section 07 — Test the currents ───────────────────────────
     # One full-width blue band, matching Figma. The old two-column layout
     # ("Your hunch" | "Lighthouse reading" side by side) is gone: the mockup
@@ -9537,24 +9777,53 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                                   f"nothing about health — just water, from a specific place, in a "
                                                   f"specific glass, at a specific moment.",
                                       key="sv_hunch")
+            # WHAT TO WEIGH IT AGAINST.
+            # The same test is worth far more against the board than against
+            # one scan. A single run answers "is this true this morning"; the
+            # board answers "has this held up across everything we kept" —
+            # which is the question a client is actually paying for. Offered
+            # only when the board has enough on it to mean something.
+            _use_board = False
+            if len(_board) >= 3:
+                _use_board = st.radio(
+                    "Weigh it against", [False, True],
+                    format_func=lambda b: (f"The board — {len(_board)} kept over time"
+                                           if b else "This scan only"),
+                    horizontal=True, index=1, key="sv_hsrc",
+                    label_visibility="collapsed")
             # Button centred at roughly the mockup's 287px, via a spacer column
             _b1, _b2, _b3 = st.columns([1, 0.9, 1])
             with _b2:
-                _test = st.button("Test against the currents", use_container_width=True,
+                _test = st.button("Test against the board" if _use_board
+                                  else "Test against the currents",
+                                  use_container_width=True,
                                   type="primary", key="sv_test")
             _reading_slot = st.empty()
 
         if _test and _hunch.strip():
-            if not _sigs:
+            if not _sigs and not (_use_board and _board):
                 st.warning("Run ⚡ Scan the currents first — the hypothesis is tested against those signals.")
             else:
                 _api = os.environ.get("ANTHROPIC_API_KEY", "")
                 if _api:
                     import anthropic as _ant
                     _cl = _ant.Anthropic(api_key=_api)
-                    _batch = _sigs[:40]
-                    _stext = "\n\n".join(f"[{i}] [{s['source']}] {s['title'][:100]}\n{s['content'][:200]}"
-                                         for i, s in enumerate(_batch))
+                    if _use_board and _board:
+                        # The board reads as evidence the same way signals do —
+                        # a label, a claim and its supporting lines — so the
+                        # prompt below needs no second version. What changes is
+                        # the nature of it: these were chosen by a person and
+                        # have survived since the date on each one.
+                        _batch = _board[:40]
+                        _stext = "\n\n".join(
+                            f"[{i}] [{str(b.get('type','')).upper()} · kept "
+                            f"{b.get('saved_at','')}] {str(b.get('title',''))[:120]}\n"
+                            f"{_db.unpack_evidence(b.get('content',''))[0][:220]}"
+                            for i, b in enumerate(_batch))
+                    else:
+                        _batch = _sigs[:40]
+                        _stext = "\n\n".join(f"[{i}] [{s['source']}] {s['title'][:100]}\n{s['content'][:200]}"
+                                             for i, s in enumerate(_batch))
                     # A VERDICT, NOT A SHRUG.
                     # The old prompt asked for "one sentence overall read" and
                     # got "The signals show mixed evidence" on a hypothesis the
@@ -9616,6 +9885,14 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                     else "CUTS AGAINST THE GRAIN" if _ns > _nc
                                     else "SWIMMING WITH THE SCHOOL" if _nc > _ns
                                     else "TOO LITTLE EVIDENCE")
+                            # WHICH LIST THE INDEXES POINT INTO.
+                            # The reading cites evidence by position, and the
+                            # renderer resolves those positions to show a link.
+                            # Against the board they index the board, not the
+                            # scan — without this the citations would quietly
+                            # link to unrelated posts, which is worse than no
+                            # link at all.
+                            _hjson["_against"] = "board" if (_use_board and _board) else "scan"
                             st.session_state["sv_hunch_result"] = _hjson
                         except Exception as _hexc:
                             st.error(f"The test didn't come back cleanly — press "
@@ -9623,6 +9900,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 
         # Render the reading into the right-hand box
         _hres = st.session_state.get("sv_hunch_result")
+
+        def _cite(idx):
+            """Resolve a cited index against whatever the reading was run on."""
+            if (_hres or {}).get("_against") == "board":
+                try:
+                    b = _board[int(idx)]
+                except Exception:
+                    return None
+                return {"title": b.get("title", ""), "url": b.get("url", "")}
+            return _sig(idx)
+
         with _reading_slot.container():
             # On the blue band everything is white. Supports/Challenges are told
             # apart by the ✓ / ✕ marker, not by colour — blue-on-blue was the old
@@ -9641,22 +9929,25 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 _ns = len(_hres.get("supports") or [])
                 _nc = len(_hres.get("challenges") or [])
                 if _call:
+                    _src_lbl = (" · weighed against the board"
+                                if (_hres or {}).get("_against") == "board" else "")
                     _tally = (f'{_ns} for · {_nc} against' if (_ns or _nc)
                               else 'no clear evidence either way')
                     _cf = f' · {e(_conf)} confidence' if _conf else ""
                     st.markdown(
                         f'<div class="sv07-call">{e(_call)}'
-                        f'<span class="sv07-conf">{_tally}{_cf}</span></div>',
+                        f'<span class="sv07-conf">{_tally}{_cf}'
+                        f'{e(_src_lbl)}</span></div>',
                         unsafe_allow_html=True)
                 st.markdown(f'<div class="sv07-verdict">{e(_hres.get("verdict",""))}</div>',
                             unsafe_allow_html=True)
                 for _it in _hres.get("supports", [])[:4]:
-                    _s = _sig(_it.get("index"))
+                    _s = _cite(_it.get("index"))
                     _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
                     st.markdown(f'<div class="sv07-reading"><b>✓ Supports</b> · '
                                 f'{e(_it.get("reason",""))}{_lk}</div>', unsafe_allow_html=True)
                 for _it in _hres.get("challenges", [])[:4]:
-                    _s = _sig(_it.get("index"))
+                    _s = _cite(_it.get("index"))
                     _lk = f' <a href="{_s["url"]}" target="_blank">↗</a>' if _s and _s.get("url") else ""
                     st.markdown(f'<div class="sv07-reading"><b>✕ Challenges</b> · '
                                 f'{e(_it.get("reason",""))}{_lk}</div>', unsafe_allow_html=True)

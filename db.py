@@ -350,8 +350,50 @@ def _save_curadoria(items: list):
         json.dump(items, f, ensure_ascii=False, indent=2)
 
 
-def add_curadoria_item(user: str, type_: str, title: str, content: str) -> bool:
-    """Add item. Returns False if already saved by this user."""
+# ── Evidence, stored inside `content` ────────────────────────────────────────
+# A SAVED HEADLINE THAT CANNOT BE DEFENDED IS WORTHLESS.
+# The whole point of curating over days or weeks is to walk into a room and say
+# "this kept coming back, and here is what it came back from". That needs the
+# posts, not just the claim — so every saved item carries its sources with it.
+#
+# They go in `content` behind a marker rather than in a new column, because a
+# schema change means someone running SQL against the live database before any
+# of this can be tried. The marker keeps the row readable in the Supabase table
+# editor, which a JSON blob would not.
+_EVIDENCE_MARK = "\n\n⟦sources⟧\n"
+
+
+def pack_evidence(summary: str, sources: list) -> str:
+    """Body text plus its sources, as one readable string."""
+    lines = []
+    for s in (sources or [])[:8]:
+        label = str(s.get("label") or s.get("source") or "").strip()
+        title = str(s.get("title") or "").strip().replace("\n", " ")[:120]
+        url = str(s.get("url") or "").strip()
+        lines.append(" · ".join(p for p in (label, title, url) if p))
+    if not lines:
+        return summary or ""
+    return (summary or "") + _EVIDENCE_MARK + "\n".join(lines)
+
+
+def unpack_evidence(content: str) -> tuple:
+    """(summary, [source lines]) — the inverse of pack_evidence."""
+    txt = content or ""
+    if _EVIDENCE_MARK not in txt:
+        return txt, []
+    head, _, tail = txt.partition(_EVIDENCE_MARK)
+    return head, [l for l in tail.split("\n") if l.strip()]
+
+
+def add_curadoria_item(user: str, type_: str, title: str, content: str,
+                       url: str = "", category: str = "") -> bool:
+    """Add item. Returns False if already saved by this user.
+
+    `category` carries the search this came from — brand, category, product —
+    so a board assembled over three weeks can still say where each item was
+    found. Both columns already exist in the table and were simply never
+    written to.
+    """
     items = load_curadoria()
     for it in items:
         if it["user"] == user and it["title"] == title:
@@ -369,6 +411,8 @@ def add_curadoria_item(user: str, type_: str, title: str, content: str) -> bool:
                 "type":       type_,
                 "title":      title,
                 "content":    content,
+                "url":        url,
+                "category":   category,
                 "saved_at":   saved_at,
                 "folder_ids": [],
             }).execute()
@@ -383,6 +427,8 @@ def add_curadoria_item(user: str, type_: str, title: str, content: str) -> bool:
         "type":       type_,
         "title":      title,
         "content":    content,
+        "url":        url,
+        "category":   category,
         "saved_at":   saved_at,
         "folder_ids": [],
     })
