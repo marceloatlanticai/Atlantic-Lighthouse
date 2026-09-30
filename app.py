@@ -6649,11 +6649,23 @@ def _sv_board_section(search_key: str, disp: str) -> list:
     Returns the items so the hypothesis test can weigh a hunch against them.
     """
     items = _sv_board_items(search_key)
-    st.markdown('<div class="sv07-q">THE BOARD</div>'
-                '<div class="sv07-rule"></div>', unsafe_allow_html=True)
+    # AN EMPTY BOARD ON AN EMPTY PAGE IS NOT A SECTION.
+    # The first load has no brief, so the panel this section points people at is
+    # not on screen either. Drawing a heading over nothing, above an instruction
+    # to press something that does not exist, is worse than drawing nothing.
+    if not items and not st.session_state.get("sv_result"):
+        return []
+
+    # NOT the sv07- classes. Those are written for the full-bleed blue band and
+    # are white throughout; borrowed onto the light page they produced a white
+    # headline on a white ground — the section was rendering correctly and was
+    # simply invisible. This is the header the Report Archive uses, which is
+    # also the right sibling for it visually.
+    st.markdown(_sv_header("", "The Board", "What we decided to keep"),
+                unsafe_allow_html=True)
     if not items:
         st.markdown(
-            '<div class="sv-empty">Nothing kept for this search yet. Use '
+            '<div class="sv-lead">Nothing kept for this search yet. Use '
             '<b>Keep something from this brief</b> above — over a fortnight of '
             'scans this becomes the material a client session is built on.</div>',
             unsafe_allow_html=True)
