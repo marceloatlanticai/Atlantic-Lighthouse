@@ -451,6 +451,23 @@ if IS_OVERVIEW:
 </style>
 """, unsafe_allow_html=True)
 
+# ── Session room route (?view=session), decided first for the same reason ───
+# The room is a working screen for a live meeting: no sidebar, no top nav, no
+# tab bar. Same stylesheet trick as the overview, WITHOUT the visibility hold —
+# this route sits behind the team login, and holding the page invisible would
+# hide the login form too. The room itself is drawn near the bottom of the file
+# (render_session_room), after everything it calls has been defined.
+IS_SESSION = st.query_params.get("view") == "session"
+if IS_SESSION:
+    st.markdown("""
+<style>
+  [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"],
+  #lh-topnav, [data-testid="stSidebarCollapsedControl"] { display:none !important; }
+  .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"],
+  .main, section.main { background:#ffffff !important; }
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <style>
 #MainMenu, header, footer { visibility: hidden; }
@@ -1297,6 +1314,17 @@ with st.sidebar:
         for _k in ("logged_in_user", "user_role", "client_label", "client_perms"):
             st.session_state.pop(_k, None)
         st.rerun()
+
+    # The way into the session room. Its own tab, because during a meeting it
+    # is the screen the facilitator keeps open while the rest of the app stays
+    # available for anything else.
+    if not IS_CLIENT and not st.session_state.get("_is_guest"):
+        st.markdown(
+            f'<a href="{_public_url("view=session")}" target="_blank" rel="noopener" '
+            f'style="display:block;text-align:center;margin:8px 0 4px;padding:9px 0;'
+            f'border-radius:6px;background:#0000ff;color:#ffffff;text-decoration:none;'
+            f'font-size:13px;font-weight:700;letter-spacing:.02em;">'
+            f'◉ Session room ↗</a>', unsafe_allow_html=True)
 
     if IS_CLIENT:
         # Read-only client session — no editorial controls. Reasonable
@@ -4937,7 +4965,7 @@ def _sv_social_queries(product: str, brand: str, competitors: str,
 
 def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                progress=None, product: str = "", brand: str = "",
-               competitors: str = "") -> tuple:
+               competitors: str = "", archive: Optional[list] = None) -> tuple:
     """Collect signals across sources. Returns (signals, per-source tally).
 
     RUN IN PARALLEL. The three Apify actors alone took about 150s in sequence —
@@ -5216,7 +5244,12 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     _terms = _sv_terms(search_terms)
     try:
         n = skipped = 0
-        for s in _load_signals_raw(limit=200):
+        # `archive` lets a caller hand in signals it loaded itself. The session
+        # room's background scans need this: they run in a thread, and the
+        # loader below is @st.cache_data, which has no script context there.
+        # The room loads the archive on the main thread before it starts the
+        # thread and passes it in, so the cached loader is never touched off it.
+        for s in (archive if archive is not None else _load_signals_raw(limit=200)):
             if not _signal_matches_client(s, active):
                 continue
             if not _sv_on_topic(s, _terms):
@@ -5491,11 +5524,23 @@ a better field, not a lazy one. Never pad a line to reach a number.
                                       messages=[{"role": "user", "content": prompt}])
     raw = _msg_text(resp)
     # Silent salvage is what disguised the bug. If the model was cut off, say so.
-    if getattr(resp, "stop_reason", None) == "max_tokens":
+    #
+    # Guarded because this function now also runs in a BACKGROUND THREAD — the
+    # session room's "look into this" — where there is no script context and
+    # st.session_state raises. That is the fourth time this codebase has met
+    # the same trap; this time it is closed before it fires rather than after.
+    # The flag is a convenience for the scan page; the truth lives in the
+    # result's own _incomplete marker, which needs no session at all.
+    _cut = getattr(resp, "stop_reason", None) == "max_tokens"
+    if _cut:
         print("[overview] synthesis hit max_tokens — brief will be incomplete")
-        st.session_state["sv_truncated"] = True
-    else:
-        st.session_state.pop("sv_truncated", None)
+    try:
+        if _cut:
+            st.session_state["sv_truncated"] = True
+        else:
+            st.session_state.pop("sv_truncated", None)
+    except Exception:
+        pass
     # _extract_json tolerates markdown fences AND truncated/cut-off responses
     try:
         return _extract_json(raw)
@@ -5972,9 +6017,12 @@ def _sv_key(active: str, brand: str, category: str, product: str, market: str) -
     return "\u241f".join(str(p or "").strip().lower() for p in parts)
 
 
-def _sv_save_brief(active: str, result: dict, signals: list) -> None:
+def _sv_save_brief(active: str, result: dict, signals: list) -> str:
     """Archive a generated brief. Every run is kept, so the Archive section can
-    reopen any past report at zero API cost."""
+    reopen any past report at zero API cost.
+
+    Returns the archive id ("" on failure) — the session room links to a brief
+    it ran in the background, and that link needs the id it was filed under."""
     # 240, NOT 80 — AND THE CAP WAS SILENTLY REWRITING THE BRIEF.
     # The archive does not store a rendered page, it stores the SIGNALS, and the
     # decks are rebuilt from them every time a report is reopened. So a cap here
@@ -6007,8 +6055,11 @@ def _sv_save_brief(active: str, result: dict, signals: list) -> None:
             _db.invalidate_dispatch_cache()
         except AttributeError:
             pass          # older db.py without the memo
+        # save_dispatch writes the id it chose back into the payload.
+        return str(payload.get("_dispatch_id", "") or "")
     except Exception as _exc:
         print(f"[overview] save error: {_exc}")
+    return ""
 
 
 # Shared by the age labels and the Tideline, so both read continuity the same
@@ -6619,6 +6670,30 @@ def _sv_curation_panel(res: dict, sigs: list, search_key: str) -> None:
                 _lbl = r["title"][:150] + ("  ·  already on the board" if _already else "")
                 if st.checkbox(_lbl, key=_key, disabled=_already):
                     picks.append(r)
+        # FILE IT UNDER A CLIENT AS IT IS KEPT. The session room reads a
+        # client's material — board items carrying that client's folder — so
+        # this is where the material for a workshop is assembled, scan by scan.
+        # The guess is the client whose brand this search was about; "the board
+        # only" keeps the old behaviour.
+        _fid = ""
+        # Team only. The public brief link is sent to clients, and this list is
+        # every client the agency has — one client must never see another's name.
+        _team = not st.session_state.get("_is_guest") and not IS_CLIENT
+        try:
+            _clients = _rm_load_clients() if _team else []
+        except Exception as _cexc:
+            print(f"[board] clients unavailable: {_cexc}")
+            _clients = []
+        if _clients:
+            _brand = str(((res or {}).get("_meta") or {}).get("brand", "")).strip().lower()
+            _cids = [""] + [c["folder_id"] for c in _clients]
+            _cname = {c["folder_id"]: (c["name"] or c["brand"]) for c in _clients}
+            _guess = next((c["folder_id"] for c in _clients if _brand and _brand in
+                           (c["brand"].strip().lower(), c["name"].strip().lower())), "")
+            _fid = st.selectbox("File under a client — it becomes that client's session material",
+                                _cids, index=_cids.index(_guess),
+                                format_func=lambda k: _cname.get(k, "— the board only —"),
+                                key=f"cur_client_{abs(hash(search_key)) % 99999}")
         if st.button("Save to the Atlantic board", type="primary",
                      disabled=not picks, key="cur_save"):
             _ok = 0
@@ -6628,12 +6703,14 @@ def _sv_curation_panel(res: dict, sigs: list, search_key: str) -> None:
                             _SV_BOARD_USER, r["type"], r["title"],
                             _db.pack_evidence(r.get("summary", ""), r.get("sources")),
                             url=(r.get("sources") or [{}])[0].get("url", ""),
-                            category=search_key):
+                            category=search_key,
+                            folder_ids=[_fid] if _fid else None):
                         _ok += 1
                 except Exception as exc:
                     st.error(f"Could not save “{r['title'][:40]}…” — {exc}")
             if _ok:
-                st.success(f"{_ok} saved to the board.")
+                st.success(f"{_ok} saved to the board"
+                           + (f", filed under {_cname.get(_fid, '')}." if _fid else "."))
                 st.rerun()
 
 
@@ -9053,12 +9130,16 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
    .block-container sits 0.5rem inside the components (which were pulled out by
    that much), so the two are centred on the same axis — the columns line up
    exactly on wide screens. Below ~1240px both fall back to a flat inset. */
-.st-key-svtop, .st-key-svbot, .lh-footer {{
+/* `svcur` and `svboard` were added later and were NOT on this list, so the
+   curation panel and the board sat flush against the window while everything
+   above and below them held the 1120px measure. Same rule, same measure — they
+   are ordinary light-page sections like the Archive, not full-bleed bands. */
+.st-key-svtop, .st-key-svbot, .st-key-svcur, .st-key-svboard, .lh-footer {{
   padding-left:max(60px, calc((100% - 1120px) / 2)) !important;
   padding-right:max(60px, calc((100% - 1120px) / 2)) !important;
 }}
 @media (max-width: 820px) {{
-  .st-key-svtop, .st-key-svbot, .lh-footer {{
+  .st-key-svtop, .st-key-svbot, .st-key-svcur, .st-key-svboard, .lh-footer {{
     padding-left:20px !important; padding-right:20px !important; }}
 }}
 
@@ -9759,7 +9840,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     _search_key = " · ".join(p for p in (_disp_brand, _disp_cat,
                                          _meta.get("product", "")) if p)
     if _res:
-        _sv_curation_panel(_res, _sigs, _search_key)
+        with st.container(key="svcur"):
+            _sv_curation_panel(_res, _sigs, _search_key)
 
     _board: list = []
     with st.container(key="svboard"):
@@ -10045,6 +10127,1091 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 
     _svbot.__exit__(None, None, None)
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# THE SESSION ROOM (?view=session) — phase two
+# ══════════════════════════════════════════════════════════════════════════════
+# The client-facing half of the Lighthouse. Before a workshop the team files the
+# client's material on the board; during it the room listens, and on the
+# Atlantic side of the screen it brings up what the team kept that bears on what
+# was just said. A question at minute 20 can become a real scan that lands at
+# minute 24: "while you were talking, we went and looked".
+#
+# The rules it keeps, from the parked-ideas document: it never interrupts, never
+# speaks, never concludes — it offers evidence, and silence is a valid answer.
+# The logic that enforces them lives in session_core.py, tested without a
+# browser. This part is the screen.
+#
+# FOUR FRAGMENTS, AND WHY. A live meeting cannot afford a full rerun of this
+# whole script every few seconds, nor a microphone that restarts whenever
+# something above it changes. So the live screen is split, each part rerunning
+# on its own:
+#   listener   — the microphone; reruns only when a batch of speech arrives
+#   notes      — typed notes, pasted captions, private questions; on submit
+#   transcript — redrawn every 3 seconds
+#   ear        — every 3 seconds: collects finished readings and searches,
+#                starts a reading when enough has been said, draws the feed
+# Model calls and scans run in threads (session_core.JOBS). Only the script
+# thread ever writes the session log, so two writers can never race.
+
+import threading as _rm_threading
+import time as _rm_time
+# THE MAIN SITE MUST NOT DEPEND ON THE ROOM. If session_core.py does not make
+# it to the server alongside this file, a bare import would take the whole app
+# down with it — Overview, Archive, public links and all. Guarded, only the room
+# itself is affected, and it says what is missing.
+try:
+    import session_core as _sc
+except Exception as _rm_imp_exc:
+    _sc = None
+    print(f"[room] session_core.py unavailable — the session room is off: {_rm_imp_exc}")
+
+_RM_CLIENT_TOPIC = "__client__"
+_RM_SESSION_TOPIC = "__session__"
+_RM_SAVE_EVERY = 6.0           # seconds between saves of a live session log
+_RM_MAX_SCANS = 2              # background searches at once, per session
+
+_RM_LANGS = {
+    "en-US": "English · US", "en-GB": "English · UK", "pt-BR": "Português · BR",
+    "pt-PT": "Português · PT", "nl-NL": "Nederlands", "es-ES": "Español",
+    "fr-FR": "Français", "de-DE": "Deutsch",
+}
+_RM_LANG_FOR_MARKET = {"United Kingdom": "en-GB", "Brazil": "pt-BR", "Portugal": "pt-PT",
+                       "Spain": "es-ES", "France": "fr-FR", "Germany": "de-DE"}
+
+# One word per type on a card. The board's own labels are plural section names.
+_RM_TYPE = {"current": "Current", "voice": "Voice", "trade": "Trade",
+            "argument": "Argument", "gap": "Opening", "provocation": "Provocation",
+            "archive": "From a scan"}
+
+# The microphone. Declared once per run; if the folder is missing the room
+# still works — typed notes and pasted captions go through the same pipe.
+try:
+    import streamlit.components.v1 as _rm_components
+    _rm_listener = _rm_components.declare_component(
+        "lh_listener",
+        path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "components", "listener"))
+except Exception as _rm_exc:
+    _rm_listener = None
+    print(f"[room] listener component unavailable: {_rm_exc}")
+
+
+def _rm_css() -> str:
+    s = "'Telegraf', 'Space Grotesk', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+    return "<style>\n" + _sv_font_css() + f"""
+/* White page. The app-wide sea-mist background is declared after the route's
+   own early stylesheet and wins the tie, so it is overruled here, later still. */
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stAppViewContainer"] > section,
+[data-testid="stMain"], .main {{ background:#ffffff !important; background-image:none !important; }}
+.block-container {{ max-width:1240px !important; padding-top:1.4rem !important;
+  padding-left:2.2rem !important; padding-right:2.2rem !important; }}
+/* Expanders are content, so square and black-ruled like the brief's cards;
+   the app-wide rule draws them pale blue and rounded. */
+[data-testid="stExpander"] {{ border:1px solid #000000 !important; border-radius:0 !important; }}
+[data-testid="stExpander"] summary p {{ font-family:{s}; font-size:13px !important;
+  font-weight:700; color:#000000 !important; }}
+/* Plain buttons. The app-wide rule sizes secondary buttons for icon glyphs
+   (19px, pale outline) — right for ✎ and 🗑, wrong for "Open" and "Resume". */
+[data-testid="stAppViewContainer"] button[kind="secondary"] {{
+  border:1.5px solid #000000 !important; color:#000000 !important; font-size:13px !important;
+  min-height:38px !important; padding:6px 14px !important; }}
+[data-testid="stAppViewContainer"] button[kind="secondary"] p,
+[data-testid="stAppViewContainer"] button[kind="secondary"] div {{ font-size:13px !important;
+  font-family:{s}; font-weight:700; }}
+[data-testid="stAppViewContainer"] button[kind="secondary"]:hover {{
+  border-color:#0000ff !important; color:#0000ff !important; background:#ffffff !important; }}
+/* Form buttons. The login screen paints every form submit navy, in Georgia;
+   here a form's main action is blue and the other one plain. The extra class
+   in front is what lets these outrank that older rule. */
+.block-container [data-testid="stFormSubmitButton"] > button {{
+  background:#ffffff !important; color:#000000 !important; border:1.5px solid #000000 !important;
+  font-family:{s} !important; font-size:13px !important; font-weight:700 !important;
+  letter-spacing:0 !important; padding:8px 16px !important; width:auto; }}
+.block-container [data-testid="stFormSubmitButton"] > button p,
+.block-container [data-testid="stFormSubmitButton"] > button span,
+.block-container [data-testid="stFormSubmitButton"] > button div {{ color:inherit !important;
+  -webkit-text-fill-color:currentColor !important;
+  font-family:{s} !important; font-size:13px !important; font-weight:700 !important; }}
+.block-container [data-testid="stFormSubmitButton"] > button:hover {{
+  border-color:#0000ff !important; color:#0000ff !important; background:#ffffff !important; }}
+.block-container [data-testid="stFormSubmitButton"] > button[data-testid="stBaseButton-primaryFormSubmit"],
+.block-container [data-testid="stFormSubmitButton"] > button[kind="primaryFormSubmit"] {{
+  background:#0000ff !important; border-color:#0000ff !important; color:#ffffff !important; }}
+.block-container [data-testid="stFormSubmitButton"] > button[data-testid="stBaseButton-primaryFormSubmit"] p,
+.block-container [data-testid="stFormSubmitButton"] > button[kind="primaryFormSubmit"] p {{
+  color:#ffffff !important; -webkit-text-fill-color:#ffffff !important; }}
+.rm-top {{ display:flex; justify-content:space-between; align-items:baseline; gap:16px; }}
+.rm-eyebrow {{ font-family:{s}; font-size:11px; font-weight:700; letter-spacing:.16em;
+  text-transform:uppercase; color:#0000ff; }}
+.rm-back {{ font-family:{s}; font-size:12px; font-weight:700; color:#0000ff !important;
+  text-decoration:none !important; }}
+.rm-title {{ font-family:{s}; font-size:56px; font-weight:700; letter-spacing:-.03em;
+  line-height:1; color:#000; margin:16px 0 12px; }}
+.rm-stand {{ font-family:{s}; font-size:15px; line-height:1.55; color:#222;
+  max-width:660px; margin:0 0 22px; }}
+.rm-lbl {{ font-family:{s}; font-size:11px; font-weight:700; letter-spacing:.16em;
+  text-transform:uppercase; color:#0000ff; margin:38px 0 10px; }}
+.rm-sub {{ font-family:{s}; font-size:13px; line-height:1.5; color:#666; margin:-2px 0 12px; }}
+.rm-profile {{ border:1.5px solid #000; padding:18px 22px 10px; font-family:{s}; }}
+.rm-profile .who {{ font-size:22px; font-weight:700; letter-spacing:-.01em; color:#000; }}
+.rm-profile .meta {{ font-size:12px; color:#666; letter-spacing:.03em; margin:4px 0 12px; }}
+.rm-profile .row {{ display:grid; grid-template-columns:160px 1fr; gap:14px; padding:8px 0;
+  border-top:1px solid #e6e6e6; font-size:13.5px; line-height:1.5; color:#222; }}
+.rm-profile .row b {{ font-size:10px; letter-spacing:.14em; text-transform:uppercase;
+  color:#666; padding-top:3px; }}
+.rm-profile ul {{ margin:0; padding-left:18px; }}
+.rm-item {{ border-top:1px solid #e6e6e6; padding:9px 0 7px; font-family:{s}; }}
+.rm-item .ty {{ font-size:9.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:#666; }}
+.rm-item .ti {{ font-size:14px; font-weight:700; color:#000; line-height:1.35; margin-top:2px; }}
+.rm-item .su {{ font-size:12.5px; color:#444; line-height:1.45; margin-top:3px; }}
+.rm-brief {{ font-family:{s}; font-size:13px; padding:7px 0; border-top:1px solid #e6e6e6; color:#222; }}
+.rm-brief a {{ color:#0000ff !important; font-weight:700; text-decoration:none !important; }}
+.rm-brief span {{ color:#666; }}
+.rm-livebar {{ display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; font-family:{s};
+  padding:12px 0 4px; border-top:3px solid #000; }}
+.rm-live {{ display:inline-flex; align-items:center; gap:8px; font-size:12px; font-weight:700;
+  letter-spacing:.14em; text-transform:uppercase; color:#ff383c; }}
+.rm-live i {{ width:9px; height:9px; border-radius:50%; background:#ff383c; display:inline-block;
+  animation:rm-pulse 1.4s ease-in-out infinite; }}
+@keyframes rm-pulse {{ 0%,100% {{ opacity:1; }} 50% {{ opacity:.25; }} }}
+.rm-livebar .who {{ font-size:20px; font-weight:700; color:#000; letter-spacing:-.01em; }}
+.rm-livebar .meta {{ font-size:12px; color:#666; }}
+.rm-col-h {{ font-family:{s}; font-size:11px; font-weight:700; letter-spacing:.16em;
+  text-transform:uppercase; color:#000; margin:6px 0 8px; display:flex;
+  justify-content:space-between; gap:10px; }}
+.rm-col-h span {{ color:#666; letter-spacing:.03em; text-transform:none; font-weight:600; }}
+.rm-tx {{ max-height:470px; overflow-y:auto; display:flex; flex-direction:column-reverse;
+  border-top:1.5px solid #000; font-family:{s}; }}
+.rm-line {{ display:grid; grid-template-columns:44px 1fr; gap:10px; padding:8px 2px;
+  border-bottom:1px solid #eeeeee; font-size:14px; line-height:1.5; color:#222; }}
+.rm-line .t {{ font-size:11px; font-weight:600; color:#999; padding-top:3px; }}
+.rm-line.note .x {{ color:#0000ff; }}
+.rm-line.new .t {{ color:#0000ff; }}
+.rm-empty {{ font-family:{s}; font-size:13px; line-height:1.5; color:#666; padding:16px 0; }}
+.rm-card {{ border:1.5px solid #000; padding:13px 16px 12px; margin:0 0 12px; font-family:{s}; background:#fff; }}
+.rm-card .h {{ display:flex; justify-content:space-between; gap:10px; font-size:10px; font-weight:700;
+  letter-spacing:.14em; text-transform:uppercase; color:#666; }}
+.rm-card .heard {{ font-size:16px; font-weight:700; line-height:1.3; color:#000; margin:5px 0 4px; }}
+.rm-ev {{ border-top:1px solid #e6e6e6; padding:8px 0 6px; }}
+.rm-ev .ti {{ font-size:13.5px; font-weight:700; line-height:1.35; color:#000; }}
+.rm-ev .ti a {{ color:#0000ff !important; text-decoration:none !important; }}
+.rm-ev .ty {{ font-size:9px; font-weight:700; letter-spacing:.14em; text-transform:uppercase;
+  color:#999; margin-left:7px; white-space:nowrap; }}
+.rm-ev .why {{ font-size:12.5px; line-height:1.45; color:#444; margin-top:2px; }}
+.rm-conn {{ background:#0000ff; color:#fff; padding:10px 12px; margin-top:8px; font-size:13.5px; line-height:1.45; }}
+.rm-conn b, .rm-q b {{ display:block; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
+  margin-bottom:3px; font-style:normal; }}
+.rm-conn b {{ color:rgba(255,255,255,.75); }}
+.rm-q {{ border-left:3px solid #0000ff; padding:2px 0 2px 11px; margin-top:10px;
+  font-size:14.5px; font-weight:700; font-style:italic; line-height:1.4; color:#000; }}
+.rm-q b {{ color:#0000ff; }}
+.rm-look {{ font-size:12px; line-height:1.45; color:#666; margin-top:9px; }}
+.rm-look b {{ color:#000; }}
+.rm-scan {{ border:1.5px solid #0000ff; padding:12px 14px; margin:0 0 12px; font-family:{s}; }}
+.rm-scan .h {{ font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:#0000ff; }}
+.rm-scan .ti {{ font-size:15px; font-weight:700; color:#000; margin:3px 0 6px; line-height:1.3; }}
+.rm-scan ul {{ margin:4px 0 0; padding-left:18px; font-size:13px; line-height:1.5; color:#222; }}
+.rm-scan .meta {{ font-size:12px; line-height:1.45; color:#666; }}
+.rm-scan a {{ color:#0000ff !important; font-weight:700; text-decoration:none !important; font-size:12.5px; }}
+.rm-scan.failed {{ border-color:#ff383c; }}
+.rm-scan.failed .h {{ color:#ff383c; }}
+.rm-run {{ position:relative; height:3px; background:#ececec; overflow:hidden; margin:9px 0 2px; }}
+.rm-run::after {{ content:""; position:absolute; top:0; left:0; height:100%; width:32%;
+  background:#0000ff; animation:rm-run 1.15s cubic-bezier(.62,.03,.35,1) infinite; }}
+@keyframes rm-run {{ 0% {{ left:-32%; }} 100% {{ left:100%; }} }}
+.rm-quiet {{ font-family:{s}; font-size:12px; line-height:1.45; color:#666; margin:2px 0 12px; }}
+.rm-note {{ font-family:{s}; font-size:12px; line-height:1.5; color:#666; }}
+.rm-warn {{ font-family:{s}; font-size:12.5px; line-height:1.5; color:#222;
+  border-left:3px solid #ff383c; padding:8px 12px; margin:6px 0 12px; }}
+.rm-past {{ font-family:{s}; font-size:13.5px; color:#222; padding-top:9px; }}
+.rm-past b {{ color:#000; }}
+.rm-past span {{ color:#666; }}
+.rm-past .lv {{ color:#ff383c; font-weight:700; font-size:11px; letter-spacing:.12em; text-transform:uppercase; }}
+/* Controls, in the brief's language: blue primary, rounded controls,
+   square content. The overview's own rules are not on this route. */
+button[kind="primary"], [data-testid="stBaseButton-primary"],
+[data-testid="stBaseButton-primaryFormSubmit"] {{
+  background-color:#0000ff !important; border-color:#0000ff !important; color:#ffffff !important; }}
+button[kind="primary"] p, [data-testid="stBaseButton-primary"] p,
+[data-testid="stBaseButton-primaryFormSubmit"] p {{ color:#ffffff !important; -webkit-text-fill-color:#ffffff !important; }}
+button[kind="primary"]:disabled, [data-testid="stBaseButton-primary"]:disabled {{
+  background-color:#f2f2f2 !important; border-color:#cccccc !important; }}
+button[kind="primary"]:disabled p, [data-testid="stBaseButton-primary"]:disabled p {{
+  color:#666666 !important; -webkit-text-fill-color:#666666 !important; }}
+[data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-secondaryFormSubmit"],
+[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"],
+[data-testid="stDownloadButton"] button, [data-testid="stPopover"] button {{ border-radius:10.5px !important; }}
+[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea {{ font-family:{s} !important; }}
+.block-container button p, [data-testid="stPopover"] button p, [data-testid="stDownloadButton"] button p {{
+  font-family:{s} !important; font-weight:700 !important; }}
+[data-testid="stTextInput"] [data-baseweb="input"], [data-testid="stTextArea"] [data-baseweb="textarea"],
+[data-baseweb="select"] > div {{ border-radius:10.5px !important; }}
+.rm-field {{ font-family:{s}; font-size:10.5px; font-weight:700; letter-spacing:.16em;
+  text-transform:uppercase; color:#666; margin-bottom:6px; }}
+@media (prefers-reduced-motion: reduce) {{ .rm-live i, .rm-run::after {{ animation:none; }} }}
+@media (max-width: 820px) {{
+  .rm-title {{ font-size:40px; }}
+  .rm-profile .row {{ grid-template-columns:1fr; gap:2px; }}
+}}
+</style>"""
+
+
+def _rm_rerun_fragment() -> None:
+    """Rerun just this fragment — or the page, when the fragment is being drawn
+    as part of a full run, where Streamlit refuses a fragment-scoped rerun."""
+    from streamlit.errors import StreamlitAPIException
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitAPIException:
+        st.rerun()
+
+
+def _rm_clock(iso: str) -> str:
+    return _sc.fmt_clock(iso, DISPLAY_TZ)
+
+
+def _rm_now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds")
+
+
+def _rm_report_url(rid: str) -> str:
+    return _public_url("view=overview&report=" + urllib.parse.quote(str(rid), safe=""))
+
+
+def _rm_load_clients() -> list:
+    """Every client profile, alphabetical."""
+    try:
+        recs = _db.load_records(_RM_CLIENT_TOPIC)
+    except Exception as exc:
+        print(f"[room] clients unavailable: {exc}")
+        recs = []
+    out = []
+    for r in recs:
+        c = _sc.normalise_client(r)
+        if not c["folder_id"]:
+            c["folder_id"] = str(r.get("_record_id", "")).split(":", 1)[-1]
+        if c["folder_id"]:
+            out.append(c)
+    return sorted(out, key=lambda c: (c["name"] or c["brand"]).lower())
+
+
+def _rm_folder_for(name: str, user: str) -> str:
+    """The project folder a client's material is filed under.
+
+    REUSED when a folder of that name already exists — so a client set up here
+    picks up whatever the team already filed under that name in Projects,
+    instead of starting from nothing next to a folder full of material."""
+    try:
+        f = create_project_folder(name, user)
+        if f:
+            return f["id"]
+        for f in load_project_folders():
+            if str(f.get("name", "")).strip().lower() == name.strip().lower():
+                return f["id"]
+    except Exception as exc:
+        print(f"[room] folder for {name!r}: {exc}")
+    return str(uuid.uuid4())[:8]
+
+
+def _rm_all_items() -> list:
+    """Every saved item, any board, newest first."""
+    try:
+        items = list(_db.load_curadoria())
+    except Exception as exc:
+        print(f"[room] board unavailable: {exc}")
+        return []
+
+    def _when(i):
+        try:
+            return datetime.strptime(str(i.get("saved_at", "")).replace("·", ""), "%d %b %Y  %H:%M")
+        except Exception:
+            return datetime.min
+    return sorted(items, key=_when, reverse=True)
+
+
+def _rm_client_items(c: dict, items: list) -> list:
+    fid = c.get("folder_id")
+    return [i for i in items if fid and fid in (i.get("folder_ids") or [])]
+
+
+def _rm_client_form(ex: Optional[dict], user: str, fkey: str) -> Optional[dict]:
+    """Create or edit a client profile. Returns the saved profile, or None."""
+    ex = _sc.normalise_client(ex or {})
+    mk = list(MARKETS)
+    roles = ("",) + _sc.ROOM_ROLES
+    with st.form(fkey, border=False):
+        a, b = st.columns(2)
+        name = a.text_input("Client", value=ex["name"], placeholder="Ben & Jerry's", key=f"{fkey}_name")
+        brand = b.text_input("Brand — what the searches look for", value=ex["brand"],
+                             placeholder="Ben & Jerry's", key=f"{fkey}_brand")
+        c1, c2, c3 = st.columns(3)
+        cat = c1.text_input("Category", value=ex["category"], placeholder="Ice cream", key=f"{fkey}_cat")
+        prod = c2.text_input("Product", value=ex["product"], placeholder="Pints", key=f"{fkey}_prod")
+        mkt = c3.selectbox("Market", mk, key=f"{fkey}_mkt",
+                           index=mk.index(ex["market"]) if ex["market"] in mk else mk.index(DEFAULT_MARKET))
+        obj = st.text_area("What they came to explore", value=ex["objective"], height=72, key=f"{fkey}_obj",
+                           placeholder="Where is there room for a brand like ours that nobody is standing in?")
+        probs = st.text_area("Problems they brought — one per line, up to five",
+                             value="\n".join(ex["problems"]), height=110, key=f"{fkey}_probs")
+        d1, d2 = st.columns(2)
+        role = d1.selectbox("Who is in the room", roles, key=f"{fkey}_role",
+                            index=roles.index(ex["role"]) if ex["role"] in roles else 0,
+                            format_func=lambda r: r or "—")
+        cust = d2.text_input("Their customer", value=ex["customer"], key=f"{fkey}_cust",
+                             placeholder="Who buys it, in a sentence")
+        inter = st.text_input("The room's own tastes and references — used only for analogies",
+                              value=ex["interests"], key=f"{fkey}_int",
+                              placeholder="Formula 1, Wes Anderson, natural wine")
+        notes = st.text_area("Notes for the team", value=ex["notes"], height=64, key=f"{fkey}_notes")
+        go = st.form_submit_button("Save changes" if ex["folder_id"] else "Create the client",
+                                   type="primary")
+    if not go:
+        return None
+    if not (name.strip() or brand.strip()):
+        st.error("Give the client a name.")
+        return None
+    fid = ex["folder_id"] or _rm_folder_for(name.strip() or brand.strip(), user)
+    prof = _sc.normalise_client({
+        "name": name.strip() or brand.strip(), "brand": brand.strip() or name.strip(),
+        "category": cat, "product": prod, "market": mkt, "objective": obj,
+        "problems": probs, "role": role, "customer": cust, "interests": inter,
+        "notes": notes, "folder_id": fid})
+    data = dict(prof, updated_by=user)
+    if not _db.upsert_record(_sc.client_record_id(fid), _RM_CLIENT_TOPIC, data,
+                             label=f"Client · {prof['name']}"):
+        st.error("Could not save the client — the database did not answer. Try again.")
+        return None
+    return prof
+
+
+def _rm_profile_html(c: dict) -> str:
+    rows = []
+
+    def _row(k, v):
+        if v:
+            rows.append(f'<div class="row"><b>{e(k)}</b><div>{v}</div></div>')
+    _row("Came to explore", e(c["objective"]))
+    if c["problems"]:
+        _row("Problems", "<ul>" + "".join(f"<li>{e(p)}</li>" for p in c["problems"]) + "</ul>")
+    _row("In the room", e(c["role"]))
+    _row("Their customer", e(c["customer"]))
+    _row("Their references", e(c["interests"]))
+    _row("Team notes", e(c["notes"]))
+    meta = " · ".join(p for p in ((c["brand"] if c["brand"] != c["name"] else ""),
+                                  c["category"], c["product"], c["market"]) if p)
+    body = "".join(rows) or ('<div class="row"><b>Profile</b><div>Nothing filled in yet — '
+                             'the room reads better when it knows what they came for.</div></div>')
+    return (f'<div class="rm-profile"><div class="who">{e(c["name"] or c["brand"])}</div>'
+            f'<div class="meta">{e(meta)}</div>{body}</div>')
+
+
+# ── The session log ──────────────────────────────────────────────────────────
+
+def _rm_save(sess: dict, force: bool = False) -> bool:
+    """Persist the live log — at most every few seconds unless forced.
+
+    A batch of speech lands every ten seconds or so; writing the whole log each
+    time would be a hundred-kilobyte upsert every ten seconds by the end of a
+    long meeting. Throttled, the worst a closed tab can lose is the last few
+    seconds — and anything the model raised is saved the moment it arrives."""
+    now = _rm_time.time()
+    if not force and now - float(sess.get("_saved_t") or 0) < _RM_SAVE_EVERY:
+        sess["_dirty"] = True
+        return False
+    data = {k: v for k, v in sess.items() if not str(k).startswith("_")}
+    ok = _db.upsert_record(sess["id"], _RM_SESSION_TOPIC, data,
+                           label=f"Session · {sess.get('client_name', '')} · "
+                                 f"{str(sess.get('started_at', ''))[:16]}")
+    sess["_saved_t"] = now
+    sess["_dirty"] = not ok
+    sess["_save_failed"] = not ok
+    return ok
+
+
+def _rm_sessions_for(fid: str) -> list:
+    try:
+        recs = _db.load_records(_RM_SESSION_TOPIC, limit=40, id_prefix=f"session:{fid}:")
+    except Exception as exc:
+        print(f"[room] sessions unavailable: {exc}")
+        recs = []
+    return [r for r in recs if r.get("client_id") == fid]
+
+
+# ── Work done in threads ─────────────────────────────────────────────────────
+# Neither worker touches Streamlit: no st.*, no cached loaders, no session
+# state. They get everything they need as arguments and hand back a result
+# through the registry. That is the fourth time this codebase has had to learn
+# the rule, so it is written down where the threads start.
+
+def _rm_ear_worker(jid: str, prompt: str, board: list) -> None:
+    """One reading of the room. Haiku: fast, cheap, and the job is to choose
+    from a list, not to write."""
+    try:
+        key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not set")
+        import anthropic
+        client = anthropic.Anthropic(api_key=key, timeout=45.0, max_retries=1)
+        resp = client.messages.create(
+            model=CLAUDE_MODEL_FAST, max_tokens=900, temperature=0.3,
+            system=("You are the quiet second listener in a client workshop. You only ever "
+                    "answer with the JSON object you are asked for."),
+            messages=[{"role": "user", "content": prompt}])
+        obj = _extract_json(_msg_text(resp))
+        _sc.JOBS.finish(jid, {"insight": _sc.parse_ear(obj, board)})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=f"{type(exc).__name__}: {str(exc)[:200]}")
+
+
+def _rm_scan_worker(jid: str, p: dict, archive: list) -> None:
+    """A full Lighthouse scan, in the background. Lighter than the overview's:
+    the nine sources and the brief, without the trade press and newsletter
+    lanes, whose outlet lists come from cached loaders that only work on the
+    script thread. It is filed in the Archive like any other brief."""
+    try:
+        search = " ".join(dict.fromkeys(f"{p['category']} {p['product']}".split())).strip() \
+            or p["brand"]
+        sigs, tally = _sv_gather(search, p["active"], p["market"], progress=None,
+                                 product=p["product"], brand=p["brand"],
+                                 competitors=p["competitors"], archive=archive)
+        if not sigs:
+            _sc.JOBS.finish(jid, error="No signals came back for that search.")
+            return
+        res = _sv_synthesize(sigs, p["category"] or search, p["competitor_list"],
+                             p["brand"] or "the brand")
+        if not res:
+            _sc.JOBS.finish(jid, error=f"{len(sigs)} signals came back, but the brief "
+                                       f"could not be written.")
+            return
+        res["_meta"] = {"brand": p["brand"], "category": p["category"],
+                        "product": p["product"], "market": p["market"],
+                        "competitors": p["competitors"]}
+        res["_diag"] = {"tally": tally, "origin": f"session room · {p['session_id']}"}
+        rid = _sv_save_brief(p["active"], res, sigs)
+        _sc.JOBS.finish(jid, {"summary": _sc.scan_summary(res), "report_id": rid,
+                              "n": len(sigs)})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=f"{type(exc).__name__}: {str(exc)[:200]}")
+
+
+def _rm_start_read(sess: dict, asked: str = "") -> str:
+    """Start a reading. Returns "" when it started, or why it did not."""
+    asked = (asked or "").strip()
+    if _sc.JOBS.running(sess["id"], "ear") >= (2 if asked else 1):
+        return "A reading is already under way — give it a few seconds."
+    client = st.session_state.get("rm_client") or {}
+    material = st.session_state.get("rm_material") or []
+    ctx = _sc.context_text(sess, 600)
+    new = asked or _sc.unread_text(sess).strip() or _sc.context_text(sess, 150)
+    if not new.strip():
+        return "Nothing has been said yet."
+    board = _sc.prefilter_board(material, f"{new} {ctx}", k=40)
+    prompt = _sc.build_ear_prompt(client, new, ctx, board, surfaced=_sc.surfaced_ids(sess),
+                                  unpack=_db.unpack_evidence,
+                                  mode="asked" if asked else "heard")
+    if not asked:
+        _sc.mark_read(sess)
+        sess["_dirty"] = True
+    sess["_last_read_t"] = _rm_time.time()
+    jid = _sc.JOBS.start(sess["id"], "reading", kind="ear", asked=asked[:200])
+    _rm_threading.Thread(target=_rm_ear_worker, args=(jid, prompt, board),
+                         daemon=True, name=f"lh-ear-{jid}").start()
+    return ""
+
+
+def _rm_start_scan(sess: dict, category: str, product: str, why: str = "") -> str:
+    """Start a background search. Returns "" when it started, or why not."""
+    if SCAN_PAUSED:
+        return "Scanning is paused — " + SCAN_PAUSED_MSG
+    if _sc.JOBS.running(sess["id"], "scan") >= _RM_MAX_SCANS:
+        return f"{_RM_MAX_SCANS} searches are already running — wait for one to land."
+    c = st.session_state.get("rm_client") or {}
+    brand = (c.get("brand") or c.get("name") or "").strip()
+    category = (category or "").strip() or c.get("category", "")
+    product = (product or "").strip()
+    if not (category or product):
+        return "Say what to look into — a category or a product."
+    market = c.get("market") if c.get("market") in MARKETS else DEFAULT_MARKET
+    # Competitors only for a brand we hold a profile for. An unknown brand
+    # borrowing someone else's list sent a soup search hunting for sparkling
+    # water once; an empty list costs nothing.
+    known = next((k for k in CLIENTS if k.strip().lower() == brand.lower()), "")
+    comp = CLIENTS[known].get("competitors", "") if known else ""
+    try:
+        archive = list(_load_signals_raw(limit=200))     # script thread: cached loader
+    except Exception:
+        archive = []
+    label = " · ".join(p for p in (category, product) if p)
+    jid = _sc.JOBS.start(sess["id"], label, kind="scan")
+    sess.setdefault("scans", []).append({"id": jid, "label": label, "why": why[:200],
+                                         "status": "running", "started_at": _rm_now_iso()})
+    p = {"active": brand or label, "brand": brand, "category": category, "product": product,
+         "market": market, "competitors": comp,
+         "competitor_list": [x.strip() for x in comp.split(",") if x.strip()],
+         "session_id": sess["id"]}
+    _rm_threading.Thread(target=_rm_scan_worker, args=(jid, p, archive),
+                         daemon=True, name=f"lh-scan-{jid}").start()
+    _rm_save(sess, force=True)
+    return ""
+
+
+def _rm_collect(sess: dict) -> bool:
+    """Move finished readings and searches into the log. Script thread only."""
+    changed = False
+    for j in _sc.JOBS.pop_finished(sess["id"]):
+        if j.get("kind") == "ear":
+            if j["status"] == "failed":
+                sess["_ear_error"] = j.get("error", "")
+                continue
+            sess.pop("_ear_error", None)
+            ins = (j.get("result") or {}).get("insight")
+            if ins:
+                if j.get("asked"):
+                    ins["asked"] = j["asked"]
+                sess.setdefault("insights", []).append(ins)
+                sess.pop("_quiet_at", None)
+                changed = True
+            else:
+                # Silence, on purpose. Said on screen so a quiet panel reads
+                # as "nothing fits" rather than "broken".
+                sess["_quiet_at"] = _rm_now_iso()
+                sess["_quiet_asked"] = j.get("asked", "")
+        elif j.get("kind") == "scan":
+            r = j.get("result") or {}
+            for s in sess.get("scans") or []:
+                if s.get("id") == j["id"]:
+                    s["status"] = "done" if j["status"] == "done" else "failed"
+                    s["finished_at"] = _rm_now_iso()
+                    s["summary"] = r.get("summary") or {}
+                    s["report_id"] = r.get("report_id", "")
+                    s["n"] = r.get("n", 0)
+                    s["error"] = j.get("error", "")
+            changed = True
+    for s in sess.get("scans") or []:
+        if s.get("status") == "running" and not _sc.JOBS.known(s.get("id", "")):
+            s["status"] = "failed"
+            s["error"] = "Interrupted — the server restarted while it was running."
+            changed = True
+    if changed:
+        _rm_save(sess, force=True)
+    return changed
+
+
+# ── Drawing ──────────────────────────────────────────────────────────────────
+
+def _rm_insight_html(ins: dict) -> str:
+    when = _rm_clock(ins.get("t", ""))
+    kind, head = ("You asked", ins["asked"]) if ins.get("asked") else ("Heard", ins.get("heard", ""))
+    out = [f'<div class="rm-card"><div class="h"><span>{e(kind)}</span><span>{e(when)}</span></div>']
+    if head:
+        out.append(f'<div class="heard">{e(head)}</div>')
+    for ev in ins.get("evidence") or []:
+        t = e(ev.get("title", ""))
+        if ev.get("url"):
+            t = f'<a href="{e(ev["url"])}" target="_blank" rel="noopener">{t} ↗</a>'
+        ty = _RM_TYPE.get(str(ev.get("type", "")), str(ev.get("type", ""))[:18])
+        out.append(f'<div class="rm-ev"><div class="ti">{t}<span class="ty">{e(ty)}</span></div>'
+                   + (f'<div class="why">{e(ev["why"])}</div>' if ev.get("why") else "") + "</div>")
+    con = ins.get("connection") or {}
+    if con.get("text"):
+        out.append(f'<div class="rm-conn"><b>Connection</b>{e(con["text"])}</div>')
+    if ins.get("question"):
+        out.append(f'<div class="rm-q"><b>Ask the room</b>{e(ins["question"])}</div>')
+    lk = ins.get("look_into") or {}
+    if lk:
+        what = " · ".join(p for p in (lk.get("category"), lk.get("product")) if p)
+        out.append(f'<div class="rm-look">Not on the board yet: <b>{e(what)}</b>'
+                   + (f" — {e(lk['reason'])}" if lk.get("reason") else "") + "</div>")
+    out.append("</div>")
+    return "".join(out)
+
+
+def _rm_scan_html(s: dict) -> str:
+    status = s.get("status")
+    label = e(s.get("label", ""))
+    if status == "running":
+        st_ = _sc._parse_iso(s.get("started_at", ""))
+        secs = int((datetime.utcnow() - st_).total_seconds()) if st_ else 0
+        return (f'<div class="rm-scan"><div class="h">Looking into it</div>'
+                f'<div class="ti">{label}</div>'
+                f'<div class="meta">{secs // 60}m {secs % 60:02d}s · usually three to four '
+                f'minutes — the conversation can carry on</div><div class="rm-run"></div></div>')
+    if status == "done":
+        sm = s.get("summary") or {}
+        lis = "".join(f"<li>{e(x)}</li>" for x in sm.get("currents") or [])
+        extra = ""
+        if sm.get("tension"):
+            extra += f'<div class="meta" style="margin-top:6px"><b>Tension</b> · {e(sm["tension"])}</div>'
+        if sm.get("opening"):
+            extra += f'<div class="meta"><b>Opening</b> · {e(sm["opening"])}</div>'
+        link = (f'<div style="margin-top:8px"><a href="{e(_rm_report_url(s["report_id"]))}" '
+                f'target="_blank" rel="noopener">Open the brief ↗</a></div>') if s.get("report_id") else ""
+        return (f'<div class="rm-scan"><div class="h">While you were talking · '
+                f'{e(_rm_clock(s.get("finished_at", "")))}</div><div class="ti">{label}</div>'
+                f'{"<ul>" + lis + "</ul>" if lis else ""}{extra}{link}</div>')
+    return (f'<div class="rm-scan failed"><div class="h">The search did not land</div>'
+            f'<div class="ti">{label}</div><div class="meta">{e(s.get("error", ""))}</div></div>')
+
+
+def _rm_transcript_html(sess: dict, limit: int = 80) -> str:
+    chunks = sess.get("chunks") or []
+    if not chunks:
+        return ('<div class="rm-empty">Nothing yet. Start listening above, or type what was '
+                'said — on a video call, paste the other side from the meeting captions.</div>')
+    upto = int(sess.get("read_upto", 0))
+    first = max(0, len(chunks) - limit)
+    rows = []
+    # Newest first in the markup; the column-reverse container shows it at the
+    # bottom and starts scrolled there, like any chat — without a line of JS.
+    for n in range(len(chunks) - 1, first - 1, -1):
+        ch = chunks[n]
+        cls = "rm-line" + (" note" if ch.get("source") != "voice" else "") \
+            + (" new" if n >= upto else "")
+        rows.append(f'<div class="{cls}"><div class="t">{e(_rm_clock(ch.get("t", "")))}</div>'
+                    f'<div class="x">{e(ch.get("text", ""))}</div></div>')
+    return f'<div class="rm-tx">{"".join(rows)}</div>'
+
+
+# ── The live fragments ───────────────────────────────────────────────────────
+
+def _rm_live() -> Optional[dict]:
+    sess = st.session_state.get("rm_sess")
+    return sess if sess and sess.get("status") == "live" else None
+
+
+@st.fragment
+def _rm_listen_frag() -> None:
+    sess = _rm_live()
+    if not sess:
+        return
+    if _rm_listener is None:
+        st.markdown('<div class="rm-warn">The microphone could not be loaded on this server — '
+                    'type or paste below; everything else works the same.</div>',
+                    unsafe_allow_html=True)
+        return
+    if not sess.get("consent"):
+        st.markdown('<div class="rm-note" style="margin-bottom:4px">Before the microphone '
+                    'switches on:</div>', unsafe_allow_html=True)
+        if st.checkbox("Everyone in the room knows this conversation is being transcribed.",
+                       key=f"rm_consent_{sess['id']}"):
+            sess["consent"] = _rm_now_iso()
+            _rm_save(sess, force=True)
+            _rm_rerun_fragment()
+        return
+    a, b = st.columns([5, 1.5], vertical_alignment="top")
+    with b:
+        # The default goes in `index`, NOT pre-written into session state. A key
+        # written in one run for a widget first drawn in a later run is shown
+        # at the widget's own default by the browser and, one rerun later,
+        # overwritten by it — Streamlit 1.58, measured here, both inside and
+        # outside fragments.
+        _langs = list(_RM_LANGS)
+        _lang0 = _RM_LANG_FOR_MARKET.get((st.session_state.get("rm_client") or {}).get("market", ""),
+                                         "en-US")
+        lang = st.selectbox("Language", _langs, key="rm_lang", index=_langs.index(_lang0),
+                            format_func=lambda k: _RM_LANGS.get(k, k),
+                            label_visibility="collapsed")
+    with a:
+        val = _rm_listener(lang=lang, batch_words=18, batch_seconds=12,
+                           start_seq=int(sess.get("last_seq", -1)) + 1,
+                           key=f"rm_mic_{sess['id']}", default=None)
+    if isinstance(val, dict) and str(val.get("text") or "").strip():
+        if _sc.add_chunk(sess, str(val["text"]), "voice", seq=val.get("seq")):
+            _rm_save(sess)
+
+
+@st.fragment
+def _rm_notes_frag() -> None:
+    sess = _rm_live()
+    if not sess:
+        return
+    with st.form("rm_notes_form", clear_on_submit=True, border=False):
+        txt = st.text_area("Notes", height=86, label_visibility="collapsed", key="rm_notes_txt",
+                           placeholder="Type what was said, paste from the meeting captions — "
+                                       "or ask the board something, privately.")
+        a, b, _ = st.columns([1.25, 1.1, 1.6])
+        add = a.form_submit_button("Add to the transcript", use_container_width=True)
+        ask = b.form_submit_button("Ask the board", type="primary", use_container_width=True)
+    txt = (txt or "").strip()
+    if add and txt:
+        if _sc.add_chunk(sess, txt, "note"):
+            _rm_save(sess)
+    elif ask and txt:
+        why = _rm_start_read(sess, asked=txt)
+        st.toast(why or "Asked. The answer lands on the right.")
+
+
+@st.fragment
+def _rm_lookinto_frag() -> None:
+    sess = _rm_live()
+    if not sess:
+        return
+    c = st.session_state.get("rm_client") or {}
+    with st.expander("Look into something else — a full search, in the background"):
+        with st.form("rm_look_form", clear_on_submit=False, border=False):
+            a, b = st.columns(2)
+            cat = a.text_input("Category", value=c.get("category", ""), key="rm_look_cat")
+            prod = b.text_input("Product", value=c.get("product", ""), key="rm_look_prod")
+            go = st.form_submit_button("Start the search", disabled=SCAN_PAUSED)
+        st.caption("Three to four minutes and the same credits as a scan. It lands on the "
+                   "right when it is done, and is filed in the Archive."
+                   + (f" Scanning is paused — {SCAN_PAUSED_MSG}" if SCAN_PAUSED else ""))
+    if go:
+        why = _rm_start_scan(sess, cat, prod, why="asked for in the room")
+        st.toast(why or "Searching in the background.")
+
+
+@st.fragment(run_every=3)
+def _rm_transcript_frag() -> None:
+    sess = _rm_live()
+    if not sess:
+        return
+    n = len(sess.get("chunks") or [])
+    st.markdown(f'<div class="rm-col-h">The room<span>{_sc.word_count(sess):,} words · '
+                f'{n} line{"s" if n != 1 else ""}</span></div>' + _rm_transcript_html(sess),
+                unsafe_allow_html=True)
+
+
+@st.fragment(run_every=3)
+def _rm_ear_frag() -> None:
+    sess = _rm_live()
+    if not sess:
+        return
+    _rm_collect(sess)
+    if (st.session_state.get("rm_auto", True)
+            and not _sc.JOBS.running(sess["id"], "ear")
+            and _sc.should_auto_read(_sc.unread_words(sess),
+                                     _rm_time.time() - float(sess.get("_last_read_t") or 0))):
+        _rm_start_read(sess)
+    if sess.get("_dirty"):
+        _rm_save(sess)
+
+    h1, h2 = st.columns([1.35, 1], vertical_alignment="center")
+    with h1:
+        st.markdown('<div class="rm-col-h" style="margin:0">The board says</div>',
+                    unsafe_allow_html=True)
+    with h2:
+        if st.button("Read the room now", key="rm_read_now", type="primary",
+                     use_container_width=True):
+            why = _rm_start_read(sess)
+            if why:
+                st.toast(why)
+            _rm_rerun_fragment()
+    st.toggle("Read as we go — about once a minute of talk", key="rm_auto", value=True)
+
+    if _sc.JOBS.running(sess["id"], "ear"):
+        st.markdown('<div class="rm-quiet">Reading the room…</div><div class="rm-run"></div>',
+                    unsafe_allow_html=True)
+    elif sess.get("_ear_error"):
+        _err = str(sess["_ear_error"])
+        _hint = (" Set it in the app's secrets." if "ANTHROPIC_API_KEY" in _err else "")
+        st.markdown(f'<div class="rm-warn">The last reading failed — {e(_err)}.{_hint}</div>',
+                    unsafe_allow_html=True)
+    elif sess.get("_quiet_at"):
+        _what = "that question" if sess.get("_quiet_asked") else "that"
+        st.markdown(f'<div class="rm-quiet">{e(_rm_clock(sess["_quiet_at"]))} — nothing on the '
+                    f'board bears on {_what}. Silence is an answer.</div>', unsafe_allow_html=True)
+    else:
+        _u = _sc.unread_words(sess)
+        st.markdown(f'<div class="rm-quiet">{_u} new word{"s" if _u != 1 else ""} since the '
+                    f'last reading.</div>', unsafe_allow_html=True)
+    if sess.get("_save_failed"):
+        st.markdown('<div class="rm-warn">The log could not be saved just now — it will try '
+                    'again in a few seconds. Keep this tab open.</div>', unsafe_allow_html=True)
+
+    # Searches first: they are the slow, surprising part, and they arrive while
+    # the room is talking about something else.
+    for s in reversed(sess.get("scans") or []):
+        st.markdown(_rm_scan_html(s), unsafe_allow_html=True)
+
+    ins_all = sess.get("insights") or []
+    if not ins_all:
+        st.markdown('<div class="rm-empty">Readings appear here, newest first. Each one cites '
+                    'only what is on the board — or says nothing.</div>', unsafe_allow_html=True)
+    scanned = {str(s.get("label", "")).lower() for s in sess.get("scans") or []}
+
+    def _card(idx: int, ins: dict) -> None:
+        st.markdown(_rm_insight_html(ins), unsafe_allow_html=True)
+        lk = ins.get("look_into") or {}
+        if lk:
+            what = " · ".join(p for p in (lk.get("category"), lk.get("product")) if p)
+            if what.lower() in scanned:
+                return
+            if st.button(f"Look into {what}", key=f"rm_look_{idx}", disabled=SCAN_PAUSED,
+                         help=("Scanning is paused — " + SCAN_PAUSED_MSG) if SCAN_PAUSED
+                         else "A full search in the background — three to four minutes."):
+                why = _rm_start_scan(sess, lk.get("category", ""), lk.get("product", ""),
+                                     why=lk.get("reason", ""))
+                if why:
+                    st.toast(why)
+                _rm_rerun_fragment()
+
+    order = list(range(len(ins_all) - 1, -1, -1))
+    for idx in order[:6]:
+        _card(idx, ins_all[idx])
+    if len(order) > 6:
+        with st.expander(f"Earlier readings ({len(order) - 6})"):
+            for idx in order[6:]:
+                _card(idx, ins_all[idx])
+
+
+# ── After the meeting ────────────────────────────────────────────────────────
+
+def _rm_review(sess: dict, client: dict) -> None:
+    if any(s.get("status") == "running" for s in sess.get("scans") or []):
+        _rm_collect(sess)        # a search started in the meeting may land after it
+    n_ins = len(sess.get("insights") or [])
+    st.markdown(f'<div class="rm-lbl">Session · {e(_sv_fmt_date(sess.get("started_at", "")))}</div>'
+                f'<div class="rm-sub">{_sc.duration_min(sess)} min · {_sc.word_count(sess):,} words · '
+                f'{n_ins} reading{"s" if n_ins != 1 else ""} · '
+                f'{len(sess.get("scans") or [])} search(es)</div>', unsafe_allow_html=True)
+    md = _sc.session_markdown(sess, client, link=_rm_report_url, tz_name=DISPLAY_TZ)
+    _slug = re.sub(r"[^a-z0-9]+", "-", (client.get("name") or "client").lower()).strip("-")
+    st.download_button("Download the notes (.md)", md,
+                       file_name=f"session-{_slug}-{str(sess.get('started_at', ''))[:10]}.md",
+                       mime="text/markdown", key=f"rm_dl_{sess.get('id')}")
+    left, right = st.columns([1.15, 1], gap="large")
+    with left:
+        st.markdown('<div class="rm-col-h">The room</div>' + _rm_transcript_html(sess, limit=600),
+                    unsafe_allow_html=True)
+    with right:
+        st.markdown('<div class="rm-col-h">What the board brought up</div>', unsafe_allow_html=True)
+        for s in reversed(sess.get("scans") or []):
+            st.markdown(_rm_scan_html(s), unsafe_allow_html=True)
+        for ins in reversed(sess.get("insights") or []):
+            st.markdown(_rm_insight_html(ins), unsafe_allow_html=True)
+        if not n_ins and not sess.get("scans"):
+            st.markdown('<div class="rm-empty">Nothing was raised in this session.</div>',
+                        unsafe_allow_html=True)
+
+
+# ── The page ─────────────────────────────────────────────────────────────────
+
+def _rm_material_section(c: dict, items: list, mine: list) -> None:
+    fid = c["folder_id"]
+    name = c["name"] or c["brand"]
+    st.markdown('<div class="rm-lbl">The material</div>', unsafe_allow_html=True)
+    if mine:
+        st.markdown(f'<div class="rm-sub">{len(mine)} item{"s" if len(mine) != 1 else ""} filed for '
+                    f'{e(name)}. This is what the room reads from, before anything else.</div>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="rm-sub">Nothing filed for {e(name)} yet. Add from the board '
+                    f'below, or keep things from a brief in the Overview with {e(name)} chosen as '
+                    f'the client. Until then the room reads the whole Atlantic board.</div>',
+                    unsafe_allow_html=True)
+    for it in mine:
+        summary, src = _db.unpack_evidence(it.get("content", ""))
+        a, b = st.columns([14, 1], vertical_alignment="center")
+        with a:
+            st.markdown(
+                f'<div class="rm-item"><div class="ty">'
+                f'{e(_RM_TYPE.get(str(it.get("type", "")), str(it.get("type", ""))[:24]))} · kept '
+                f'{e(it.get("saved_at", ""))}{" · " + str(len(src)) + " sources" if src else ""}</div>'
+                f'<div class="ti">{e(it.get("title", ""))}</div>'
+                + (f'<div class="su">{e(summary[:220])}</div>' if summary.strip() else "")
+                + '</div>', unsafe_allow_html=True)
+        with b:
+            if st.button("✕", key=f"rm_unfile_{it.get('id')}", help=f"Take off {name}'s material"):
+                set_item_folders(it["id"], [f for f in (it.get("folder_ids") or []) if f != fid])
+                st.rerun()
+    others = [i for i in items if i not in mine]
+    if others:
+        brand = (c["brand"] or c["name"]).strip().lower()
+        # Things saved from a search about this brand first — the likeliest
+        # candidates — then the rest of the board, newest first.
+        others.sort(key=lambda i: 0 if brand and brand in
+                    f"{i.get('category', '')} {i.get('title', '')}".lower() else 1)
+        with st.expander(f"Add from the board ({len(others)} available)"):
+            pick = st.multiselect(
+                "Items", [i["id"] for i in others], key=f"rm_add_{fid}",
+                label_visibility="collapsed", placeholder="Choose what belongs to this client",
+                format_func=lambda iid: next(
+                    (f"{_RM_TYPE.get(str(i.get('type', '')), str(i.get('type', ''))[:16])} · "
+                     f"{str(i.get('title', ''))[:110]}" for i in others if i["id"] == iid), iid))
+            if st.button("File under this client", key=f"rm_add_go_{fid}", disabled=not pick,
+                         type="primary"):
+                for iid in pick:
+                    it = next(i for i in others if i["id"] == iid)
+                    set_item_folders(iid, list(dict.fromkeys((it.get("folder_ids") or []) + [fid])))
+                st.rerun()
+
+
+def render_session_room() -> None:
+    user = st.session_state.get("logged_in_user", "")
+    st.markdown(_rm_css(), unsafe_allow_html=True)
+    st.markdown(f'<div class="rm-top"><div class="rm-eyebrow">The Lighthouse · Session room</div>'
+                f'<a class="rm-back" href="{_public_url("")}" target="_blank" rel="noopener">'
+                f'The Lighthouse ↗</a></div>', unsafe_allow_html=True)
+
+    clients = _rm_load_clients()
+    by_id = {c["folder_id"]: c for c in clients}
+    opts = [c["folder_id"] for c in clients] + ["__new__"]
+    # A pending choice from the last run (a client just created, "back to the
+    # live session") — written before the selector exists, never after.
+    if "_rm_pick_next" in st.session_state:
+        st.session_state["rm_pick"] = st.session_state.pop("_rm_pick_next")
+    if st.session_state.get("rm_pick") not in opts:
+        qp = str(st.query_params.get("client", "") or "")
+        st.session_state["rm_pick"] = qp if qp in by_id else (opts[0] if clients else "__new__")
+
+    pa, pb = st.columns([2.2, 3], vertical_alignment="bottom")
+    with pa:
+        st.markdown('<div class="rm-field">Client</div>', unsafe_allow_html=True)
+        pick = st.selectbox("Client", opts, key="rm_pick", label_visibility="collapsed",
+                            format_func=lambda k: "＋  New client" if k == "__new__"
+                            else (by_id[k]["name"] or by_id[k]["brand"]))
+    if pick != "__new__" and st.query_params.get("client") != pick:
+        st.query_params["client"] = pick       # a reload comes back to the same client
+
+    sess = st.session_state.get("rm_sess")
+    live_other = bool(sess and sess.get("status") == "live" and sess.get("client_id") != pick)
+    if live_other:
+        with pb:
+            st.markdown(f'<div class="rm-warn" style="margin:0">A session with '
+                        f'<b>{e(sess.get("client_name", ""))}</b> is live. Its microphone is '
+                        f'paused while you look at another client.</div>', unsafe_allow_html=True)
+            if st.button("Back to the live session", key="rm_back_live"):
+                st.session_state["_rm_pick_next"] = sess.get("client_id")
+                st.rerun()
+
+    if pick == "__new__":
+        st.markdown('<div class="rm-title">New client</div>'
+                    '<div class="rm-stand">Fill in what you know before the session. The '
+                    'problems they bring and what they came to explore are what the room listens '
+                    'for — the more specific, the better the readings.</div>',
+                    unsafe_allow_html=True)
+        prof = _rm_client_form(None, user, "rm_new_client")
+        if prof:
+            st.session_state["_rm_pick_next"] = prof["folder_id"]
+            st.rerun()
+        return
+
+    c = by_id[pick]
+    st.session_state["rm_client"] = c
+
+    # What the ear may cite: this client's material (or the whole board while
+    # it has none), then the latest briefs about the brand. Built on the script
+    # thread, once per full run, and handed to the fragments through state.
+    items = _rm_all_items()
+    mine = _rm_client_items(c, items)
+    board = [i for i in items if str(i.get("user", "")) == _SV_BOARD_USER] or items
+    briefs = _sv_list_briefs(c["brand"] or c["name"], limit=6)
+    arch = _sc.archive_items(briefs)
+    for a_ in arch:
+        a_["url"] = _rm_report_url(a_["report_id"]) if a_.get("report_id") else ""
+    st.session_state["rm_material"] = _sc.ear_material(mine, board, arch)
+
+    live = bool(sess and sess.get("status") == "live" and sess.get("client_id") == c["folder_id"])
+    if live:
+        _started = _rm_clock(sess.get("started_at", ""))
+        st.markdown(f'<div class="rm-livebar"><span class="rm-live"><i></i>Live</span>'
+                    f'<span class="who">{e(c["name"] or c["brand"])}</span>'
+                    f'<span class="meta">started {e(_started)}'
+                    f'{" UTC" if not DISPLAY_TZ else ""} · {_sc.duration_min(sess)} min · '
+                    f'{len(st.session_state["rm_material"])} items it can cite</span></div>',
+                    unsafe_allow_html=True)
+        b1, b2, _ = st.columns([1.3, 1.1, 4])
+        with b1:
+            st.download_button("Download the notes", _sc.session_markdown(
+                sess, c, link=_rm_report_url, tz_name=DISPLAY_TZ),
+                file_name=f"session-notes-{str(sess.get('started_at', ''))[:10]}.md",
+                mime="text/markdown", key="rm_dl_live", use_container_width=True)
+        with b2:
+            with st.popover("End the session", use_container_width=True):
+                st.caption("The transcript and everything raised stay in the log.")
+                if st.button("End it now", type="primary", key="rm_end"):
+                    _rm_collect(sess)
+                    sess["status"] = "ended"
+                    sess["ended_at"] = _rm_now_iso()
+                    _rm_save(sess, force=True)
+                    st.session_state["rm_review"] = sess
+                    st.session_state.pop("rm_sess", None)
+                    st.rerun()
+        left, right = st.columns([1.12, 1], gap="large")
+        with left:
+            with st.container(key="rm_mic_box"):
+                _rm_listen_frag()
+            _rm_notes_frag()
+            _rm_lookinto_frag()
+            _rm_transcript_frag()
+        with right:
+            _rm_ear_frag()
+        st.markdown('<div class="rm-lbl">The client</div>', unsafe_allow_html=True)
+        st.markdown(_rm_profile_html(c), unsafe_allow_html=True)
+        _rm_material_section(c, items, mine)
+        return
+
+    # ── Not live: the preparation view ──────────────────────────────────────
+    st.markdown(f'<div class="rm-title">{e(c["name"] or c["brand"])}</div>'
+                '<div class="rm-stand">The room listens to the conversation and brings up what '
+                'the team kept that bears on it. Evidence, never conclusions — and when nothing '
+                'fits, it says nothing.</div>', unsafe_allow_html=True)
+    st.markdown(_rm_profile_html(c), unsafe_allow_html=True)
+    with st.expander("Edit the profile"):
+        prof = _rm_client_form(c, user, f"rm_edit_{c['folder_id']}")
+        if prof:
+            st.rerun()
+
+    _rm_material_section(c, items, mine)
+    if briefs:
+        st.markdown('<div class="rm-lbl">Briefs on file</div>', unsafe_allow_html=True)
+        st.markdown("".join(
+            f'<div class="rm-brief"><a href="{e(_rm_report_url(b["id"]))}" target="_blank" '
+            f'rel="noopener">{e(" · ".join(p for p in (b.get("category"), b.get("product")) if p) or b.get("brand", ""))} ↗</a>'
+            f' <span>· {e(_sv_fmt_date(b.get("saved_at", "")))} · {e(b.get("count", 0))} signals</span></div>'
+            for b in briefs), unsafe_allow_html=True)
+
+    st.markdown('<div class="rm-lbl">The session</div>', unsafe_allow_html=True)
+    past = _rm_sessions_for(c["folder_id"])
+    live_logs = [p for p in past if p.get("status") == "live"]
+    if live_other:
+        st.markdown('<div class="rm-sub">End the live session first — one room at a time.</div>',
+                    unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="rm-sub">Chrome or Edge, with the microphone allowed. In the '
+                    'room, it hears everyone; on a video call it hears this computer — paste the '
+                    'other side from the meeting captions. Tell the room before you start.</div>',
+                    unsafe_allow_html=True)
+        if st.button("Start a session", type="primary", key="rm_start"):
+            s = _sc.new_session(c["folder_id"], c["name"] or c["brand"])
+            s["started_by"] = user
+            if _rm_save(s, force=True):
+                st.session_state["rm_sess"] = s
+                st.session_state.pop("rm_review", None)
+                st.rerun()
+            else:
+                st.error("Could not open the session log — the database did not answer.")
+
+    for p in past[:12]:
+        a, b = st.columns([6, 1.2], vertical_alignment="center")
+        n_ins = len(p.get("insights") or [])
+        with a:
+            st.markdown(
+                f'<div class="rm-past"><b>{e(_sv_fmt_date(p.get("started_at", "")))}</b> '
+                f'<span>· {_sc.duration_min(p)} min · {_sc.word_count(p):,} words · {n_ins} '
+                f'reading{"s" if n_ins != 1 else ""}</span>'
+                + (' <span class="lv">· live</span>' if p.get("status") == "live" else "")
+                + "</div>", unsafe_allow_html=True)
+        with b:
+            if p.get("status") == "live" and not live_other:
+                if st.button("Resume", key=f"rm_resume_{p.get('id')}", use_container_width=True):
+                    s = {k: v for k, v in p.items() if not str(k).startswith("_")}
+                    st.session_state["rm_sess"] = s
+                    st.session_state.pop("rm_review", None)
+                    st.rerun()
+            elif st.button("Open", key=f"rm_open_{p.get('id')}", use_container_width=True):
+                st.session_state["rm_review"] = {k: v for k, v in p.items()
+                                                 if not str(k).startswith("_")}
+                st.rerun()
+    if live_logs and not live_other:
+        st.caption("A session marked live was left open — resume it, or start a new one.")
+
+    rev = st.session_state.get("rm_review")
+    if rev and rev.get("client_id") == c["folder_id"]:
+        _rm_review(rev, c)
+
+
 # ── Top-level navigation: Trends / Dispatch / Projects / Road Map ──────────
 # One-page layout: hero masthead always visible above the nav bar.
 # Clients see masthead + dispatch content only (no nav bar, no other sections).
@@ -10061,6 +11228,22 @@ if IS_OVERVIEW:
     st.markdown('<style>.stApp { visibility:visible !important; }</style>',
                 unsafe_allow_html=True)
     render_simple_view()
+    render_footer()
+    st.stop()
+
+# ── The session room (?view=session) ──────────────────────────────────────
+# Team only. The login gate above already sends anyone without a session to
+# the sign-in form; this also turns away the read-only roles that a gate could
+# have let through — a guest on the public link, a client account.
+if IS_SESSION:
+    if IS_CLIENT or st.session_state.get("_is_guest"):
+        st.error("The session room is for the Atlantic team — sign in with a team account.")
+        st.stop()
+    if _sc is None:
+        st.error("The session room needs **session_core.py** next to app.py on the server — "
+                 "upload it to the repository with app.py. The rest of the Lighthouse is unaffected.")
+        st.stop()
+    render_session_room()
     render_footer()
     st.stop()
 

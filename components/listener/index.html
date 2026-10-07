@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Lighthouse listener</title>
+<!--
+  THE LIGHTHOUSE LISTENER — a Streamlit component with no build step.
+
+  Uses the browser's own speech recognition (Chrome and Edge). Free, no key, no
+  new vendor — and NOT private: Chrome sends the audio to Google to transcribe
+  it. The room must be told, which is why the notice below is always visible.
+
+  Remote meetings: the microphone hears only the person at this computer.
+  Chrome cancels echo, so a client's voice coming out of the speakers is
+  removed from the signal on purpose. For the other side of a call, paste from
+  the meeting's captions into the notes box in the app.
+
+  PROTOCOL, read off Streamlit 1.58's own bundle rather than from memory:
+  every message to the parent must carry an own property `isStreamlitMessage`
+  or it is silently discarded; the type travels in `type`; the app sends args
+  back as `streamlit:render`. Written from memory of the old library, this
+  component would have been mute without a single error.
+-->
+<style>
+  :root { --blue:#0000ff; --ink:#000; --faint:#666; --red:#ff383c; --pale:#eaeef7; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; padding:0; background:transparent;
+    font-family:'Telegraf','Space Grotesk','Helvetica Neue',Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; color:var(--ink); }
+  .bar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  button { font:inherit; font-size:13px; font-weight:700; letter-spacing:.02em;
+    border:1.5px solid var(--blue); background:var(--blue); color:#fff;
+    padding:9px 16px; border-radius:6px; cursor:pointer; }
+  button.stop { background:#fff; color:var(--blue); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#c9cbd3; flex:none; }
+  .on .dot { background:var(--red); animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+  .state { font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--faint); }
+  .on .state { color:var(--red); }
+  .count { font-size:12px; color:var(--faint); margin-left:auto; }
+  .live { margin-top:10px; font-size:13.5px; line-height:1.45;
+    color:var(--faint); font-style:italic; }
+  .bar.on + .live { min-height:20px; }        /* reserve the line only while listening */
+  .bar:not(.on) + .live:empty { margin-top:0; }
+  .msg { margin-top:8px; font-size:12px; line-height:1.45; color:var(--red); }
+  .note { margin-top:8px; font-size:11px; line-height:1.45; color:var(--faint); }
+  @media (prefers-reduced-motion: reduce) { .on .dot { animation:none; } }
+</style></head>
+<body>
+<div id="root">
+  <div class="bar" id="bar">
+    <span class="dot"></span><span class="state" id="state">Not listening</span>
+    <button id="toggle">Start listening</button>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="live" id="live"></div>
+  <div class="msg" id="msg"></div>
+  <div class="note">Chrome sends the audio to Google to transcribe it — ask the room first.
+    On a video call it hears only this computer; paste the other side from the captions.</div>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  // ── Streamlit component protocol ─────────────────────────────────────────
+  function send(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
+  }
+  function setHeight() {
+    send("streamlit:setFrameHeight", { height: Math.ceil(document.body.scrollHeight) + 4 });
+  }
+
+  var args = { lang: "en-US", batch_words: 18, batch_seconds: 12, start_seq: 0 };
+  var seq = -1;            // last batch number sent
+  var sentWords = 0;
+
+  window.addEventListener("message", function (e) {
+    var d = e.data || {};
+    if (d.type !== "streamlit:render") return;
+    var a = d.args || {};
+    if (a.lang) args.lang = a.lang;
+    if (a.batch_words) args.batch_words = a.batch_words;
+    if (a.batch_seconds) args.batch_seconds = a.batch_seconds;
+    // NEVER REUSE A NUMBER THE APP HAS ALREADY TAKEN. After a page reload this
+    // script starts from scratch, while the session remembers the last batch it
+    // accepted; anything at or below that would be thrown away as a repeat.
+    if (typeof a.start_seq === "number" && seq < a.start_seq - 1) seq = a.start_seq - 1;
+    if (rec && listening && rec.lang !== args.lang) restart();   // language changed live
+    setHeight();
+  });
+
+  // ── Speech ───────────────────────────────────────────────────────────────
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var $ = function (id) { return document.getElementById(id); };
+  var bar = $("bar"), stateEl = $("state"), toggle = $("toggle"),
+      live = $("live"), msg = $("msg"), countEl = $("count");
+
+  var rec = null, listening = false, pending = "", lastFlush = Date.now();
+  var startedAt = 0, quickEnds = 0, restartTimer = null, netWarn = false;
+
+  // ONE RESTART AT A TIME, AND ONLY FOR THE CURRENT INSTANCE.
+  // Chrome allows one active recognition per page: starting a new one aborts
+  // the old, and the old then fires its own `end`. Left alone, every `end`
+  // schedules a restart, the restart aborts the previous instance, which ends,
+  // which schedules another — two instances knocking each other over forever.
+  // So: a single pending restart, old instances are disarmed before a new one
+  // starts, and an `end` from anything but the current instance is ignored.
+  function scheduleRestart(delay) {
+    if (restartTimer) return;
+    restartTimer = setTimeout(function () {
+      restartTimer = null;
+      if (listening) begin();
+    }, delay);
+  }
+  function disarm(r) {
+    if (!r) return;
+    r.onresult = r.onerror = r.onend = null;
+    try { (r.abort || r.stop).call(r); } catch (e) {}
+  }
+
+  function words(s) { return (s.match(/\S+/g) || []).length; }
+
+  function setState(on, label) {
+    listening = on;
+    bar.classList.toggle("on", on);
+    stateEl.textContent = label || (on ? "Listening" : "Not listening");
+    toggle.textContent = on ? "Stop" : "Start listening";
+    toggle.classList.toggle("stop", on);
+    setHeight();
+  }
+
+  function flush(force) {
+    var text = pending.trim();
+    if (!text) return;
+    var w = words(text);
+    var waited = (Date.now() - lastFlush) / 1000;
+    if (!force && w < args.batch_words && waited < args.batch_seconds) return;
+    seq += 1;
+    send("streamlit:setComponentValue", {
+      value: { seq: seq, text: text, t: Date.now(), lang: args.lang },
+      dataType: "json"
+    });
+    sentWords += w;
+    countEl.textContent = sentWords + " words sent";
+    pending = "";
+    lastFlush = Date.now();
+  }
+
+  function build() {
+    var r = new SR();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = args.lang;
+    r.onresult = function (ev) {
+      if (r !== rec) return;
+      if (netWarn) { msg.textContent = ""; netWarn = false; }   // it recovered
+      var interim = "";
+      for (var i = ev.resultIndex; i < ev.results.length; i++) {
+        var res = ev.results[i];
+        if (res.isFinal) pending += " " + res[0].transcript;
+        else interim += res[0].transcript;
+      }
+      live.textContent = interim;
+      flush(false);
+    };
+    r.onerror = function (ev) {
+      if (r !== rec) return;
+      var code = ev.error || "";
+      if (code === "not-allowed" || code === "service-not-allowed") {
+        msg.textContent = "Microphone blocked. Allow it for this site in the browser bar, then press Start again.";
+        setState(false); return;
+      }
+      if (code === "audio-capture") {
+        msg.textContent = "No microphone found on this computer.";
+        setState(false); return;
+      }
+      if (code === "network") {
+        msg.textContent = "Speech service unreachable — retrying.";
+        netWarn = true;
+      }
+      // "no-speech" and "aborted" are normal pauses; onend restarts us.
+    };
+    r.onend = function () {
+      // Chrome stops recognition on its own after a silence or about a minute.
+      // While the facilitator still wants to listen, start again — but not in a
+      // tight loop if something keeps ending it immediately.
+      if (r !== rec) return;
+      if (!listening) {
+        // Stopped on purpose: Chrome hands over the last sentence before this
+        // event, so send whatever arrived after the Stop click.
+        flush(true); live.textContent = ""; return;
+      }
+      if (restartTimer) return;          // a restart is already on its way
+      var lived = Date.now() - startedAt;
+      quickEnds = lived < 1500 ? quickEnds + 1 : 0;
+      if (quickEnds >= 5) {
+        msg.textContent = "Listening keeps stopping. Check the microphone, then press Start again.";
+        flush(true); setState(false); return;
+      }
+      scheduleRestart(quickEnds ? 600 * quickEnds : 150);
+    };
+    return r;
+  }
+
+  function begin() {
+    disarm(rec);
+    rec = build();
+    startedAt = Date.now();
+    try { rec.start(); } catch (e) { /* already started — harmless */ }
+  }
+  // Used when the language changes mid-session: end this instance and let the
+  // normal restart path pick up the new language.
+  function restart() { try { rec.stop(); } catch (e) {} }
+
+  toggle.addEventListener("click", function () {
+    msg.textContent = "";
+    if (!SR) return;
+    if (listening) {
+      setState(false);
+      if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+      // stop(), not abort(): Chrome still returns the sentence in progress.
+      // The instance stays armed until its `end`, which sends that last bit.
+      try { if (rec) rec.stop(); } catch (e) {}
+      flush(true);
+      live.textContent = "";
+    } else {
+      quickEnds = 0;
+      setState(true);
+      begin();
+    }
+  });
+
+  // Time-based flush: a slow speaker should not leave words sitting unsent.
+  setInterval(function () { if (pending.trim()) flush(false); }, 2000);
+
+  if (!SR) {
+    toggle.disabled = true;
+    stateEl.textContent = "Can't listen here";
+    msg.textContent = "This browser has no speech recognition. Use Chrome or Edge — or type notes in the box below.";
+  }
+
+  send("streamlit:componentReady", { apiVersion: 1 });
+  setHeight();
+  window.addEventListener("resize", setHeight);
+})();
+</script>
+</body></html>

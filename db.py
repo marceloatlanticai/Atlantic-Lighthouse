@@ -204,13 +204,22 @@ def invalidate_dispatch_cache() -> None:
 
 
 def load_all_dispatches(limit: int = 150) -> list:
-    """Load dispatches, newest first. Memoised for a few seconds."""
+    """Load dispatches, newest first. Memoised for a few seconds.
+
+    Client profiles and session logs share this table (see upsert_record) but
+    are NOT dispatches, and they are filtered out here so no older caller ever
+    meets one. That is not hypothetical: the per-client Dispatch loader returns
+    the newest row without an _overview flag and assumes "Heinz" when no client
+    is set — a fresh session log would have been served as Heinz's current
+    Dispatch. Records are read through load_records / load_record instead.
+    """
     import time as _time
     with _DISPATCH_LOCK:
         _rows = _DISPATCH_CACHE["rows"]
         if _rows is not None and (_time.time() - _DISPATCH_CACHE["at"]) < _DISPATCH_TTL:
             return _rows
-    rows = _load_all_dispatches_uncached(limit)
+    rows = [r for r in _load_all_dispatches_uncached(limit)
+            if not (r.get("full") or {}).get("_record")]
     with _DISPATCH_LOCK:
         _DISPATCH_CACHE["rows"] = rows
         _DISPATCH_CACHE["at"] = _time.time()
@@ -222,16 +231,27 @@ def _load_all_dispatches_uncached(limit: int = 150) -> list:
     sb = _get_sb()
     if sb:
         try:
-            res = (
-                sb.table("dispatches")
-                .select("*")
-                .order("timestamp", desc=True)
+            def _query(skip_records: bool):
+                q = sb.table("dispatches").select("*")
+                if skip_records:
+                    # Client profiles and session logs live in this table too,
+                    # and a session log carries its whole transcript. Left in,
+                    # every Archive load would download every meeting ever
+                    # transcribed, only to throw them away. The NULL branch
+                    # keeps any old row written without a topic.
+                    q = q.or_("topic.is.null,topic.not.in.(__client__,__session__)")
                 # There was no limit at all. The Archive shows 40 and nothing
                 # else reads further back, so every row beyond this was being
                 # downloaded and parsed for nobody.
-                .limit(limit)
-                .execute()
-            )
+                return q.order("timestamp", desc=True).limit(limit).execute()
+            try:
+                res = _query(True)
+            except Exception as _fexc:
+                # The filter is an optimisation, never a reason for an empty
+                # Archive: if the server rejects it, ask the old way and let
+                # load_all_dispatches drop the records in Python.
+                print(f"[db] record filter rejected, loading unfiltered: {_fexc}")
+                res = _query(False)
             records = []
             for row in res.data:
                 full_data = row.get("full_json") or {}
@@ -299,6 +319,172 @@ def save_dispatch(content: dict, topic: str):
     _mkdir()
     with open(_DISPATCHES_FILE, "a") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RECORDS — client profiles and session logs, kept in the dispatches table
+# ══════════════════════════════════════════════════════════════════════════════
+# WHY THIS TABLE AND NOT A NEW ONE. A new table means someone running SQL against
+# the live database before any of this can be tried. `dispatches` already has a
+# JSONB column and — crucially — `dispatch_id` is UNIQUE, so a record can be
+# UPDATED in place by its id instead of piling up a new row on every change. A
+# session log changes every minute of a meeting; appending would have meant
+# hundreds of rows per session.
+#
+# Every record carries `_record: True` in its JSON, which is what keeps it out
+# of load_all_dispatches and therefore out of every older screen.
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+
+_UPSERT_MINIMAL: dict = {}      # {"ok": False} once the client is found not to support it
+
+
+def upsert_record(record_id: str, topic: str, data: dict, label: str = "") -> bool:
+    """Create or replace a record by id. Returns True on success."""
+    if not record_id:
+        return False
+    full = dict(data or {})
+    full["_record"] = True
+    full["_record_id"] = record_id
+    row = {"timestamp": _now_iso(), "dispatch_id": record_id, "topic": topic,
+           "content": (label or record_id)[:200], "full_json": full}
+    sb = _get_sb()
+    if sb:
+        try:
+            q = sb.table("dispatches")
+            # A live session log is rewritten every few seconds and grows to
+            # ~100 KB by the end of a long meeting. By default the server sends
+            # the whole row back after every write, for nobody: "minimal"
+            # skips that. Older clients without the option use the default.
+            if _UPSERT_MINIMAL.get("ok", True):
+                try:
+                    from postgrest.types import ReturnMethod
+                    q.upsert(row, on_conflict="dispatch_id",
+                             returning=ReturnMethod.minimal).execute()
+                    return True
+                except (ImportError, TypeError) as _mexc:
+                    _UPSERT_MINIMAL["ok"] = False
+                    print(f"[db] upsert without returning=minimal ({_mexc})")
+            sb.table("dispatches").upsert(row, on_conflict="dispatch_id").execute()
+            return True
+        except Exception as exc:
+            print(f"[db] upsert_record Supabase error: {exc}")
+    # ── file fallback: rewrite the jsonl with the record replaced ──
+    try:
+        _mkdir()
+        lines = []
+        if os.path.exists(_DISPATCHES_FILE):
+            with open(_DISPATCHES_FILE) as f:
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if rec.get("dispatch_id") != record_id:
+                        lines.append(rec)
+        lines.append({"timestamp": row["timestamp"], "dispatch_id": record_id,
+                      "topic": topic, "content": row["content"], "full": full})
+        with open(_DISPATCHES_FILE, "w") as f:
+            for rec in lines:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return True
+    except Exception as exc:
+        print(f"[db] upsert_record file error: {exc}")
+        return False
+
+
+def _record_from_row(row: dict) -> dict:
+    full = row.get("full_json") if "full_json" in row else row.get("full")
+    if isinstance(full, str):
+        try:
+            full = json.loads(full)
+        except Exception:
+            full = {}
+    return dict(full or {}, _updated=row.get("timestamp", ""))
+
+
+def load_records(topic: str, limit: int = 200, id_prefix: str = "") -> list:
+    """All records of one kind, most recently updated first.
+
+    `id_prefix` narrows by record id — "session:<client>:" asks for one client's
+    sessions only. Without it, listing a client's past sessions would download
+    every transcript of every client just to keep a few of them.
+    """
+    sb = _get_sb()
+    if sb:
+        try:
+            q = sb.table("dispatches").select("*").eq("topic", topic)
+            if id_prefix:
+                q = q.like("dispatch_id", id_prefix + "%")
+            res = q.order("timestamp", desc=True).limit(limit).execute()
+            return [_record_from_row(r) for r in (res.data or [])]
+        except Exception as exc:
+            print(f"[db] load_records Supabase error: {exc}")
+    out = []
+    if os.path.exists(_DISPATCHES_FILE):
+        latest: dict = {}
+        with open(_DISPATCHES_FILE) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("topic") == topic and str(rec.get("dispatch_id", "")).startswith(id_prefix):
+                    latest[rec.get("dispatch_id")] = rec      # last write wins
+        out = [_record_from_row(r) for r in latest.values()]
+    return sorted(out, key=lambda r: r.get("_updated", ""), reverse=True)[:limit]
+
+
+def load_record(record_id: str) -> Optional[dict]:
+    """One record by id, or None."""
+    if not record_id:
+        return None
+    sb = _get_sb()
+    if sb:
+        try:
+            res = (sb.table("dispatches").select("*")
+                   .eq("dispatch_id", record_id).limit(1).execute())
+            rows = res.data or []
+            return _record_from_row(rows[0]) if rows else None
+        except Exception as exc:
+            print(f"[db] load_record Supabase error: {exc}")
+    if os.path.exists(_DISPATCHES_FILE):
+        found = None
+        with open(_DISPATCHES_FILE) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("dispatch_id") == record_id:
+                    found = rec          # last write wins
+        return _record_from_row(found) if found else None
+    return None
+
+
+def delete_record(record_id: str) -> None:
+    sb = _get_sb()
+    if sb:
+        try:
+            sb.table("dispatches").delete().eq("dispatch_id", record_id).execute()
+            return
+        except Exception as exc:
+            print(f"[db] delete_record Supabase error: {exc}")
+    if os.path.exists(_DISPATCHES_FILE):
+        keep = []
+        with open(_DISPATCHES_FILE) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("dispatch_id") != record_id:
+                    keep.append(rec)
+        with open(_DISPATCHES_FILE, "w") as f:
+            for rec in keep:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def load_last_dispatch() -> Optional[dict]:
@@ -386,7 +572,8 @@ def unpack_evidence(content: str) -> tuple:
 
 
 def add_curadoria_item(user: str, type_: str, title: str, content: str,
-                       url: str = "", category: str = "") -> bool:
+                       url: str = "", category: str = "",
+                       folder_ids: Optional[list] = None) -> bool:
     """Add item. Returns False if already saved by this user.
 
     `category` carries the search this came from — brand, category, product —
@@ -414,7 +601,7 @@ def add_curadoria_item(user: str, type_: str, title: str, content: str,
                 "url":        url,
                 "category":   category,
                 "saved_at":   saved_at,
-                "folder_ids": [],
+                "folder_ids": list(folder_ids or []),
             }).execute()
             return True
         except Exception as exc:
@@ -430,7 +617,7 @@ def add_curadoria_item(user: str, type_: str, title: str, content: str,
         "url":        url,
         "category":   category,
         "saved_at":   saved_at,
-        "folder_ids": [],
+        "folder_ids": list(folder_ids or []),
     })
     _save_curadoria(items)
     return True
