@@ -289,7 +289,8 @@ def people_defaults(session: dict) -> dict:
     session.setdefault("intro_win", [])     # [[from ms, to ms or None]] — when it was
     session.setdefault("voice_mode", "")    # "auto" (service) · "tap" (facilitator)
     session.setdefault("people_notes", {})  # person id → what they cared about (after)
-    session.setdefault("quest_by", [])      # per client problem: who was speaking when touched
+    session.setdefault("quest_by", [])      # per client problem: who said it (raised_by)
+    session.setdefault("assign", {})        # chunk index (str) → person id, set by hand
     if not isinstance(session.get("people_n"), int):
         session["people_n"] = max([int(p.get("n") or 0) for p in session["people"]] + [0])
     return session
@@ -370,6 +371,21 @@ def _who_at(idx: tuple, t_ms: Optional[int]) -> str:
     return whos[i] if i >= 0 else ""
 
 
+def _first_tap_in(idx: tuple, a: Optional[int], b: Optional[int]) -> str:
+    """The first person tapped while a piece was being said — for a piece that
+    began before anyone was tapped (the facilitator pressed a moment late)."""
+    import bisect
+    keys, whos = idx
+    if not keys or not a or not b:
+        return ""
+    i = bisect.bisect_left(keys, a)
+    while i < len(keys) and keys[i] <= b:
+        if whos[i]:
+            return whos[i]
+        i += 1
+    return ""
+
+
 def _in_intro(wins: list, t0: Optional[int], t1: Optional[int] = None) -> bool:
     """Was this said during a round of introductions? It must start inside the
     round (a second and a half of grace: someone may begin as the facilitator
@@ -398,6 +414,7 @@ def session_lines(session: dict, first: int = 0) -> list:
     known = {p.get("id") for p in session.get("people") or []}
     idx = _tap_index(session)
     wins = session.get("intro_win") or []
+    hand = session.get("assign") or {}
     out = []
     for n in range(max(0, first), len(chunks)):
         ch = chunks[n]
@@ -405,6 +422,13 @@ def session_lines(session: dict, first: int = 0) -> list:
         base = {"n": n, "t": ch.get("t", ""), "note": not voice}
         if not voice:
             out.append(dict(base, x=ch.get("text", ""), w="", intro=False, t0=None))
+            continue
+        if hand.get(str(n)) in known:
+            # Said who it was by hand: that wins over taps and voices, for the
+            # whole line. (The intro flag still comes from the clock.)
+            a = _ms(ch.get("t0")) or _ms(((ch.get("parts") or [{}])[0]).get("t0"))
+            b = _ms(ch.get("t1")) or _ms(((ch.get("parts") or [{}])[-1]).get("t1"))
+            out.append(dict(base, x=ch.get("text", ""), w=hand[str(n)], intro=_in_intro(wins, a, b), t0=a))
             continue
         if ch.get("spk") or ch.get("ep"):
             w = voices.get(ch.get("spk") or "", "")
@@ -419,7 +443,7 @@ def session_lines(session: dict, first: int = 0) -> list:
                 continue
             a, b = _ms(pt.get("t0")), _ms(pt.get("t1"))
             at = min(a + TAP_LAG_MS, b) if (a and b) else ((a + TAP_LAG_MS) if a else b)
-            w = _who_at(idx, at)
+            w = _who_at(idx, at) or _first_tap_in(idx, a, b)
             w = w if w in known else ""
             intro = _in_intro(wins, a or b, b)
             if run is not None and run["w"] == w and run["intro"] == intro:
@@ -606,6 +630,7 @@ def merge_people(session: dict, src_id: str, dst_id: str) -> bool:
     session["taps"] = [[t[0], dst_id if t[1] == src_id else t[1]] for t in session.get("taps") or []
                        if isinstance(t, (list, tuple)) and len(t) == 2]
     session["quest_by"] = [dst_id if x == src_id else x for x in session.get("quest_by") or []]
+    session["assign"] = {k: (dst_id if v == src_id else v) for k, v in (session.get("assign") or {}).items()}
     if not b.get("name") and a.get("name"):
         b["name"], b["role"], b["by"] = a["name"], a.get("role", ""), a.get("by", "")
     elif not b.get("role") and a.get("role"):
@@ -658,7 +683,28 @@ def remove_person(session: dict, pid: str) -> bool:
     session["voices"] = {k: v for k, v in (session.get("voices") or {}).items() if v != pid}
     session["taps"] = [[t[0], "" if t[1] == pid else t[1]] for t in session.get("taps") or []
                        if isinstance(t, (list, tuple)) and len(t) == 2]
+    session["assign"] = {k: v for k, v in (session.get("assign") or {}).items() if v != pid}
     session["people"] = [p for p in session.get("people") or [] if p.get("id") != pid]
+    return True
+
+
+def assign_line(session: dict, n, who: str) -> bool:
+    """Say by hand who said line n (a chunk) — or "" to undo it."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return False
+    chunks = session.get("chunks") or []
+    if not 0 <= n < len(chunks) or chunks[n].get("source") != "voice":
+        return False
+    who = str(who or "")
+    if who and not person(session, who):
+        return False
+    a = session.setdefault("assign", {})
+    if who:
+        a[str(n)] = who
+    else:
+        a.pop(str(n), None)
     return True
 
 
@@ -1393,8 +1439,8 @@ def hud_apply(session: dict, value, n_problems: int = 0,
     ("look", category, product, reason) ("end",) ("setup",) ("golive",)
     ("people",) when names changed and the log should be saved now.
     Everything that is only state is done here — including who is who:
-    tap {who, at} · person_add {at, tap} · name {id, name, role} ·
-    merge {id, into} · you {id} · person_del {id} · intro {on, at}.
+    tap {who, at} · person_add {at, tap, assign_n} · name {id, name, role} ·
+    merge {id, into} · you {id} · person_del {id} · assign {n, who} · intro {on, at}.
     """
     hud_defaults(session)
     msgs = (value or {}).get("msgs") if isinstance(value, dict) else None
@@ -1469,7 +1515,12 @@ def hud_apply(session: dict, value, n_problems: int = 0,
             p = new_person(session, "tap")
             if p and m.get("tap"):
                 add_tap(session, m.get("at"), p["id"])
+            if p and m.get("assign_n") is not None:
+                assign_line(session, m.get("assign_n"), p["id"])
             if p and ("people",) not in effects:
+                effects.append(("people",))
+        elif t == "assign":
+            if assign_line(session, m.get("n"), m.get("who")) and ("people",) not in effects:
                 effects.append(("people",))
         elif t in ("name", "merge", "you", "person_del"):
             pid = str(m.get("id") or "")
@@ -1544,7 +1595,7 @@ def hud_state(session: dict, client: dict, brief: Optional[dict] = None,
     upto = int(session.get("read_upto", 0))
     all_lines = session_lines(session)
     lines = [{"t": clk(l["t"]), "x": l["x"], "note": l["note"], "unread": l["n"] >= upto,
-              "w": l["w"], "intro": bool(l.get("intro"))} for l in all_lines[-40:]]
+              "w": l["w"], "intro": bool(l.get("intro")), "n": l["n"]} for l in all_lines[-40:]]
     now_who = ""
     for l in reversed(all_lines[-6:]):
         if l["note"]:
@@ -1688,6 +1739,27 @@ def chart_analysis(values: list) -> dict:
             "change30": [round(c, 4) for c in change], "peaks": peaks}
 
 
+def _fill_holes(row: list) -> list:
+    """None runs filled on the straight line between the known days around them
+    (held flat at either end, where there is only one side)."""
+    out = list(row)
+    known = [i for i, x in enumerate(out) if x is not None]
+    if not known:
+        return [0.0] * len(out)
+    for i in range(len(out)):
+        if out[i] is not None:
+            continue
+        left = max((k for k in known if k < i), default=None)
+        right = min((k for k in known if k > i), default=None)
+        if left is None:
+            out[i] = out[right]
+        elif right is None:
+            out[i] = out[left]
+        else:
+            out[i] = out[left] + (out[right] - out[left]) * (i - left) / (right - left)
+    return out
+
+
 def chart_payload(series: list, titles: list, scans: Optional[list] = None,
                   queries: Optional[list] = None, scope: str = "", days: int = CHART_DAYS) -> dict:
     """GDELT's timelines, put on one daily axis and judged.
@@ -1701,21 +1773,31 @@ def chart_payload(series: list, titles: list, scans: Optional[list] = None,
     base = {"titles": titles, "queries": list(queries or []), "scope": scope}
     if not series or any(s is None for s in series):
         return dict(base, status="failed")
-    dates = sorted({str(d)[:10] for s in series for d, _ in s if d})
+    have = [{str(d)[:10]: max(0.0, float(v or 0)) for d, v in s if d} for s in series]
+    dates = sorted({d for m in have for d in m})
     if not dates:
         return dict(base, status="quiet", total=0)
     try:
         end = datetime.strptime(dates[-1], "%Y-%m-%d")
+        first = max(datetime.strptime(dates[0], "%Y-%m-%d"), end - timedelta(days=days - 1))
     except ValueError:
         return dict(base, status="failed")
-    axis = [(end - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d") for i in range(days)]
+    # THE AXIS IS WHAT GDELT ACTUALLY COVERS, not a calendar. Its archive has
+    # holes — whole days with nothing at all, when it was down. A hole is not
+    # silence: drawn as zero it would show every current crashing on the same
+    # day. A day no line has is filled in between its neighbours; a day only
+    # some lines have is a real zero for the others; and the axis starts on
+    # GDELT's first day rather than padding the front with zeros.
+    axis = [(first + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((end - first).days + 1)]
+    known = set(dates)
     values = []
-    for s in series:
-        m = {str(d)[:10]: float(v or 0) for d, v in s}
-        values.append([round(max(0.0, m.get(d, 0.0)), 2) for d in axis])
+    for m in have:
+        row = [m.get(d, 0.0) if d in known else None for d in axis]
+        values.append([round(x, 2) for x in _fill_holes(row)])
     total = sum(sum(v) for v in values)
-    out = dict(base, dates=axis, values=values, total=round(total))
-    if total < QUIET_TOTAL:
+    out = dict(base, dates=axis, values=values, total=round(total),
+               holes=sum(1 for d in axis if d not in known))
+    if total < QUIET_TOTAL or len(axis) < 14:
         out["status"] = "quiet"
         return out
     an = chart_analysis(values)

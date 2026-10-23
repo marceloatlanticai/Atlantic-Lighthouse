@@ -11290,8 +11290,8 @@ def _rm_brief_bits(c: dict) -> dict:
 _RM_CHART_LOCK = _rm_threading.Lock()
 _RM_CHART: dict = {}
 _RM_CHART_TTL = 6 * 3600       # a good answer is reused for six hours
-_RM_CHART_RETRY = 10 * 60      # a failed one is asked again after ten minutes
-_RM_CHART_STALE = 5 * 60       # a fetch "running" longer than this died with its thread
+_RM_CHART_RETRY = 3 * 60       # a failed one is asked again after three minutes
+_RM_CHART_STALE = 6 * 60       # a fetch "running" longer than this died with its thread
 _RM_CHART_GAP = float(os.environ.get("LH_GDELT_GAP", "5") or 5)   # GDELT asks for one request every five seconds
 
 
@@ -11313,7 +11313,7 @@ def _rm_q_join(phrases: list) -> str:
     return ps[0] if len(ps) == 1 else "(" + " OR ".join(ps) + ")"
 
 
-def _rm_chart_queries(currents: list, category: str, product: str, brand: str) -> list:
+def _rm_chart_queries(currents: list, category: str, product: str, brand: str) -> tuple:
     """One GDELT query per current — the words NEWS would use for it.
 
     A current is an argument ("Boycotts are becoming fandoms"); news does not
@@ -11329,7 +11329,7 @@ def _rm_chart_queries(currents: list, category: str, product: str, brand: str) -
         fallback.append(f"{anchor} {q}".strip() if (q and anchor) else (q or anchor))
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not key or not currents:
-        return fallback
+        return fallback, fallback
     try:
         import anthropic
         listing = "\n".join(f"{i + 1}. {c.get('t', '')} — {str(c.get('s', ''))[:220]}"
@@ -11348,10 +11348,24 @@ def _rm_chart_queries(currents: list, category: str, product: str, brand: str) -
             model=CLAUDE_MODEL_FAST, max_tokens=500, messages=[{"role": "user", "content": prompt}])
         lists = (_extract_json(_msg_text(r)) or {}).get("queries") or []
         return [(_rm_q_join(lists[i]) if i < len(lists) and isinstance(lists[i], list) else "") or fb
-                for i, fb in enumerate(fallback)]
+                for i, fb in enumerate(fallback)], fallback
     except Exception as exc:
         print(f"[room] chart queries fell back to the currents' own words: {exc}")
-        return fallback
+        return fallback, fallback
+
+
+def _rm_chart_reason(note: str) -> str:
+    """What went wrong, in words the room can read."""
+    low = (note or "").lower()
+    if "limit" in low or "429" in low or "too many" in low:
+        return "GDELT is turning requests away for a moment"
+    if "timed out" in low or "timeout" in low:
+        return "GDELT did not answer in time"
+    if "did not return json" in low or "phrase" in low or "query" in low:
+        return "GDELT refused the search"
+    if "urlopen" in low or "connection" in low or "resolve" in low or "unreachable" in low:
+        return "GDELT could not be reached"
+    return "GDELT failed"
 
 
 def _rm_chart_worker(key: str, currents: list, category: str, product: str, brand: str,
@@ -11360,19 +11374,35 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
     data, ttl = {"status": "failed"}, _RM_CHART_RETRY
     try:
         from ingestion import gdelt_timeline, gdelt_top_article
-        queries = _rm_chart_queries(currents, category, product, brand)
+        queries, fallback = _rm_chart_queries(currents, category, product, brand)
         titles = [c.get("t", "") for c in currents]
 
         def fetch(cc: str):
+            # TRIED TWICE, A LINE AT A TIME. GDELT turns away bursts (one
+            # request every five seconds, and on a shared cloud server other
+            # apps' requests count too) and now and then refuses a phrasing.
+            # So a failed line waits and goes again — with the current's own
+            # words if it was the wording GDELT refused — before the chart
+            # gives up. One line failing still fails the chart: never drawn
+            # as silence.
             out, errs = [], []
             for n, q in enumerate(queries):
                 if n:
                     _rm_time.sleep(_RM_CHART_GAP)
-                try:
-                    out.append(gdelt_timeline(q, source_country=cc))
-                except Exception as exc:
-                    errs.append(f"{type(exc).__name__}: {exc}"[:200])
-                    out.append(None)
+                got, last = None, ""
+                for attempt in range(2):
+                    if attempt:
+                        _rm_time.sleep(_RM_CHART_GAP * 2)
+                        if _rm_chart_reason(last) == "GDELT refused the search" and fallback[n] != q:
+                            q = queries[n] = fallback[n]
+                    try:
+                        got = gdelt_timeline(q, source_country=cc)
+                        break
+                    except Exception as exc:
+                        last = f"{type(exc).__name__}: {exc}"[:200]
+                if got is None:
+                    errs.append(last)
+                out.append(got)
             return out, errs
 
         series, errs = fetch(country)
@@ -11388,6 +11418,8 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
                 data, errs = wide, errs2
         if errs and data.get("status") == "failed":
             data["note"] = errs[0]
+            data["reason"] = _rm_chart_reason(errs[0])
+            print(f"[room] the news race failed ({brand or category}): {errs[0]}")
         sp = data.get("spike")
         if data.get("status") == "ok" and sp and 0 <= int(data.get("riser", -1)) < len(queries):
             _rm_time.sleep(_RM_CHART_GAP)
@@ -11404,7 +11436,11 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
         if data.get("status") in ("ok", "quiet"):
             ttl = _RM_CHART_TTL
     except Exception as exc:
-        data = {"status": "failed", "note": f"{type(exc).__name__}: {exc}"[:200]}
+        data = {"status": "failed", "note": f"{type(exc).__name__}: {exc}"[:200],
+                "reason": _rm_chart_reason(f"{type(exc).__name__}: {exc}")}
+        print(f"[room] the news race failed ({brand or category}): {data['note']}")
+    if data.get("status") == "failed":
+        data["retry_min"] = int(_RM_CHART_RETRY // 60)
     with _RM_CHART_LOCK:
         _RM_CHART[key] = {"state": "done", "t": _rm_time.time(), "ttl": ttl, "data": data}
 
