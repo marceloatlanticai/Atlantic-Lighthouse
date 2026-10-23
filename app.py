@@ -4139,6 +4139,17 @@ _SV_SRC_LABEL = {"reddit": "Reddit", "gdelt": "News", "hacker_news": "HN", "yout
                  "tiktok": "TikTok", "instagram": "Instagram", "twitter": "X/Twitter",
                  "web": "Web", "rss": "RSS", "db": "Archive"}
 
+# THE TRUSTED SOURCES AND THE WINDOW live in sources.py, tested on their own.
+# Guarded like session_core: if the file does not reach the server, the brief
+# still runs exactly as before — no window, no By the numbers — and the brief
+# says why instead of the whole app going down.
+try:
+    import sources as _lhsrc
+except Exception as _src_imp_exc:
+    _lhsrc = None
+    print(f"[overview] sources.py unavailable — no window, no By the numbers: {_src_imp_exc}")
+_SV_WINDOW_DEFAULT = getattr(_lhsrc, "DEFAULT_WINDOW", 12)
+
 
 # ── What the line says while it works ────────────────────────────────────────
 # Every one of these names something the pipeline actually does, in roughly the
@@ -4156,6 +4167,9 @@ _SV_SAYINGS = [
     "Sorting sixteen-million-view videos from three-view ones…",
     "Reading the trade press so you do not have to…",
     "Opening newsletters nobody forwarded you…",
+    "Asking Statista, Gallup and YouGov for numbers…",
+    "Checking each number against the page it came from…",
+    "Throwing out anything older than the window…",
     "Checking whether the industry and the street agree…",
     "Working out which currents are new this week…",
     "Looking for what quietly disappeared…",
@@ -4411,8 +4425,12 @@ def _sv_trade_outlets(category: str, market: str, product: str = "") -> list:
 
 
 def _sv_gather_trade(search_terms: str, category: str, market: str,
-                     product: str = "", outlets: Optional[list] = None) -> tuple:
+                     product: str = "", outlets: Optional[list] = None,
+                     months: int = 0) -> tuple:
     """Collect trade-press coverage. Returns (signals, outlets, diagnostic).
+
+    `months` is the scan's window: Firecrawl gets it as a date range, and every
+    article that carries a date is checked against it before it counts.
 
     Per outlet, in order: GDELT `domainis:` → the outlet's own RSS feed →
     Firecrawl `site:`. The first two are free; the third only runs where the
@@ -4444,6 +4462,7 @@ def _sv_gather_trade(search_terms: str, category: str, market: str,
 
     from ingestion import scrape_gdelt, scrape_rss, scrape_web
     fc_key = os.environ.get("FIRECRAWL_API_KEY", "")
+    _tbs = _lhsrc.tbs_for(months) if (_lhsrc and months) else ""
     by_domain = {o["domain"]: o for o in outlets}
     # An RSS feed carries everything the outlet published, not just our topic.
     # Short words are dropped: "of", "the" and friends match every article.
@@ -4495,13 +4514,24 @@ def _sv_gather_trade(search_terms: str, category: str, market: str,
 
         if not found and fc_key:
             try:
-                for sig in scrape_web(f"site:{dom} {search_terms}", api_key=fc_key, n=4):
+                _q = f"site:{dom} {search_terms}"
+                for sig in (scrape_web(_q, api_key=fc_key, n=4, tbs=_tbs) if _tbs
+                            else scrape_web(_q, api_key=fc_key, n=4)):
                     if _same_host(sig.url, dom):
                         found.append(sig)
                 if found:
                     via = "firecrawl"
             except Exception:
                 pass
+
+        # The window. An outlet whose only articles predate it has, for this
+        # brief, published nothing — and earns no chip.
+        if found and _lhsrc and months:
+            found, _o = _lhsrc.in_window(found, months, when=lambda s: s.timestamp)
+            if _o:
+                why.append(f"{_o} older than the window")
+                if not found:
+                    via = ""
 
         return dom, found, via, why
 
@@ -4675,7 +4705,8 @@ def _sv_newsletters(category: str, market: str, product: str = "") -> list:
 
 
 def _sv_gather_letters(search_terms: str, category: str, market: str,
-                       product: str = "", letters: Optional[list] = None) -> tuple:
+                       product: str = "", letters: Optional[list] = None,
+                       months: int = 0) -> tuple:
     """Collect newsletter essays. Returns (signals, confirmed, diagnostic).
 
     ONE path per publication: `https://{domain}/feed`. Substack, Ghost and
@@ -4787,9 +4818,11 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
             return []
         from ingestion import scrape_web
         out = []
+        _tbs = _lhsrc.tbs_for(months) if (_lhsrc and months) else ""
         try:
-            for sig in scrape_web(f"site:substack.com {search_terms}",
-                                  api_key=key, n=6):
+            for sig in (scrape_web(f"site:substack.com {search_terms}", api_key=key, n=6,
+                                   tbs=_tbs) if _tbs else
+                        scrape_web(f"site:substack.com {search_terms}", api_key=key, n=6)):
                 host = urllib.parse.urlparse(sig.url).netloc.lower().replace("www.", "")
                 # `endswith("substack.com")` is NOT a domain check — it is a
                 # string check, and it accepts "not-substack.com" and anything
@@ -4886,6 +4919,12 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
     # question is what is being argued RIGHT NOW — an essay from March is
     # history, not a current.
     sigs.sort(key=lambda s: str(s.get("timestamp") or ""), reverse=True)
+    # And an essay from before the window is not even history worth reading here:
+    # it goes, by the date its feed gives it.
+    if _lhsrc and months:
+        sigs, _old = _lhsrc.in_window(sigs, months)
+        if _old:
+            diag["older than the window"] = _old
     sigs = sigs[:16]
     diag["with_body"] = sum(1 for s in sigs if len(s.get("content") or "") > 600)
     # The chips carry a writer's name too, so they get the same correction: the
@@ -4910,6 +4949,71 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
             _by_name[l["name"]]["covers"] = l["covers"]
     confirmed = list(_by_name.values())
     return sigs, confirmed, diag
+
+
+# ── 01N · By the numbers ─────────────────────────────────────────────────────
+# Pat, Oct 23: "a dedicated section for statistical data points — shoe sales up
+# 27% — to make the tool more helpful during client presentations", and, in the
+# same meeting, "where are we sourcing from? Clients might ask."
+#
+# So the figures come from ONE place — the trusted list in sources.py (his
+# research houses, Pew, the statistics office of the market) — through Claude's
+# web search with allowed_domains set to that list, and each one has to survive
+# sources.collect(): a trusted page, a page the search really returned, a date
+# inside the window. Then the page is opened and the number looked for beside
+# its claim. A figure that cannot be found again is shown only as unconfirmed,
+# on screen, for a human to check — never in the PDF, never in the prompt.
+#
+# Cost: up to 4 web searches (US$0.01 each) plus Haiku tokens — a few cents a
+# brief. LH_NUMBERS=off in the secrets switches the lane off without a deploy.
+def _sv_gather_numbers(brand: str, category: str, product: str, market: str,
+                       months: int, competitors: str = "") -> dict:
+    """Figures for the brief, checked. Runs in a worker thread; never raises
+    and never touches Streamlit."""
+    if _lhsrc is None:
+        return {"items": [], "error": "sources.py is missing on the server"}
+    if str(os.environ.get("LH_NUMBERS", "on")).strip().lower() in ("off", "0", "false", "no"):
+        return {"items": [], "error": "switched off (LH_NUMBERS=off in the secrets)"}
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {"items": [], "error": "no ANTHROPIC_API_KEY"}
+    import time as _t
+    t0 = _t.monotonic()
+    try:
+        import anthropic
+        try:
+            # A ceiling of our own: the SDK's default is ten minutes, and the
+            # scan waits on this lane before writing the brief.
+            client = anthropic.Anthropic(api_key=key, timeout=60.0, max_retries=1)
+        except TypeError:
+            client = anthropic.Anthropic(api_key=key)
+        _mk = MARKETS.get(market, MARKETS[DEFAULT_MARKET])
+        out = _lhsrc.search_numbers(client, CLAUDE_MODEL_FAST, fallback_model=CLAUDE_MODEL,
+                                  brand=brand or "", category=category or "",
+                                  product=product or "", market=market or "",
+                                  iso=_mk.get("trends", ""), months=int(months or 0),
+                                  competitors=competitors or "")
+    except Exception as exc:
+        return {"items": [], "error": f"the search failed ({type(exc).__name__})",
+                "secs": round(_t.monotonic() - t0, 1)}
+    if out.get("items"):
+        try:
+            from ingestion import fetch_article_text
+            fc_key = os.environ.get("FIRECRAWL_API_KEY", "")
+
+            def _read(u):
+                r = fetch_article_text(u, fc_key=fc_key, timeout=8)
+                return r[0] if isinstance(r, tuple) else (r or "")
+
+            out["pages"] = _lhsrc.confirm_on_pages(out["items"], _read, budget=25)
+        except Exception as exc:
+            out["pages"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+    out["secs"] = round(_t.monotonic() - t0, 1)
+    out["at"] = datetime.utcnow().isoformat(timespec="seconds")
+    print(f"[numbers] {len(out.get('items') or [])} figures, "
+          f"{len(out.get('dropped') or [])} dropped, {out.get('searches', 0)} searches, "
+          f"{out['secs']}s" + (f" — {out['error']}" if out.get("error") else ""))
+    return out
 
 
 def _sv_social_queries(product: str, brand: str, competitors: str,
@@ -4974,8 +5078,14 @@ def _sv_social_queries(product: str, brand: str, competitors: str,
 
 def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                progress=None, product: str = "", brand: str = "",
-               competitors: str = "", archive: Optional[list] = None) -> tuple:
+               competitors: str = "", archive: Optional[list] = None,
+               months: int = _SV_WINDOW_DEFAULT) -> tuple:
     """Collect signals across sources. Returns (signals, per-source tally).
+
+    `months` is the window. It reaches each source in the form that source
+    understands — YouTube's publishedAfter, Hacker News' date floor, Firecrawl's
+    date range — and then everything that carries a date is checked once more
+    on the way out, the archive included. 0 = no window.
 
     RUN IN PARALLEL. The three Apify actors alone took about 150s in sequence —
     roughly 60% of a four-minute scan — and they spend that time waiting on
@@ -5061,16 +5171,30 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             raise err                   # total failure must reach the tally
         return got
 
+    # The window, in each source's own terms. Empty / 0 when there is no window
+    # or sources.py is missing, which is exactly the old behaviour.
+    _yt_after = _lhsrc.youtube_after(months) if _lhsrc else ""
+    _hn_since = _lhsrc.unix_after(months) if _lhsrc else 0
+    _web_tbs = _lhsrc.tbs_for(months) if _lhsrc else ""
+
+    def _hn(q):
+        return (scrape_hacker_news(q, n=5, since=_hn_since) if _hn_since
+                else scrape_hacker_news(q, n=5))
+
+    def _yt(q):
+        if _yt_after:
+            return scrape_youtube(q, api_key=ytkey, n=6, region_code=_mk["youtube"],
+                                  published_after=_yt_after)
+        return scrape_youtube(q, api_key=ytkey, n=6, region_code=_mk["youtube"])
+
     jobs = {
         "reddit":      lambda: _widen(lambda q: scrape_reddit(q, max_items=10), 8),
         "gdelt":       lambda: _widen(lambda q: scrape_gdelt(q, n=8,
                                       source_country=_mk["gdelt"]), 6),
-        "hacker_news": lambda: _widen(lambda q: scrape_hacker_news(q, n=5), 5),
+        "hacker_news": lambda: _widen(_hn, 5),
     }
     if ytkey:
-        jobs["youtube"] = lambda: _widen(
-            lambda q: scrape_youtube(q, api_key=ytkey, n=6,
-                                     region_code=_mk["youtube"]), 8)
+        jobs["youtube"] = lambda: _widen(_yt, 8)
     if apify:
         # BETTER QUESTIONS, NOT MORE OF THEM.
         # The three paid scrapers now ask about the brand, the product and the
@@ -5143,7 +5267,8 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     else:
         tally["apify"] = "skipped (no APIFY_API_TOKEN)"
     if fckey:
-        jobs["web"] = lambda: scrape_web(search_terms, api_key=fckey, n=6)
+        jobs["web"] = (lambda: scrape_web(search_terms, api_key=fckey, n=6, tbs=_web_tbs)) \
+            if _web_tbs else (lambda: scrape_web(search_terms, api_key=fckey, n=6))
     else:
         tally["web"] = "skipped (no FIRECRAWL_API_KEY)"
 
@@ -5250,9 +5375,18 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     if _dupes:
         tally["duplicates removed"] = _dupes
 
+    # THE WINDOW, ONE LAST TIME. The sources that take a date floor were given
+    # one; the rest (TikTok, Instagram, X, Reddit) are checked here by the date
+    # each post carries. An undated signal stays — undated is not old, and the
+    # prompt shows it as "undated" so the model can weigh it accordingly.
+    if _lhsrc and months:
+        out, _old = _lhsrc.in_window(out, months)
+        if _old:
+            tally["older than the window"] = _old
+
     _terms = _sv_terms(search_terms)
     try:
-        n = skipped = 0
+        n = skipped = old = 0
         # `archive` lets a caller hand in signals it loaded itself. The session
         # room's background scans need this: they run in a thread, and the
         # loader below is @st.cache_data, which has no script context there.
@@ -5264,12 +5398,20 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             if not _sv_on_topic(s, _terms):
                 skipped += 1
                 continue
+            # Saved signals keep their own date, so a post kept from a scan last
+            # spring cannot come back as this week's news.
+            if _lhsrc and months and _lhsrc.too_old(s.get("timestamp"), months):
+                old += 1
+                continue
             out.append({"title": s.get("title", ""), "content": s.get("content", ""),
                         "source": s.get("source", "db"), "url": s.get("url", ""),
                         "timestamp": s.get("timestamp", ""),
                         "meta": s.get("meta") or s.get("raw_meta") or {}})
             n += 1
-        tally["archive"] = f"{n} (skipped {skipped} off-topic)" if skipped else n
+        _why = [f"skipped {skipped} off-topic"] if skipped else []
+        if old:
+            _why.append(f"{old} older than the window")
+        tally["archive"] = f"{n} ({', '.join(_why)})" if _why else n
     except Exception as exc:
         tally["archive"] = f"ERROR {exc}"
     return out, tally
@@ -5277,18 +5419,45 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
 
 
 def _sv_synthesize(signals: list, category: str, competitors: list, brand: str = "the brand",
-                   trade: Optional[list] = None, letters: Optional[list] = None) -> dict:
+                   trade: Optional[list] = None, letters: Optional[list] = None,
+                   numbers: Optional[list] = None, months: int = 0) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key or not signals:
         return {}
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     batch = signals[:60]
+    # EVERY SIGNAL NOW CARRIES ITS DATE. The model used to read sixty posts with
+    # no idea which were from this week and which from 2019, so an old video with
+    # thirty million views looked like the loudest thing happening today.
+    _day = (lambda v: _lhsrc.day(v)) if _lhsrc else (lambda v: str(v or "")[:10] or "undated")
     sig_text = "\n\n".join(
-        f"[{i}] SOURCE: {s['source']} | URL: {s['url']}\n"
+        f"[{i}] SOURCE: {s['source']} | DATE: {_day(s.get('timestamp'))} | URL: {s['url']}\n"
         f"TITLE: {s['title'][:110]}\nCONTENT: {s['content'][:260]}"
         for i, s in enumerate(batch)
     )
+    _today = datetime.utcnow().strftime("%d %B %Y").lstrip("0")
+    _c = _lhsrc.cutoff(months) if (_lhsrc and months) else None
+    if _c:
+        when_text = (
+            f"TODAY: {_today}. THE WINDOW: the last {_lhsrc.window_label(months)} — since "
+            f"{_c.strftime('%d %B %Y').lstrip('0')}.\n"
+            "Every signal shows its DATE. A current must rest on signals dated inside the "
+            "window. Anything older is history: it can explain a current, but it is never "
+            "presented as one, and a past year's launch, campaign or controversy is never "
+            "described as happening now. Undated signals are fine as colour, not as proof.\n")
+    else:
+        when_text = (f"TODAY: {_today}. Every signal shows its DATE; never present an old "
+                     "event as if it were happening now.\n")
+    # THE ONLY NUMBERS THE BRIEF MAY QUOTE. Found on research and statistics
+    # pages and checked against them (sources.py); the [F#] index lets a card
+    # link its stat back to the page.
+    figures_text = ""
+    _ftxt = _lhsrc.for_prompt(numbers or []) if _lhsrc else ""
+    if _ftxt:
+        figures_text = ("\nFIGURES (checked numbers from research houses and official "
+                        "statistics — the ONLY percentages or totals you may quote; cite "
+                        f"them by [F#]):\n{_ftxt}\n")
     comp = ", ".join(competitors)
     # The trade block is labelled separately so the model can tell industry
     # coverage from consumer chatter — the contrast between them is the point.
@@ -5329,18 +5498,21 @@ def _sv_synthesize(signals: list, category: str, competitors: list, brand: str =
             f"ahead of the trade press. These are ARGUMENTS, not news):\n{_lb}\n")
     prompt = f"""You are the editor of "The Lighthouse", a cultural-intelligence brief written for a strategy team working on the brand {brand} in the {category} category. Write with a confident editorial voice and a clear point of view. Headlines should make an ARGUMENT (e.g. "Functional water eats flavored water", "Mineral provenance is the new luxury") — never flat descriptions.
 
+{when_text}
 Below are {len(batch)} REAL signals scraped from social media, communities, news and the web.
 
 SIGNALS:
 {sig_text}
 {trade_text}
 {letters_text}
+{figures_text}
 
 Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
 {{
   "trends": [
     {{"title": "argumentative headline", "summary": "2-3 sharp sentences with a point of view",
-      "stat": "one momentum line — use a REAL figure or handle from the signals when present; if you have no real number, write a qualitative momentum phrase like 'rising across TikTok & Reddit'. NEVER invent a percentage.",
+      "stat": "one momentum line. If a FIGURE [F#] supports this current, use it with its source, e.g. '+27% sales, H1 2026 · Circana', and set figure_index. Otherwise a REAL handle or engagement figure from the signals; otherwise a qualitative phrase like 'rising across TikTok & Reddit'. NEVER invent a percentage.",
+      "figure_index": null,
       "signal_indexes": [0,5,12]}}
   ],
   "insights_summary": "3-4 sentences: what are people really asking of {category}? The tension, the recurring complaint, the surprise.",
@@ -5469,7 +5641,8 @@ Rules:
     wrote about this category this week, which is itself worth knowing.
   The test is whether a writer would recognise their own argument in your
   sentence. If you have to reach for the link, do not write it.
-- NEVER invent statistics — use real figures from the signals or qualitative phrasing.
+- NEVER invent statistics — use the FIGURES block, real figures from the signals, or qualitative phrasing. figure_index is the NUMBER INSIDE [F#] (a fourth sequence, separate from SIGNALS, [T#] and [N#]), or null. Only set it when that figure is really about this current; a loosely related number is worse than none.
+- RECENCY: the currents describe what is happening inside the window. A signal dated before it never anchors a current.
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
 - Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly."
 
@@ -6892,7 +7065,16 @@ def _sv_diagnostics(res: dict) -> None:
                     else:
                         mark = "  ←"
                     _rows.append(f"{k:14} {v}{mark}")
+                # What the window took out, after the sources answered.
+                if _t.get("older than the window"):
+                    _rows.append(f"{'window':14} -{_t['older than the window']} older than "
+                                 f"the window (dropped)")
+                _wm = ((_result or {}).get("_meta") or {}).get("window")
                 st.code("\n".join(_rows) or "no data")
+                if _wm and _lhsrc:
+                    st.caption(f"Window: the last {_lhsrc.window_label(_wm)}. YouTube, Hacker "
+                               f"News and the web search were asked for that period only; "
+                               f"everything else was checked by its own date afterwards.")
                 _billed = sum(v for k, v in _t.items()
                               if k in _paid and isinstance(v, int))
                 st.caption(f"Streamlit {st.__version__} · component height: "
@@ -6901,6 +7083,56 @@ def _sv_diagnostics(res: dict) -> None:
                            f"code are TikTok 8 · Instagram 12 · X 8 = 28. Well under "
                            f"that means a scraper is failing quietly, not that the "
                            f"scan was cheap.")
+
+            # BY THE NUMBERS — the audit trail. Every figure the search came back
+            # with, what happened to it, and why. This is the answer to "where
+            # does this number come from?" when a client asks it.
+            _nb = (_result or {}).get("_numbers")
+            if isinstance(_nb, dict):
+                _its = _nb.get("items") or []
+                _ok = [x for x in _its if x.get("check") in ("page", "excerpt")]
+                with st.expander(f"By the numbers — {len(_ok)} confirmed, "
+                                 f"{len(_its) - len(_ok)} unconfirmed, "
+                                 f"{len(_nb.get('dropped') or [])} thrown out",
+                                 expanded=False):
+                    if _nb.get("error"):
+                        st.warning(f"The figure search did not run cleanly: {_nb['error']}.")
+                    _lines = []
+                    for x in _its:
+                        _how = {"page": "✓ found on the page",
+                                "excerpt": "✓ in the search's quote of the page"}.get(
+                            x.get("check"), "✗ NOT CONFIRMED — not shown in the brief")
+                        _lines.append(f"{x.get('figure',''):>10}  {x.get('claim','')}\n"
+                                      f"{'':>10}  {x.get('source','')} · {x.get('date','') or 'undated'}"
+                                      f" · {_how}\n{'':>10}  {x.get('url','')}")
+                    if _lines:
+                        st.code("\n\n".join(_lines))
+                    if _nb.get("dropped"):
+                        st.markdown("**Thrown out before anyone saw them**")
+                        st.code("\n".join(f"{d.get('figure',''):>10}  {d.get('why','')}  ·  "
+                                          f"{d.get('url','')}" for d in _nb["dropped"]))
+                    _pg = _nb.get("pages") or {}
+                    st.caption(
+                        f"{_nb.get('searches', 0)} searches in {_nb.get('secs', '?')}s"
+                        + (f" · pages opened: {_pg.get('read', 0)}, figure found on "
+                           f"{_pg.get('found', 0)}, unreadable {_pg.get('unreadable', 0)}"
+                           if isinstance(_pg, dict) and "read" in _pg else "")
+                        + (f" · model {_nb['model']}" if _nb.get("model") else "")
+                        + (f" · skipped by the organisation: {', '.join(_nb['skipped'])}"
+                           if _nb.get("skipped") else ""))
+                    if _nb.get("queries"):
+                        st.caption("Searched for: " + " · ".join(_nb["queries"]))
+                    if _nb.get("domains"):
+                        st.caption("Only these sites: " + ", ".join(_nb["domains"]))
+                    if _nb.get("stats_removed"):
+                        st.markdown("**Stat lines removed — a percentage no source states**")
+                        st.code("\n".join(f"current {g['trend'] + 1}: {g['stat']}"
+                                          for g in _nb["stats_removed"]))
+                    if _nb.get("unsourced"):
+                        st.markdown("**Percentages in the brief that no source states — "
+                                    "check before presenting**")
+                        st.code("\n".join(f"{u['pct']:>6}  {u['where']}\n        …{u['text']}…"
+                                          for u in _nb["unsourced"]))
 
             # WHY A NETWORK CAME BACK THIN.
             # The collection line already says how many signals arrived; this
@@ -7365,6 +7597,41 @@ details .src a{color:__BLUE__;text-decoration:none;}
       color:__META__;font-weight:700;margin-bottom:12px;}
 .sq{font-size:22px;font-weight:700;letter-spacing:-.01em;line-height:1.2;
     margin-bottom:16px;color:__INK__;}
+/* ── 01N · By the numbers ────────────────────────────────────────────────────
+   The Lighthouse contrast at its plainest: a huge, tight figure over a tiny
+   wide-tracked credit. Square, black-ruled tiles on white (the section sits
+   between two blue bands' worth of cards), blue figures, red only when the
+   number is a decline. The pill is the one rounded thing — it is a status,
+   like the controls. */
+.nbgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:0;
+  border-top:1.5px solid __INK__;}
+.nb{padding:26px 26px 24px 0;border-bottom:1px solid __INK__;
+  display:flex;flex-direction:column;}
+.nb:nth-child(3n+2),.nb:nth-child(3n+3){border-left:1px solid __INK__;padding-left:26px;}
+.nbfig{font-size:76px;font-weight:700;letter-spacing:-.045em;line-height:.95;
+  color:__BLUE__;margin-bottom:16px;white-space:nowrap;}
+.nbfig.neg{color:__RED__;}
+.nbclaim{font-size:15px;font-weight:600;line-height:1.35;color:__INK__;
+  margin-bottom:14px;flex:1;}
+.nbwho{font-size:10px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;
+  color:__META__;margin-bottom:12px;}
+.nbfoot{display:flex;justify-content:space-between;align-items:center;gap:10px;
+  flex-wrap:wrap;}
+.nbchk{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;
+  color:__BLUE__;border:1.5px solid __BLUE__;border-radius:10.5px;padding:4px 10px;}
+.nblink{font-size:11.5px;font-weight:600;color:__BLUE__;text-decoration:none;
+  border-bottom:1px solid currentColor;padding-bottom:1px;}
+.nbnote{margin-top:16px;font-size:12.5px;line-height:1.5;color:__BODY__;}
+.nbwhere{margin-top:22px;padding-top:14px;border-top:1px solid rgba(0,0,0,.14);
+  font-size:11.5px;line-height:1.6;color:__BODY__;}
+.statlink{color:inherit;text-decoration:none;margin-left:6px;font-weight:700;}
+.nbgrid.n1{grid-template-columns:1fr;}
+.nbgrid.n2{grid-template-columns:repeat(2,1fr);}
+@media(max-width:820px){
+  .nbgrid,.nbgrid.n2{grid-template-columns:1fr;}
+  .nb:nth-child(3n+2),.nb:nth-child(3n+3){border-left:none;padding-left:0;}
+  .nbfig{font-size:60px;}
+}
 @media(max-width:820px){
   .row3,.row2{grid-template-columns:1fr;}
   .grid{grid-template-columns:1fr;gap:10px;}
@@ -7412,6 +7679,19 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
 
     H, h = [], 0
 
+    # The checked figures (01N). A trend's figure_index points in here; only a
+    # CONFIRMED figure may be linked from a card.
+    _nb = res.get("_numbers") if isinstance(res.get("_numbers"), dict) else None
+    _nitems = (_nb or {}).get("items") or []
+
+    def nfig(i):
+        try:
+            i = int(i)
+            it = _nitems[i] if i >= 0 else None
+        except Exception:
+            return None
+        return it if it and it.get("check") in ("page", "excerpt") else None
+
     if "01" in which:
         H.append(open_sec("01") + head("01", "The Currents", f"What is trending in {category}"))
         H.append('<div class="row3">')
@@ -7425,7 +7705,13 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                     u = s.get("url","")
                     links += (f'<div class="src"><b>[{e(lbl)}]</b> {e(str(s.get("title",""))[:88])}'
                               + (f' <a href="{e(u)}" target="_blank">open ↗</a>' if u else "") + '</div>')
-            st_ = f'<div class="hair"></div><div class="stat">{e(t.get("stat",""))}</div>' if t.get("stat") else ""
+            # A stat built on a checked figure links to the page it came from.
+            _f = nfig(t.get("figure_index"))
+            _flink = (f' <a class="statlink" href="{e(_f["url"])}" target="_blank" '
+                      f'title="{e(_f.get("source", ""))}'
+                      f'{(" · " + e(_f["date"])) if _f.get("date") else ""}">↗</a>') if _f else ""
+            st_ = (f'<div class="hair"></div><div class="stat">{e(t.get("stat",""))}{_flink}</div>'
+                   if t.get("stat") else "")
             dd = f'<details><summary>Dig deeper</summary>{links}</details>' if links else ""
             # The age rides on the existing "Current" label rather than adding a
             # row, so nothing in the layout moves.
@@ -7444,6 +7730,75 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                      f'{e(faded[0].get("day", ""))}</span>{_names}</div>')
             h += 70
         H.append('</section>'); h += 700
+
+    # ── 01N · By the numbers ─────────────────────────────────────────────────
+    # Right after the currents, because these are their evidence in the form a
+    # client remembers. Huge figure, one line of what it measures, who said it
+    # and when, and the page — the brief never shows a number it cannot point
+    # to. Only CONFIRMED figures are drawn; the rest are counted, not shown.
+    # `_numbers` is absent from briefs made before this section existed, and
+    # those reopen exactly as they were.
+    if "01N" in which and _nb is not None:
+        _good = [x for x in _nitems if x.get("check") in ("page", "excerpt")][:6]
+        _unsure = [x for x in _nitems if x.get("check") not in ("page", "excerpt")]
+        _win = _nb.get("months") or ((res.get("_meta") or {}).get("window") or 0)
+        _wl = _lhsrc.window_label(_win) if (_lhsrc and _win) else ""
+        if _good or mode == "screen":
+            H.append(open_sec("01N") + head("01N", "By the numbers",
+                                            f"What the data says about {category}"))
+            if _good:
+                H.append('<div class="lead">Figures from research houses and official '
+                         'statistics' + (f', published in the last {e(_wl)}' if _wl else '')
+                         + '. Each one was found again on the page it links to.</div>')
+                # One or two figures fill the width instead of leaving a third
+                # of the ruled grid empty.
+                H.append(f'<div class="nbgrid n{min(3, len(_good))}">')
+                for x in _good:
+                    _neg = " neg" if x.get("negative") else ""
+                    _tag = ("Found on the page" if x.get("check") == "page"
+                            else "In the source’s own words")
+                    _who = " · ".join(p for p in (x.get("source", ""), x.get("date", "")) if p)
+                    H.append(f'<div class="nb"><div class="nbfig{_neg}">{e(x.get("figure",""))}</div>'
+                             f'<div class="nbclaim">{e(x.get("claim",""))}</div>'
+                             f'<div class="nbwho">{e(_who)}</div>'
+                             f'<div class="nbfoot"><span class="nbchk">✓ {e(_tag)}</span>'
+                             f'<a class="nblink" href="{e(x.get("url",""))}" target="_blank">'
+                             f'Source ↗</a></div></div>')
+                H.append('</div>')
+                h += 150 + ((len(_good) + 2) // 3) * 250
+            else:
+                # Say which kind of empty this is. "Nothing confirmed" and "the
+                # search did not run" look identical otherwise.
+                if _nb.get("error"):
+                    _why = f'No figures this time — {e(_nb["error"])}.'
+                elif _unsure:
+                    _why = ("Figures were found, but none could be found again on its own "
+                            "page, so none is shown. They are listed in the diagnostics "
+                            "for a person to check.")
+                else:
+                    _why = (f'No research house or statistics office published a figure on '
+                            f'{e(category)}' + (f' in the last {e(_wl)}' if _wl else '')
+                            + ' that we could find again on its page.'
+                            + (' A longer window may find some.' if _win and _win < 24 else ''))
+                H.append(f'<div class="lead">{_why}</div>'); h += 90
+            if _unsure and _good and mode == "screen":
+                _n = len(_unsure)
+                H.append(f'<div class="nbnote">{_n} more figure{"s" if _n != 1 else ""} '
+                         f'came back but could not be confirmed on {"their" if _n != 1 else "its"} '
+                         f'page{"s" if _n != 1 else ""}, so {"they are" if _n != 1 else "it is"} '
+                         f'not shown.</div>'); h += 40
+            # Where we looked — the answer to "where are we sourcing from?"
+            _doms = _nb.get("domains") or []
+            if _doms and mode == "screen":
+                _names = []
+                for d in _doms:
+                    _s = _lhsrc.source_for("https://" + d, sources=_lhsrc.TRUSTED) if _lhsrc else None
+                    _nm = (_s or {}).get("name") or d
+                    if _nm not in _names:
+                        _names.append(_nm)
+                H.append(f'<div class="nbwhere"><span class="fadedlbl">Searched only</span>'
+                         f'{e(" · ".join(_names))}</div>'); h += 70
+            H.append('</section>'); h += 160
 
     if "02" in which:
         H.append(open_sec("02") + head("02", "Consumer Insight", "What people are actually saying"))
@@ -8419,15 +8774,51 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
 <div class="tag">{e(tagline)}</div>
 <div class="vol">Live Brief — {e(date_label)}</div>''']
 
+    # Confirmed figures only — paper goes to clients, and an unconfirmed number
+    # never leaves the building.
+    _nb = res.get("_numbers") if isinstance(res.get("_numbers"), dict) else {}
+    _nall = (_nb or {}).get("items") or []
+
+    def _nfig(i):
+        try:
+            i = int(i)
+            it = _nall[i] if i >= 0 else None
+        except Exception:
+            return None
+        return it if it and it.get("check") in ("page", "excerpt") else None
+
     tr = res.get("trends", [])
     if tr:
         parts.append(_sec("01", "The Currents", "What is trending"))
         parts.append('<div class="cards">')
         for t in tr[:3]:
-            _st = f'<div class="stat">{e(t.get("stat",""))}</div>' if t.get("stat") else ""
+            _f = _nfig(t.get("figure_index"))
+            _cite = (f' <a href="{e(_f["url"])}" style="color:{GOLD};">↗</a>' if _f else "")
+            _st = f'<div class="stat">{e(t.get("stat",""))}{_cite}</div>' if t.get("stat") else ""
             parts.append(f'<div class="card"><div class="clabel">Current</div>'
                          f'<div class="ctitle">{e(t.get("title",""))}</div>'
                          f'<div class="cbody">{e(t.get("summary",""))}</div>{_st}</div>')
+        parts.append('</div>')
+
+    _ngood = [x for x in _nall if x.get("check") in ("page", "excerpt")][:6]
+    if _ngood:
+        _nwin = (_nb or {}).get("months") or ((res.get("_meta") or {}).get("window") or 0)
+        parts.append(_sec("01N", "By the numbers", "What the data says"))
+        parts.append('<div class="lead">Figures from research houses and official statistics'
+                     + (f', published in the last {e(_lhsrc.window_label(_nwin))}'
+                        if (_lhsrc and _nwin) else '')
+                     + '. Each one was found again on the page it links to.</div>')
+        parts.append('<div class="cards">')
+        for x in _ngood:
+            _col = RED if x.get("negative") else GOLD
+            _who = " · ".join(p for p in (x.get("source", ""), x.get("date", "")) if p)
+            parts.append(
+                f'<div class="card"><div style="font-size:46px;font-weight:700;'
+                f'letter-spacing:-.04em;line-height:1;color:{_col};margin-bottom:10px;">'
+                f'{e(x.get("figure",""))}</div>'
+                f'<div class="ctitle" style="font-size:14px;">{e(x.get("claim",""))}</div>'
+                f'<div class="stat">{e(_who)} · <a href="{e(x.get("url",""))}" '
+                f'style="color:{GOLD};">source ↗</a></div></div>')
         parts.append('</div>')
 
     iq = res.get("insight_quotes", [])
@@ -9298,7 +9689,11 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # Scan is available to everyone (incl. the public link). The last brief is
     # persisted and auto-loaded on open, so credits are only spent on a deliberate
     # re-run — not on every page view.
-    _ic1, _ic2, _ic3, _ic5, _ic4 = st.columns([1.1, 1.4, 1.1, 1.1, 1], gap="medium")
+    # Six fields now. The two selects get the width their longest option needs
+    # ("United States", "12 months") — measured, not guessed: at 1.0 they
+    # truncated to "United Stat…" and "12 mon…".
+    _ic1, _ic2, _ic3, _ic5, _ic6, _ic4 = st.columns([0.95, 1.2, 0.95, 1.2, 1.05, 0.95],
+                                                    gap="medium")
     # THE FIELDS FOLLOW THE CLIENT SELECTOR.
     # Streamlit only honours `value=` on a widget's FIRST render; once the key
     # has state, the value argument is ignored forever. So switching the client
@@ -9328,6 +9723,10 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         st.session_state["sv_prod"]  = _pending.get("product") or ""
         if _pending.get("market") in MARKETS:
             st.session_state["sv_market"] = _pending["market"]
+        # The report's own window, so the row describes the brief beneath it.
+        # Briefs from before the window existed have none and leave it alone.
+        if _lhsrc and _pending.get("window") in _lhsrc.WINDOWS:
+            st.session_state["sv_window"] = _pending["window"]
     elif st.session_state.get("_fields_for") != _active:
         st.session_state["_fields_for"] = _active
         st.session_state["sv_brand"]  = _active
@@ -9356,6 +9755,21 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         _in_market = st.selectbox("Market", _mk_names,
                                   index=_mk_names.index(_mk_default) if _mk_default in _mk_names else 0,
                                   label_visibility="collapsed", key="sv_market")
+    with _ic6:
+        # THE WINDOW. How far back a scan may reach. Everything a source dates
+        # before it stays out of the brief — the fix for the 2019 trend in Pat's
+        # Puma basketball run. Twelve months unless someone says otherwise.
+        st.markdown('<div class="sv-input-lbl">Look back</div>', unsafe_allow_html=True)
+        _win_opts = list(_lhsrc.WINDOWS) if _lhsrc else [_SV_WINDOW_DEFAULT]
+        _in_window = st.selectbox(
+            "Look back", _win_opts,
+            index=_win_opts.index(_SV_WINDOW_DEFAULT) if _SV_WINDOW_DEFAULT in _win_opts else 0,
+            format_func=(_lhsrc.window_label if _lhsrc else (lambda m: f"{m} months")),
+            label_visibility="collapsed", key="sv_window", disabled=_lhsrc is None,
+            help=("Signals, trade articles, essays and figures dated before this are left "
+                  "out. Undated ones stay, marked as undated." if _lhsrc else
+                  "sources.py is missing on the server, so there is no window."))
+        _in_window = int(_in_window or 0) if _lhsrc else 0
     # BRAND IS THE SUBJECT OF THE SEARCH. THE SELECTOR FOLLOWS IT.
     # There used to be a notice here explaining that the typed Brand and the
     # sidebar client disagreed, and which one would win. That notice was
@@ -9505,7 +9919,13 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # no data and waiting for one before starting the other simply added
             # its 20-odd seconds to the total.
             from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=3) as _pool:
+            with ThreadPoolExecutor(max_workers=4) as _pool:
+                # Fourth lane: BY THE NUMBERS. Started first because it is the
+                # one that waits on a model (searching, then reading pages);
+                # it is done long before the nine sources are.
+                _f_numbers = _pool.submit(_sv_gather_numbers, _in_brand or _active,
+                                          _in_cat or _prof["category"], _in_prod,
+                                          _in_market, _in_window, _prof_competitors)
                 # Resolved here, on the main thread, then handed to the worker.
                 try:
                     _outs_pre = _sv_trade_outlets(_in_cat or _prof["category"],
@@ -9523,16 +9943,16 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 _mark("outlet + newsletter lists (Haiku, main thread)")
                 _f_trade = _pool.submit(_sv_gather_trade, _search,
                                         _in_cat or _prof["category"], _in_market,
-                                        _in_prod, _outs_pre)
+                                        _in_prod, _outs_pre, _in_window)
                 # Third lane. Costs no wall-clock in the normal case: it is
                 # pure RSS, typically the first of the three to finish.
                 _f_letters = _pool.submit(_sv_gather_letters, _search,
                                           _in_cat or _prof["category"], _in_market,
-                                          _in_prod, _lets_pre)
+                                          _in_prod, _lets_pre, _in_window)
                 _signals, _src_tally = _sv_gather(
                     _search, _active, _in_market, progress=_tick,
                     product=_in_prod, brand=_in_brand or _active,
-                    competitors=_prof_competitors)
+                    competitors=_prof_competitors, months=_in_window)
                 _mark("nine sources collected")
                 # THE OTHER BLIND SPOT, and it is the same one.
                 # Once the nine sources are home the app still waits on the
@@ -9570,6 +9990,17 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     _let_diag = {"error": f"newsletter collection failed: {_lexc2}"}
                     _tick("letters", -1, f"{type(_lexc2).__name__}: {_lexc2}")
                 _mark("trade + newsletters home")
+                try:
+                    # Normally home already: it started first and its worst case
+                    # (four searches, then up to 25s of page reads) is under the
+                    # nine sources' usual time.
+                    _numbers = _f_numbers.result(timeout=90) or {}
+                except Exception as _nexc:
+                    _numbers = {"items": [], "error": f"the figures did not arrive "
+                                                      f"({type(_nexc).__name__})"}
+                if _numbers.get("error") and not _numbers.get("items"):
+                    _tick("numbers", -1, _numbers["error"])
+                _mark("numbers home")
             _status.markdown(
                 '<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
                 'Writing the brief…</div>', unsafe_allow_html=True)
@@ -9594,7 +10025,9 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 try:
                     _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
                                              _competitors, _in_brand or _active,
-                                             trade=_trade_sigs, letters=_let_sigs)
+                                             trade=_trade_sigs, letters=_let_sigs,
+                                             numbers=_numbers.get("items") or [],
+                                             months=_in_window)
                 except Exception as _exc:
                     _name = type(_exc).__name__
                     if "Authentication" in _name or "PermissionDenied" in _name:
@@ -9690,7 +10123,34 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # never says "beer".
             _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
                                 "product": _in_prod, "market": _in_market,
-                                "competitors": _prof_competitors}
+                                "competitors": _prof_competitors, "window": _in_window}
+            # BY THE NUMBERS, stored whole — figures, what was thrown out and
+            # why, what was searched — so a reopened brief shows the same
+            # section and the diagnostic can answer "where did this come from".
+            # The F# indexes in trends[].figure_index point into this list.
+            _result["_numbers"] = {
+                k: _numbers.get(k) for k in
+                ("items", "dropped", "queries", "domains", "searches", "error", "skipped",
+                 "pages", "secs", "at", "months", "model", "search_errors")
+                if _numbers.get(k) not in (None, "", [], {})}
+            _result["_numbers"].setdefault("items", [])
+            # EVERY PERCENTAGE HAS TO COME FROM SOMEWHERE. A stat line whose
+            # percentage no source states is removed; one anywhere else in the
+            # brief is listed in the diagnostic for a person to check.
+            if _lhsrc:
+                try:
+                    _said = ([f"{s.get('title', '')} {s.get('content', '')}" for s in _signals]
+                             + [f"{t.get('title', '')} {t.get('content', '')}" for t in (_trade_sigs or [])]
+                             + [f"{l.get('title', '')} {l.get('content', '')}" for l in (_let_sigs or [])])
+                    _gone = _lhsrc.check_stats(_result.get("trends") or [],
+                                               _result["_numbers"]["items"], _said)
+                    _loose = _lhsrc.audit_numbers(_result, _result["_numbers"]["items"], _said)
+                    if _gone:
+                        _result["_numbers"]["stats_removed"] = _gone
+                    if _loose:
+                        _result["_numbers"]["unsourced"] = _loose
+                except Exception as _cexc:
+                    print(f"[numbers] percentage check failed: {type(_cexc).__name__}: {_cexc}")
             # Verified outlets, from GDELT — not the model's list. Prefixed with
             # "_" so the renderer can tell it apart from generated fields.
             _result["_trade_outlets"] = _trade_outs
@@ -9775,9 +10235,10 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # again, so the fields describe the brief underneath them instead of
             # whatever was last searched. One extra rerun, and only ever on the
             # first load of a ?report= link — no scan, no API call, no cost.
-            st.session_state["_sv_fields_from_report"] = {
-                k: str(_m.get(k, "") or "") for k in
-                ("brand", "category", "product", "market")}
+            st.session_state["_sv_fields_from_report"] = dict(
+                {k: str(_m.get(k, "") or "") for k in
+                 ("brand", "category", "product", "market")},
+                window=_m.get("window"))
             st.rerun()
 
     # EVERY arrival starts on a clean sheet, guests included. Nobody opens the
@@ -9859,7 +10320,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _ages, _faded = [], []
         # (The Tideline was computed further up, before the diagnostic panels.)
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
-                                     ("01", "02", "02T", "02N", "03", "04", "05", "06"),
+                                     ("01", "01N", "02", "02T", "02N", "03", "04", "05", "06"),
                                      "screen",
                                      trade_sigs=_res.get("_trade_sigs") or [],
                                      trend_ages=_ages, faded=_faded,
@@ -10822,14 +11283,23 @@ def _rm_scan_worker(jid: str, p: dict, archive: list) -> None:
             _sc.JOBS.finish(jid, error="No signals came back for that search.")
             return
         res = _sv_synthesize(sigs, p["category"] or search, p["competitor_list"],
-                             p["brand"] or "the brand")
+                             p["brand"] or "the brand", months=_SV_WINDOW_DEFAULT)
         if not res:
             _sc.JOBS.finish(jid, error=f"{len(sigs)} signals came back, but the brief "
                                        f"could not be written.")
             return
         res["_meta"] = {"brand": p["brand"], "category": p["category"],
                         "product": p["product"], "market": p["market"],
-                        "competitors": p["competitors"]}
+                        "competitors": p["competitors"],
+                        "window": _SV_WINDOW_DEFAULT if _lhsrc else 0}
+        if _lhsrc:
+            # The same rule as the Overview's scan: no stat line with a
+            # percentage that none of the signals states.
+            try:
+                _lhsrc.check_stats(res.get("trends") or [], [],
+                                   [f"{s.get('title', '')} {s.get('content', '')}" for s in sigs])
+            except Exception as _cexc:
+                print(f"[room] percentage check failed: {type(_cexc).__name__}")
         res["_diag"] = {"tally": tally, "origin": f"session room · {p['session_id']}"}
         rid = _sv_save_brief(p["active"], res, sigs)
         _sc.JOBS.finish(jid, {"summary": _sc.scan_summary(res), "report_id": rid,
@@ -11418,6 +11888,38 @@ def _rm_chart_stored(key: str) -> Optional[dict]:
     return {k: v for k, v in rec.items() if not str(k).startswith("_")}
 
 
+# EVERY LINE IS KEPT THE MOMENT IT ARRIVES (shared across reruns, sessions and
+# the browser's help). GDELT answers about two heavy questions every few
+# minutes per address; a race needs three. Kept line by line, each new round
+# only asks for what is still missing instead of spending the allowance again
+# on lines already in — and the panel, asking from the facilitator's browser
+# (another address, another allowance), fills in from the other end.
+_RM_LINES: dict = _sc.shared("chart_lines", dict) if _sc else {}
+_RM_LINES_LOCK = _sc.shared("chart_lines_lock", _rm_threading.Lock) if _sc else _rm_threading.Lock()
+_RM_LINE_TTL = 20 * 3600
+
+
+def _rm_line_get(cc: str, q: str) -> Optional[list]:
+    with _RM_LINES_LOCK:
+        e = _RM_LINES.get(f"{cc or 'global'}|{q}")
+    return e["pts"] if (e and _rm_time.time() - e["t"] < _RM_LINE_TTL) else None
+
+
+def _rm_line_put(cc: str, q: str, pts: list) -> None:
+    now = _rm_time.time()
+    with _RM_LINES_LOCK:
+        _RM_LINES[f"{cc or 'global'}|{q}"] = {"t": now, "pts": list(pts)}
+        for k in [k for k, e in _RM_LINES.items() if now - e["t"] > _RM_LINE_TTL]:
+            _RM_LINES.pop(k, None)
+
+
+def _rm_chart_note_queries(key: str, queries: list) -> None:
+    with _RM_CHART_LOCK:
+        ent = _RM_CHART.get(key)
+        if ent:
+            ent["queries"] = list(queries)       # the browser asks with the same words
+
+
 def _rm_chart_worker(key: str, currents: list, category: str, product: str, brand: str,
                      country: str, scans: list, market: str = "", stored: Optional[dict] = None) -> None:
     """Fetch the lines. A thread: nothing in here touches Streamlit."""
@@ -11426,31 +11928,36 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
         from ingestion import gdelt_timeline, gdelt_top_article
         queries, fallback = _rm_chart_queries(currents, category, product, brand)
         titles = [c.get("t", "") for c in currents]
-        with _RM_CHART_LOCK:
-            ent = _RM_CHART.get(key)
-            if ent and ent.get("state") == "running":
-                ent["queries"] = list(queries)       # the browser can ask with the same words
+        _rm_chart_note_queries(key, queries)
 
         def fetch(cc: str):
-            # A LINE AT A TIME, PATIENTLY. gdelt_timeline itself waits out a
-            # refusal or a timeout (20 s, then 45 s) before giving up on a line.
-            # Then one more round here: a line GDELT refused for its WORDING
-            # goes again in the current's own words; one it turned away for
-            # being busy goes again a minute later. One line failing still
-            # fails the chart — never drawn as silence.
-            out, errs = [], []
-            for n, q in enumerate(queries):
-                if n:
+            # A LINE AT A TIME, PATIENTLY, AND NEVER TWICE. A line already in
+            # (an earlier round, or the browser) is not asked for again.
+            # gdelt_timeline itself waits out a refusal or a timeout (20 s, then
+            # 45 s); then one more round here — in the current's own words if
+            # GDELT refused the wording, a minute later if it was busy.
+            out, errs, asked = [None] * len(queries), [], 0
+            for n in range(len(queries)):
+                got = _rm_line_get(cc, queries[n])
+                if got is None and asked:
                     _rm_time.sleep(_RM_CHART_GAP)
-                got, last = None, ""
+                    got = _rm_line_get(cc, queries[n])      # the browser may have brought it meanwhile
+                if got is not None:
+                    out[n] = got
+                    continue
+                asked += 1
+                q, last = queries[n], ""
                 for attempt in range(2):
                     if attempt:
                         why = _rm_chart_reason(last)
                         if why == "GDELT refused the search" and fallback[n] != q:
-                            q = queries[n] = fallback[n]
+                            q = fallback[n]
                             _rm_time.sleep(_RM_CHART_GAP)
                         elif why in ("GDELT is turning requests away for a moment", "GDELT did not answer in time"):
                             _rm_time.sleep(_RM_CHART_GAP * 5)
+                            got = _rm_line_get(cc, queries[n])
+                            if got is not None:
+                                break
                         else:
                             break
                     try:
@@ -11460,7 +11967,12 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
                         last = f"{type(exc).__name__}: {exc}"[:200]
                 if got is None:
                     errs.append(last)
-                out.append(got)
+                    continue
+                if q != queries[n]:
+                    queries[n] = q
+                    _rm_chart_note_queries(key, queries)
+                _rm_line_put(cc, q, got)
+                out[n] = got
             return out, errs
 
         series, errs = fetch(country)
@@ -11474,14 +11986,21 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
             wide = _sc.chart_payload(series2, titles, scans=scans, queries=queries, scope="global")
             if wide.get("status") == "ok":
                 data, errs = wide, errs2
-        if data.get("status") == "failed":
-            data["queries"] = list(queries)
+        if data.get("status") == "failed" and sum(1 for x in series if x is not None) >= 2:
+            # Two of three lines: the race between those two, saying which is
+            # missing — and the next round asks only for that one.
+            part = _sc.chart_partial(series, titles, scans=scans, queries=queries,
+                                     scope=country or "global")
+            if part.get("status") == "ok":
+                data = dict(part, partial=True, reason=_rm_chart_reason(errs[0]) if errs else "")
+        data["queries"] = list(queries)
         if errs and data.get("status") == "failed":
             data["note"] = errs[0]
             data["reason"] = _rm_chart_reason(errs[0])
             print(f"[room] the news race failed ({brand or category}): {errs[0]}")
         sp = data.get("spike")
-        if data.get("status") == "ok" and sp and 0 <= int(data.get("riser", -1)) < len(queries):
+        if data.get("status") == "ok" and sp and not data.get("partial") \
+                and 0 <= int(data.get("riser", -1)) < len(queries):
             _rm_time.sleep(_RM_CHART_GAP)
             try:
                 art = gdelt_top_article(queries[data["riser"]], sp["from"], sp["date"],
@@ -11493,7 +12012,10 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
                 print(f"[room] the spike's article: {exc}")
         data["fetched_at"] = _rm_now_iso()
         data["market"] = market if (country and data.get("scope") != "global") else ""
-        if data.get("status") in ("ok", "quiet"):
+        if data.get("partial"):
+            print(f"[room] the news race arrived without {', '.join(data.get('missing') or [])} "
+                  f"({brand or category}) — asking for it again in {int(_RM_CHART_RETRY // 60)} min")
+        elif data.get("status") in ("ok", "quiet"):
             ttl = _RM_CHART_TTL
             print(f"[room] the news race arrived ({brand or category}): {data.get('status')} · {key[:60]}")
             try:
@@ -11511,13 +12033,14 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
             # GDELT said no today: the last race that did arrive stays on
             # screen, dated, and a fresh one is asked for again shortly.
             data = dict(_rm_chart_dated(stored), stale=True, reason=data.get("reason", ""),
-                        retry_min=data["retry_min"])
+                        retry_min=data["retry_min"], queries=data.get("queries") or [])
     with _RM_CHART_LOCK:
         now_ent = _RM_CHART.get(key) or {}
         got = now_ent.get("data") or {}
-        if (data.get("status") == "failed" or data.get("stale")) and now_ent.get("state") == "done" \
-                and got.get("status") in ("ok", "quiet") and not got.get("stale"):
-            return          # the panel brought the race from the browser meanwhile: keep it
+        if now_ent.get("state") == "done" and got.get("status") in ("ok", "quiet") \
+                and not got.get("stale") and not got.get("partial") \
+                and (data.get("status") == "failed" or data.get("stale") or data.get("partial")):
+            return          # the browser completed the race meanwhile: keep it
         _RM_CHART[key] = {"state": "done", "t": _rm_time.time(), "ttl": ttl, "data": data,
                           "queries": list(data.get("queries") or now_ent.get("queries") or [])}
 
@@ -11543,9 +12066,11 @@ def _rm_chart_for(client: dict, bits: dict) -> dict:
         return {"status": "none"}
     out = _rm_chart_state(client, bits, key, country, mk, cur)
     with _RM_CHART_LOCK:
-        q = (_RM_CHART.get(key) or {}).get("queries") or []
-    return dict(out, key=key, gdelt=_RM_GDELT_DOC, country=country,
-                queries=out.get("queries") or q, **({"bf": _RM_BF} if _RM_BF else {}))
+        q = list((_RM_CHART.get(key) or {}).get("queries") or out.get("queries") or [])
+    whole = out.get("status") in ("ok", "quiet") and not (out.get("partial") or out.get("stale"))
+    need = [] if whole else [i for i, qq in enumerate(q) if qq and _rm_line_get(country, qq) is None]
+    return dict(out, key=key, gdelt=_RM_GDELT_DOC, country=country, queries=q, need=need,
+                **({"bf": _RM_BF} if _RM_BF else {}))
 
 
 def _rm_chart_state(client: dict, bits: dict, key: str, country: str, mk: str, cur: list) -> dict:
@@ -11573,7 +12098,11 @@ def _rm_chart_state(client: dict, bits: dict, key: str, country: str, mk: str, c
         ent = _RM_CHART.get(key)
         if ent and ent["state"] == "running" and now - ent["t"] < _RM_CHART_STALE:
             return ent.get("show") or {"status": "loading"}
-        _RM_CHART[key] = {"state": "running", "t": now, "data": {"status": "loading"}, "show": show}
+        prev = (ent or {}).get("data") or {}
+        if prev.get("partial") or (prev.get("stale") and prev.get("status") == "ok"):
+            show = prev                        # what is on screen stays there while the next round runs
+        _RM_CHART[key] = {"state": "running", "t": now, "data": {"status": "loading"}, "show": show,
+                          "queries": list((ent or {}).get("queries") or [])}
         for k in [k for k, x in _RM_CHART.items() if x["state"] == "done" and now - x["t"] > 24 * 3600]:
             _RM_CHART.pop(k, None)          # a long-lived server keeps only today's charts
     print(f"[room] fetching the news race ({c.get('brand') or c.get('name', '')}, {country or 'global'})"
@@ -11586,51 +12115,58 @@ def _rm_chart_state(client: dict, bits: dict, key: str, country: str, mk: str, c
     return show
 
 
-def _rm_chart_from_browser(client: dict, bits: dict, key: str, series, scope: str) -> bool:
-    """Lines the panel fetched from GDELT itself, in the facilitator's browser.
-
-    Nothing is taken on trust: the key must be this board's race, there must
-    be one line per current, every point must be a date and a number. Then the
-    same arithmetic as the server's own fetch draws them, and they are stored
-    like any other race."""
+def _rm_chart_from_browser(client: dict, bits: dict, key: str, i: int, line, scope: str) -> bool:
+    """One news line the panel fetched from GDELT itself, in the facilitator's
+    browser. Nothing is taken on trust: the key must be this board's race, the
+    index one of its lines, every point a date and a number. The line is kept
+    like the server's own; when that completes the race, the race is drawn and
+    stored at once."""
     want, country, mk, cur = _rm_chart_key(client, bits)
-    if not cur or key != want or not isinstance(series, list) or len(series) != len(cur):
+    if not cur or key != want or not isinstance(line, list) or len(line) > 400:
         return False
-    clean = []
-    for line in series:
-        if not isinstance(line, list) or len(line) > 400:
-            return False
-        pts = {}
-        for pt in line:
-            if not isinstance(pt, (list, tuple)) or len(pt) != 2:
-                continue
-            d = re.sub(r"\D", "", str(pt[0]))[:8]
-            try:
-                v = float(pt[1])
-            except (TypeError, ValueError):
-                continue
-            if len(d) == 8 and v == v:
-                iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
-                pts[iso] = pts.get(iso, 0.0) + max(0.0, v)
-        clean.append(sorted(pts.items()))
     with _RM_CHART_LOCK:
         queries = list((_RM_CHART.get(key) or {}).get("queries") or [])
-    scope = "global" if scope in ("", "global") else country
-    data = _sc.chart_payload(clean, [x.get("t", "") for x in cur], scans=list(bits.get("scans") or []),
-                             queries=queries, scope=scope or "global")
-    if data.get("status") not in ("ok", "quiet"):
+    if not 0 <= int(i) < len(queries):
         return False
-    data.update(fetched_at=_rm_now_iso(), via="browser",
+    pts = {}
+    for pt in line:
+        if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+            continue
+        d = re.sub(r"\D", "", str(pt[0]))[:8]
+        try:
+            v = float(pt[1])
+        except (TypeError, ValueError):
+            continue
+        if len(d) == 8 and v == v:
+            iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+            pts[iso] = pts.get(iso, 0.0) + max(0.0, v)
+    cc = "" if scope in ("", "global") else country
+    _rm_line_put(cc, queries[int(i)], sorted(pts.items()))
+    print(f"[room] a news line arrived from the browser ({c_name(client)}): {int(i) + 1} of {len(queries)}")
+    series = [_rm_line_get(country, q) for q in queries]
+    if any(x is None for x in series):
+        return True
+    data = _sc.chart_payload(series, [x.get("t", "") for x in cur], scans=list(bits.get("scans") or []),
+                             queries=queries, scope=country or "global")
+    if data.get("status") not in ("ok", "quiet"):
+        return True
+    data.update(fetched_at=_rm_now_iso(), via="browser", queries=queries,
                 market=mk if (country and data.get("scope") != "global") else "")
     with _RM_CHART_LOCK:
-        _RM_CHART[key] = {"state": "done", "t": _rm_time.time(), "ttl": _RM_CHART_TTL, "data": data,
-                          "queries": queries}
+        ent = _RM_CHART.get(key) or {}
+        if ent.get("state") == "running":
+            # the server's round is still going: the race goes on screen now,
+            # and the round, finding every line in, finishes it with the spike
+            _RM_CHART[key] = dict(ent, show=data, queries=queries)
+        else:
+            _RM_CHART[key] = {"state": "done", "t": _rm_time.time(), "ttl": _RM_CHART_TTL,
+                              "data": data, "queries": queries}
     try:
         _db.upsert_record(_rm_chart_rid(key), _RM_CHART_TOPIC, data,
                           label=f"News race · {c_name(client)}")
     except Exception as exc:
         print(f"[room] the race could not be stored: {exc}")
-    print(f"[room] the news race arrived from the browser ({c_name(client)}): {data.get('status')}")
+    print(f"[room] the news race is complete ({c_name(client)}): {data.get('status')}")
     return True
 
 
@@ -11688,7 +12224,8 @@ def _rm_hud_frag() -> None:
             st.session_state["rm_setup"] = True
             st.rerun()
         elif kind == "chart_raw":
-            _rm_chart_from_browser(client, st.session_state.get("rm_brief_bits") or {}, eff[1], eff[2], eff[3])
+            _rm_chart_from_browser(client, st.session_state.get("rm_brief_bits") or {}, eff[1], eff[2],
+                                   eff[3], eff[4])
         elif kind in ("golive", "people", "intro"):
             # The session's start just moved to now, or names changed — the
             # log should say so before anything else happens.

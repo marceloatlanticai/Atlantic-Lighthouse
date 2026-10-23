@@ -1405,6 +1405,7 @@ def scrape_twitter(
         # Verified input schema (build 1.4.28): the search field is "query"
         # (a string), the sort is "search_type", and "max_posts" is required.
         # (searchTerms / search / maxItems are silently ignored by this actor.)
+        _primary_msg = ""
         try:
             run = _apify_call(ac.actor("danek/twitter-scraper"), run_input={
                 "query": topic,
@@ -1421,6 +1422,10 @@ def scrape_twitter(
                 callback(f"[X/Twitter] Sample keys: {list(items_list[0].keys())[:12]}")
             signals = _parse_twitter_items(items_list, client_tag)
         except Exception as _primary_err:
+            # Kept as text: Python deletes an `except … as` name when the block
+            # ends, so the message below used to raise NameError instead of
+            # reporting both actors' errors.
+            _primary_msg = str(_primary_err)
             if callback:
                 callback(f"[X/Twitter] Primary actor error: {_primary_err}")
             items_list = []
@@ -1449,7 +1454,7 @@ def scrape_twitter(
                 # clean "0" in the very run where the other two showed "✕" for
                 # the same underlying cause — it hid the shared error.
                 raise RuntimeError(
-                    f"both X actors failed \u2014 danek: {_primary_err} \u00b7 "
+                    f"both X actors failed \u2014 danek: {_primary_msg or 'no posts'} \u00b7 "
                     f"apidojo: {_fallback_err}")
 
     except Exception as exc:
@@ -1639,10 +1644,14 @@ def scrape_hacker_news(
     n: int = 20,
     client_tag: Optional[str] = None,
     callback: Optional[Callable] = None,
+    since: int = 0,
 ) -> list[Signal]:
     """
     Search Hacker News via the Algolia API (free, no auth).
     Good for tech/culture/startup signals with high-signal comment threads.
+
+    `since` (unix seconds) is the scan's window. Without it Algolia searches the
+    whole archive by relevance, and a 2014 thread outranks last month's.
     """
     if callback:
         callback(f"[Hacker News] Searching '{topic[:40]}'…")
@@ -1652,7 +1661,8 @@ def scrape_hacker_news(
         q = urllib.parse.quote(topic)
         url = (
             f"https://hn.algolia.com/api/v1/search"
-            f"?query={q}&tags=story&hitsPerPage={n}&numericFilters=created_at_i>0"
+            f"?query={q}&tags=story&hitsPerPage={n}"
+            f"&numericFilters=created_at_i>{max(0, int(since or 0))}"
         )
         req = urllib.request.Request(url, headers={"User-Agent": "Lighthouse/2.0"})
         with urllib.request.urlopen(req, timeout=12) as resp:
@@ -1742,6 +1752,7 @@ def scrape_youtube(
     callback: Optional[Callable] = None,
     with_transcripts: bool = True,
     transcript_limit: int = 6,
+    published_after: str = "",
 ) -> list[Signal]:
     """
     Search YouTube for videos related to the topic.
@@ -1751,6 +1762,12 @@ def scrape_youtube(
     When `with_transcripts` is on, the first `transcript_limit` results are
     enriched with a caption excerpt — far richer signal than the description
     alone, at no API cost. Videos without captions simply keep their metadata.
+
+    `published_after` (RFC 3339, e.g. 2025-10-23T00:00:00Z) is the scan's window.
+    THIS IS WHERE THE 2019 TREND CAME FROM. The search asks for order=viewCount,
+    and with no date floor that means the most-viewed videos of ALL TIME: a Puma
+    basketball scan was handed the 2018-19 relaunch videos, and the brief wrote
+    them up as a current. With the floor it is the most-viewed of the window.
     """
     if not api_key:
         return []
@@ -1768,6 +1785,8 @@ def scrape_youtube(
             f"&regionCode={region_code}&relevanceLanguage=en"
             f"&order=viewCount&key={api_key}"
         )
+        if published_after:
+            url += "&publishedAfter=" + urllib.parse.quote(published_after, safe="")
         req = urllib.request.Request(url, headers={"User-Agent": "Lighthouse/2.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
@@ -1859,11 +1878,16 @@ def scrape_web(
     n: int = 10,
     client_tag: Optional[str] = None,
     callback: Optional[Callable] = None,
+    tbs: str = "",
 ) -> list[Signal]:
     """General web search via Firecrawl.
     Returns titles, URLs and full page markdown — ideal for competitive
     research and topics not covered by platform-specific scrapers.
     Requires FIRECRAWL_API_KEY (free tier available at firecrawl.dev).
+
+    `tbs` is the scan's window as a date range ("cdr:1,cd_min:…,cd_max:…").
+    Search results carry no publication date here, so every page used to be
+    stamped "now" and an article from 2019 looked like this morning's.
     """
     if not api_key:
         return []
@@ -1884,7 +1908,15 @@ def scrape_web(
         _search = getattr(getattr(fc, "v2", None), "search", None) or getattr(fc, "search", None)
         if _search is None:
             raise RuntimeError("this firecrawl-py exposes no search method")
-        results = _search(query, limit=n)
+        if tbs:
+            try:
+                results = _search(query, limit=n, tbs=tbs)
+            except TypeError:
+                # An SDK without the date filter: search anyway — the scan
+                # drops whatever it can date outside the window afterwards.
+                results = _search(query, limit=n)
+        else:
+            results = _search(query, limit=n)
 
         # v2 answers with typed objects, v1 with dicts. Normalise both.
         def _get(o, *names, default=None):

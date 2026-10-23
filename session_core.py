@@ -1460,7 +1460,7 @@ def hud_apply(session: dict, value, n_problems: int = 0,
     a scan or a page change: ("read",) ("ask", text) ("note", text)
     ("look", category, product, reason) ("end",) ("setup",) ("golive",)
     ("people",) when names changed and the log should be saved now,
-    ("chart_raw", key, series, scope) when the panel fetched the news race itself.
+    ("chart_raw", key, line index, points, scope) when the panel fetched a news line itself.
     Everything that is only state is done here — including who is who:
     tap {who, at} · person_add {at, tap, assign_n} · name {id, name, role} ·
     merge {id, into} · you {id} · person_del {id} · assign {n, who} · intro {on, at}.
@@ -1543,10 +1543,14 @@ def hud_apply(session: dict, value, n_problems: int = 0,
             if p and ("people",) not in effects:
                 effects.append(("people",))
         elif t == "chart_raw":
-            # The news race, fetched by the panel itself when the server could
-            # not; the app checks every point before drawing it.
-            if isinstance(m.get("series"), list):
-                effects.append(("chart_raw", str(m.get("key") or "")[:600], m.get("series"),
+            # One news line fetched by the panel itself, in the browser; the
+            # app checks every point before keeping it.
+            try:
+                i = int(m.get("i"))
+            except (TypeError, ValueError):
+                i = -1
+            if i >= 0 and isinstance(m.get("line"), list):
+                effects.append(("chart_raw", str(m.get("key") or "")[:600], i, m.get("line"),
                                 str(m.get("scope") or "")[:12]))
         elif t == "assign":
             if assign_line(session, m.get("n"), m.get("who")) and ("people",) not in effects:
@@ -1766,6 +1770,29 @@ def chart_analysis(values: list) -> dict:
             faller = k
     return {"leader": leader, "took_lead": took, "riser": riser, "faller": faller,
             "change30": [round(c, 4) for c in change], "peaks": peaks}
+
+
+def chart_partial(series: list, titles: list, scans: Optional[list] = None,
+                  queries: Optional[list] = None, scope: str = "", days: int = CHART_DAYS) -> dict:
+    """The race with the lines GDELT did return, when at least two did.
+
+    A missing line is LEFT OUT, never drawn as zero: the race becomes one
+    between the currents that have news lines, and says which one is missing
+    (`missing`). `cur_idx` maps each drawn line back to its current, so the
+    panel puts the right summary, heat and scan dots on it."""
+    have = [i for i, s in enumerate(series or []) if s is not None]
+    if len(have) < 2 or len(have) == len(series or []):
+        return chart_payload(series, titles, scans=scans, queries=queries, scope=scope, days=days)
+    pos = {old: new for new, old in enumerate(have)}
+    sc_ = [{"date": x.get("date", ""), "seen": [pos[int(k)] for k in (x.get("seen") or [])
+                                               if str(k).lstrip("-").isdigit() and int(k) in pos]}
+           for x in (scans or [])]
+    out = chart_payload([series[i] for i in have], [titles[i] if i < len(titles) else "" for i in have],
+                        scans=sc_, queries=[(queries or [])[i] if i < len(queries or []) else "" for i in have],
+                        scope=scope, days=days)
+    out["cur_idx"] = have
+    out["missing"] = [titles[i] for i in range(len(series)) if i not in pos and i < len(titles)]
+    return out
 
 
 def _fill_holes(row: list) -> list:
