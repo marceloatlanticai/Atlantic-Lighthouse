@@ -1188,6 +1188,28 @@ class JobRegistry:
 JOBS = JobRegistry()
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Memory that outlives a rerun
+# ══════════════════════════════════════════════════════════════════════════════
+# STREAMLIT RUNS app.py AFRESH ON EVERY RERUN, IN A NEW MODULE. A dict kept in a
+# global there is a new, empty dict each time — and a background thread that
+# finishes later writes its answer into the old module, where nobody looks any
+# more. That is how the news race kept starting three fetches at once and
+# losing the one that came back. An imported module is loaded once per server
+# process, so anything that must survive a rerun is kept here (like JOBS).
+
+SHARED: dict = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def shared(name: str, factory):
+    """One object per server process, made by `factory` the first time."""
+    with _SHARED_LOCK:
+        if name not in SHARED:
+            SHARED[name] = factory()
+        return SHARED[name]
+
+
 def scan_summary(result: dict) -> dict:
     """The few lines of a finished background scan worth putting in the room."""
     res = result or {}
@@ -1437,7 +1459,8 @@ def hud_apply(session: dict, value, n_problems: int = 0,
     Returns the EFFECTS the app must carry out — the ones that need the model,
     a scan or a page change: ("read",) ("ask", text) ("note", text)
     ("look", category, product, reason) ("end",) ("setup",) ("golive",)
-    ("people",) when names changed and the log should be saved now.
+    ("people",) when names changed and the log should be saved now,
+    ("chart_raw", key, series, scope) when the panel fetched the news race itself.
     Everything that is only state is done here — including who is who:
     tap {who, at} · person_add {at, tap, assign_n} · name {id, name, role} ·
     merge {id, into} · you {id} · person_del {id} · assign {n, who} · intro {on, at}.
@@ -1519,6 +1542,12 @@ def hud_apply(session: dict, value, n_problems: int = 0,
                 assign_line(session, m.get("assign_n"), p["id"])
             if p and ("people",) not in effects:
                 effects.append(("people",))
+        elif t == "chart_raw":
+            # The news race, fetched by the panel itself when the server could
+            # not; the app checks every point before drawing it.
+            if isinstance(m.get("series"), list):
+                effects.append(("chart_raw", str(m.get("key") or "")[:600], m.get("series"),
+                                str(m.get("scope") or "")[:12]))
         elif t == "assign":
             if assign_line(session, m.get("n"), m.get("who")) and ("people",) not in effects:
                 effects.append(("people",))

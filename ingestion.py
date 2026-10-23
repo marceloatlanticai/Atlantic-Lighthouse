@@ -804,7 +804,11 @@ def _apify_call(actor, cap: Optional[int] = None, **kwargs):
 # timeout_secs is a real ceiling, because Apify enforces it on its own side.
 
 _GDELT_LOCK = threading.Lock()
-_GDELT_MIN_GAP = 1.6          # seconds between consecutive GDELT calls
+# GDELT asks for one request every five seconds, from the whole server — and
+# throttles anyone faster for a while afterwards, with a plain-text "Please
+# limit requests". Six seconds between ANY two calls from this process (scans
+# and the session room's race alike) keeps us on the right side of it.
+_GDELT_MIN_GAP = float(os.environ.get("LH_GDELT_MIN_GAP", "6") or 6)
 _GDELT_LAST = [0.0]
 
 
@@ -904,14 +908,18 @@ def scrape_gdelt(
 # that matched each day; TIMELINESMOOTH turns that into a moving average so a
 # jagged news week becomes a line a room can read. Three months back at most.
 
-def _gdelt_json(url: str, timeout: int = 20, retries: int = 1):
+def _gdelt_json(url: str, timeout: int = 20, retries: int = 1, backoff=None):
     """GET a GDELT DOC API URL and parse the JSON.
 
     GDELT answers its refusals — a rate limit, a malformed query, a phrase too
     short — as plain text, sometimes with a 429. Those raise with GDELT's own
     words, so the caller can tell "nothing matched" ({} / []) from "GDELT said
-    no". A rate limit is retried once, after the five seconds it asks for."""
-    for attempt in range(retries + 1):
+    no". A rate limit, and a request that ran out of time, are tried again
+    after the waits in `backoff` (default: once, after six seconds); a refused
+    query is not — asking again would get the same answer."""
+    waits = list(backoff) if backoff else [6] * retries
+    for attempt in range(len(waits) + 1):
+        more = attempt < len(waits)
         req = urllib.request.Request(url, headers={"User-Agent": "Lighthouse/2.0"})
         _gdelt_gate()
         try:
@@ -922,25 +930,32 @@ def _gdelt_json(url: str, timeout: int = 20, retries: int = 1):
                 body = exc.read().decode("utf-8", "replace").strip()[:180]
             except Exception:
                 body = ""
-            if exc.code == 429 and attempt < retries:
-                time.sleep(6)
+            if exc.code in (429, 502, 503, 504) and more:
+                time.sleep(waits[attempt])
                 continue
             raise RuntimeError(f"GDELT answered {exc.code}: {body or exc.reason}")
+        except (TimeoutError, OSError) as exc:          # socket.timeout and URLError are OSErrors
+            if more:
+                time.sleep(waits[attempt])
+                continue
+            timed = isinstance(exc, TimeoutError) or "timed out" in str(exc).lower()
+            raise RuntimeError(f"GDELT did not answer in time ({timeout}s)" if timed else
+                               f"GDELT could not be reached: {str(getattr(exc, 'reason', exc))[:120]}")
         text = raw.decode("utf-8", "replace").strip()
         if not text:
             return {}
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            if "limit requests" in text.lower() and attempt < retries:
-                time.sleep(6)
+            if "limit requests" in text.lower() and more:
+                time.sleep(waits[attempt])
                 continue
             raise RuntimeError(f"GDELT did not return JSON: {text[:180]}")
     return {}
 
 
 def gdelt_timeline(query: str, source_country: str = "", timespan: str = "3m",
-                   smooth: int = 7, timeout: int = 20) -> list:
+                   smooth: int = 7, timeout: int = 75, backoff=(20, 45)) -> list:
     """How much news a query drew, day by day: [("YYYY-MM-DD", articles), ...],
     oldest first. With `smooth` > 1 each day is GDELT's moving average over
     that many days (at most 30). [] when nothing matched."""
@@ -953,7 +968,9 @@ def gdelt_timeline(query: str, source_country: str = "", timespan: str = "3m",
            + f"&mode=timelinevolraw&format=json&timespan={timespan}")
     if smooth and int(smooth) > 1:
         url += f"&timelinesmooth={min(30, int(smooth))}"
-    data = _gdelt_json(url, timeout=timeout) or {}
+    # Three months of daily counts is a heavy question for GDELT: half a
+    # minute to answer is normal now, and a refusal means "come back later".
+    data = _gdelt_json(url, timeout=timeout, backoff=backoff) or {}
     if data and "timeline" not in data and "query_details" not in data:
         # An answer in a shape we do not know must not pass for "no news":
         # that would draw silence where there is a misunderstanding.
@@ -974,7 +991,7 @@ def gdelt_timeline(query: str, source_country: str = "", timespan: str = "3m",
 
 
 def gdelt_top_article(query: str, start_day: str, end_day: str = "",
-                      source_country: str = "", timeout: int = 15) -> Optional[dict]:
+                      source_country: str = "", timeout: int = 45, backoff=(20,)) -> Optional[dict]:
     """The most relevant article for a query between two days (YYYY-MM-DD) —
     what drove a spike. None when GDELT has nothing with a title and a link."""
     a = re.sub(r"\D", "", start_day or "")[:8]
@@ -987,7 +1004,7 @@ def gdelt_top_article(query: str, start_day: str, end_day: str = "",
     url = ("https://api.gdeltproject.org/api/v2/doc/doc?query=" + urllib.parse.quote(q)
            + "&mode=artlist&maxrecords=8&format=json&sort=hybridrel"
            + f"&startdatetime={a}000000&enddatetime={b}235959")
-    data = _gdelt_json(url, timeout=timeout) or {}
+    data = _gdelt_json(url, timeout=timeout, backoff=backoff) or {}
     for art in data.get("articles") or []:
         title = _clean_title(art.get("title", ""))
         if title and title != "(no title)" and art.get("url"):

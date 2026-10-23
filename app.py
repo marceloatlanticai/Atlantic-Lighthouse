@@ -10265,8 +10265,9 @@ _RM_AAI_HOST = {"eu": "streaming.eu.assemblyai.com",
                 "us": "streaming.us.assemblyai.com"}.get(_RM_AAI_REGION, "streaming.assemblyai.com")
 _RM_AAI_TOKEN_URL = os.environ.get("ASSEMBLYAI_TOKEN_URL", "") or f"https://{_RM_AAI_HOST}/v3/token"
 _RM_AAI_WS_URL = os.environ.get("ASSEMBLYAI_WS_URL", "") or f"wss://{_RM_AAI_HOST}/v3/ws"
-_RM_AAI_LOCK = _rm_threading.Lock()
-_RM_AAI_TOK = {"token": "", "exp": 0.0, "err": "", "err_t": 0.0}
+_RM_AAI_LOCK = _sc.shared("aai_lock", _rm_threading.Lock) if _sc else _rm_threading.Lock()
+_RM_AAI_TOK = (_sc.shared("aai_token", lambda: {"token": "", "exp": 0.0, "err": "", "err_t": 0.0})
+               if _sc else {"token": "", "exp": 0.0, "err": "", "err_t": 0.0})
 
 
 def _rm_aai_key() -> str:
@@ -11287,12 +11288,34 @@ def _rm_brief_bits(c: dict) -> dict:
 # screen's time, and a good answer is kept for six hours: every screen that
 # shows this client's board reads the same lines.
 
-_RM_CHART_LOCK = _rm_threading.Lock()
-_RM_CHART: dict = {}
-_RM_CHART_TTL = 6 * 3600       # a good answer is reused for six hours
-_RM_CHART_RETRY = 3 * 60       # a failed one is asked again after three minutes
-_RM_CHART_STALE = 6 * 60       # a fetch "running" longer than this died with its thread
-_RM_CHART_GAP = float(os.environ.get("LH_GDELT_GAP", "5") or 5)   # GDELT asks for one request every five seconds
+# Kept in session_core, NOT here: this file runs afresh on every rerun, and a
+# dict made here would be forgotten — with the fetch that is filling it.
+_RM_CHART_LOCK = _sc.shared("chart_lock", _rm_threading.Lock) if _sc else _rm_threading.Lock()
+_RM_CHART: dict = _sc.shared("chart", dict) if _sc else {}
+# GDELT IS SLOW AND STINGY NOW: half a minute per three-month timeline, and a
+# "Please limit requests" for anyone who asks twice in quick succession — from
+# a shared cloud server even more so. So the race is fetched patiently in the
+# background, one line at a time, and EVERY RACE THAT ARRIVES IS STORED: the
+# next time the room opens (another day, a restarted server) it is on screen at
+# once, and while GDELT is down the last good one is shown, with its date.
+_RM_CHART_TOPIC = "__chart__"
+_RM_CHART_TTL = 6 * 3600        # in memory, a good answer is reused for six hours
+_RM_CHART_FRESH = 20 * 3600     # a stored race younger than this is shown without asking GDELT
+_RM_CHART_KEEP = 14 * 24 * 3600 # an older one is still shown, dated, while a new one is fetched
+_RM_CHART_RETRY = 3 * 60        # a failed fetch is tried again after three minutes
+_RM_CHART_STALE = 20 * 60       # a fetch "running" longer than this died with its thread
+_RM_CHART_GAP = float(os.environ.get("LH_GDELT_GAP", "12") or 12)   # seconds between the lines
+# The panel can ask GDELT from the facilitator's own browser when this server
+# cannot (see _rm_chart_from_browser); it needs the address.
+_RM_GDELT_DOC = os.environ.get("LH_GDELT_DOC_URL", "") or "https://api.gdeltproject.org/api/v2/doc/doc"
+# The panel's pace with GDELT, in ms: a gap between lines, waits after a refusal,
+# and how long the server may take before the panel starts asking too. Only the
+# test bench changes these (LH_BROWSER_GDELT = "gap,wait1,wait2,slow").
+try:
+    _bfx = [int(x) for x in (os.environ.get("LH_BROWSER_GDELT", "") or "").split(",") if x.strip()]
+except ValueError:
+    _bfx = []
+_RM_BF = {"gap": _bfx[0], "waits": _bfx[1:3], "slow": _bfx[3]} if len(_bfx) == 4 else None
 
 
 def _rm_q_phrase(p: str) -> str:
@@ -11368,23 +11391,53 @@ def _rm_chart_reason(note: str) -> str:
     return "GDELT failed"
 
 
+def _rm_chart_rid(key: str) -> str:
+    import hashlib
+    return "chart:" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:24]
+
+
+def _rm_chart_age(data: Optional[dict]) -> float:
+    d = _sc._parse_iso((data or {}).get("fetched_at", ""))
+    return (datetime.utcnow() - d).total_seconds() if d else 1e12
+
+
+def _rm_chart_dated(data: dict) -> dict:
+    """A stored race shown on a later day says which day it is from."""
+    d = _sc._parse_iso(data.get("fetched_at", ""))
+    return dict(data, asof=f"{d.day} {d.strftime('%b')}" if d else "")
+
+
+def _rm_chart_stored(key: str) -> Optional[dict]:
+    try:
+        rec = _db.load_record(_rm_chart_rid(key))
+    except Exception as exc:
+        print(f"[room] stored race unavailable: {exc}")
+        return None
+    if not rec or rec.get("status") not in ("ok", "quiet"):
+        return None
+    return {k: v for k, v in rec.items() if not str(k).startswith("_")}
+
+
 def _rm_chart_worker(key: str, currents: list, category: str, product: str, brand: str,
-                     country: str, scans: list, market: str = "") -> None:
+                     country: str, scans: list, market: str = "", stored: Optional[dict] = None) -> None:
     """Fetch the lines. A thread: nothing in here touches Streamlit."""
     data, ttl = {"status": "failed"}, _RM_CHART_RETRY
     try:
         from ingestion import gdelt_timeline, gdelt_top_article
         queries, fallback = _rm_chart_queries(currents, category, product, brand)
         titles = [c.get("t", "") for c in currents]
+        with _RM_CHART_LOCK:
+            ent = _RM_CHART.get(key)
+            if ent and ent.get("state") == "running":
+                ent["queries"] = list(queries)       # the browser can ask with the same words
 
         def fetch(cc: str):
-            # TRIED TWICE, A LINE AT A TIME. GDELT turns away bursts (one
-            # request every five seconds, and on a shared cloud server other
-            # apps' requests count too) and now and then refuses a phrasing.
-            # So a failed line waits and goes again — with the current's own
-            # words if it was the wording GDELT refused — before the chart
-            # gives up. One line failing still fails the chart: never drawn
-            # as silence.
+            # A LINE AT A TIME, PATIENTLY. gdelt_timeline itself waits out a
+            # refusal or a timeout (20 s, then 45 s) before giving up on a line.
+            # Then one more round here: a line GDELT refused for its WORDING
+            # goes again in the current's own words; one it turned away for
+            # being busy goes again a minute later. One line failing still
+            # fails the chart — never drawn as silence.
             out, errs = [], []
             for n, q in enumerate(queries):
                 if n:
@@ -11392,9 +11445,14 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
                 got, last = None, ""
                 for attempt in range(2):
                     if attempt:
-                        _rm_time.sleep(_RM_CHART_GAP * 2)
-                        if _rm_chart_reason(last) == "GDELT refused the search" and fallback[n] != q:
+                        why = _rm_chart_reason(last)
+                        if why == "GDELT refused the search" and fallback[n] != q:
                             q = queries[n] = fallback[n]
+                            _rm_time.sleep(_RM_CHART_GAP)
+                        elif why in ("GDELT is turning requests away for a moment", "GDELT did not answer in time"):
+                            _rm_time.sleep(_RM_CHART_GAP * 5)
+                        else:
+                            break
                     try:
                         got = gdelt_timeline(q, source_country=cc)
                         break
@@ -11416,6 +11474,8 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
             wide = _sc.chart_payload(series2, titles, scans=scans, queries=queries, scope="global")
             if wide.get("status") == "ok":
                 data, errs = wide, errs2
+        if data.get("status") == "failed":
+            data["queries"] = list(queries)
         if errs and data.get("status") == "failed":
             data["note"] = errs[0]
             data["reason"] = _rm_chart_reason(errs[0])
@@ -11435,44 +11495,148 @@ def _rm_chart_worker(key: str, currents: list, category: str, product: str, bran
         data["market"] = market if (country and data.get("scope") != "global") else ""
         if data.get("status") in ("ok", "quiet"):
             ttl = _RM_CHART_TTL
+            print(f"[room] the news race arrived ({brand or category}): {data.get('status')} · {key[:60]}")
+            try:
+                _db.upsert_record(_rm_chart_rid(key), _RM_CHART_TOPIC, data,
+                                  label=f"News race · {brand or category}")
+            except Exception as exc:
+                print(f"[room] the race could not be stored: {exc}")
     except Exception as exc:
         data = {"status": "failed", "note": f"{type(exc).__name__}: {exc}"[:200],
                 "reason": _rm_chart_reason(f"{type(exc).__name__}: {exc}")}
         print(f"[room] the news race failed ({brand or category}): {data['note']}")
     if data.get("status") == "failed":
         data["retry_min"] = int(_RM_CHART_RETRY // 60)
+        if stored:
+            # GDELT said no today: the last race that did arrive stays on
+            # screen, dated, and a fresh one is asked for again shortly.
+            data = dict(_rm_chart_dated(stored), stale=True, reason=data.get("reason", ""),
+                        retry_min=data["retry_min"])
     with _RM_CHART_LOCK:
-        _RM_CHART[key] = {"state": "done", "t": _rm_time.time(), "ttl": ttl, "data": data}
+        now_ent = _RM_CHART.get(key) or {}
+        got = now_ent.get("data") or {}
+        if (data.get("status") == "failed" or data.get("stale")) and now_ent.get("state") == "done" \
+                and got.get("status") in ("ok", "quiet") and not got.get("stale"):
+            return          # the panel brought the race from the browser meanwhile: keep it
+        _RM_CHART[key] = {"state": "done", "t": _rm_time.time(), "ttl": ttl, "data": data,
+                          "queries": list(data.get("queries") or now_ent.get("queries") or [])}
+
+
+def _rm_chart_key(client: dict, bits: dict) -> tuple:
+    """(key, country, market, currents) — the race belongs to a brief, a market
+    and its currents; any of them changing makes it another race."""
+    cur = (bits or {}).get("currents") or []
+    c = _sc.normalise_client(client or {})
+    mk = c.get("market") or DEFAULT_MARKET
+    country = (MARKETS.get(mk) or {}).get("gdelt", "")
+    key = "|".join([str((bits or {}).get("brief_id") or (bits or {}).get("label") or ""), country]
+                   + [str(x.get("t", "")) for x in cur])
+    return key, country, mk, cur
 
 
 def _rm_chart_for(client: dict, bits: dict) -> dict:
     """The race chart for this client's board: cached, being fetched, or started
-    now. Never blocks — until the lines land, the panel draws without them."""
-    cur = (bits or {}).get("currents") or []
+    now. Never blocks — until the lines land, the panel draws without them.
+    Whatever it returns also tells the panel how to ask GDELT itself."""
+    key, country, mk, cur = _rm_chart_key(client, bits)
     if not cur:
         return {"status": "none"}
+    out = _rm_chart_state(client, bits, key, country, mk, cur)
+    with _RM_CHART_LOCK:
+        q = (_RM_CHART.get(key) or {}).get("queries") or []
+    return dict(out, key=key, gdelt=_RM_GDELT_DOC, country=country,
+                queries=out.get("queries") or q, **({"bf": _RM_BF} if _RM_BF else {}))
+
+
+def _rm_chart_state(client: dict, bits: dict, key: str, country: str, mk: str, cur: list) -> dict:
     c = _sc.normalise_client(client or {})
-    mk = c.get("market") or DEFAULT_MARKET
-    country = (MARKETS.get(mk) or {}).get("gdelt", "")
-    key = "|".join([str(bits.get("brief_id") or bits.get("label") or ""), country]
-                   + [str(x.get("t", "")) for x in cur])
     now = _rm_time.time()
     with _RM_CHART_LOCK:
         ent = _RM_CHART.get(key)
         if ent:
             if ent["state"] == "running" and now - ent["t"] < _RM_CHART_STALE:
-                return {"status": "loading"}
+                return ent.get("show") or {"status": "loading"}
             if ent["state"] == "done" and now - ent["t"] < ent.get("ttl", _RM_CHART_TTL):
                 return ent["data"]
-        _RM_CHART[key] = {"state": "running", "t": now, "data": {"status": "loading"}}
+    # Nothing in memory: the stored race first — from earlier today, or from
+    # before the server went to sleep. Fresh enough, it is simply the answer.
+    stored = _rm_chart_stored(key)
+    age = _rm_chart_age(stored)
+    if stored and age < _RM_CHART_FRESH:
+        with _RM_CHART_LOCK:
+            _RM_CHART[key] = {"state": "done", "t": now, "ttl": max(600.0, _RM_CHART_FRESH - age),
+                              "data": stored}
+        return stored
+    keep = stored if (stored and age < _RM_CHART_KEEP) else None
+    show = dict(_rm_chart_dated(keep), stale=True) if keep else {"status": "loading"}
+    with _RM_CHART_LOCK:
+        ent = _RM_CHART.get(key)
+        if ent and ent["state"] == "running" and now - ent["t"] < _RM_CHART_STALE:
+            return ent.get("show") or {"status": "loading"}
+        _RM_CHART[key] = {"state": "running", "t": now, "data": {"status": "loading"}, "show": show}
         for k in [k for k, x in _RM_CHART.items() if x["state"] == "done" and now - x["t"] > 24 * 3600]:
             _RM_CHART.pop(k, None)          # a long-lived server keeps only today's charts
+    print(f"[room] fetching the news race ({c.get('brand') or c.get('name', '')}, {country or 'global'})"
+          f"{' — showing the stored one meanwhile' if keep else ''} · {key[:60]}")
     _rm_threading.Thread(
         target=_rm_chart_worker, daemon=True,
         args=(key, [{"t": x.get("t", ""), "s": x.get("s", "")} for x in cur],
               c.get("category", ""), c.get("product", ""), c.get("brand") or c.get("name", ""),
-              country, list(bits.get("scans") or []), mk)).start()
-    return {"status": "loading"}
+              country, list(bits.get("scans") or []), mk, keep)).start()
+    return show
+
+
+def _rm_chart_from_browser(client: dict, bits: dict, key: str, series, scope: str) -> bool:
+    """Lines the panel fetched from GDELT itself, in the facilitator's browser.
+
+    Nothing is taken on trust: the key must be this board's race, there must
+    be one line per current, every point must be a date and a number. Then the
+    same arithmetic as the server's own fetch draws them, and they are stored
+    like any other race."""
+    want, country, mk, cur = _rm_chart_key(client, bits)
+    if not cur or key != want or not isinstance(series, list) or len(series) != len(cur):
+        return False
+    clean = []
+    for line in series:
+        if not isinstance(line, list) or len(line) > 400:
+            return False
+        pts = {}
+        for pt in line:
+            if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+                continue
+            d = re.sub(r"\D", "", str(pt[0]))[:8]
+            try:
+                v = float(pt[1])
+            except (TypeError, ValueError):
+                continue
+            if len(d) == 8 and v == v:
+                iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+                pts[iso] = pts.get(iso, 0.0) + max(0.0, v)
+        clean.append(sorted(pts.items()))
+    with _RM_CHART_LOCK:
+        queries = list((_RM_CHART.get(key) or {}).get("queries") or [])
+    scope = "global" if scope in ("", "global") else country
+    data = _sc.chart_payload(clean, [x.get("t", "") for x in cur], scans=list(bits.get("scans") or []),
+                             queries=queries, scope=scope or "global")
+    if data.get("status") not in ("ok", "quiet"):
+        return False
+    data.update(fetched_at=_rm_now_iso(), via="browser",
+                market=mk if (country and data.get("scope") != "global") else "")
+    with _RM_CHART_LOCK:
+        _RM_CHART[key] = {"state": "done", "t": _rm_time.time(), "ttl": _RM_CHART_TTL, "data": data,
+                          "queries": queries}
+    try:
+        _db.upsert_record(_rm_chart_rid(key), _RM_CHART_TOPIC, data,
+                          label=f"News race · {c_name(client)}")
+    except Exception as exc:
+        print(f"[room] the race could not be stored: {exc}")
+    print(f"[room] the news race arrived from the browser ({c_name(client)}): {data.get('status')}")
+    return True
+
+
+def c_name(client: dict) -> str:
+    c = client or {}
+    return str(c.get("brand") or c.get("name") or c.get("category") or "")
 
 
 @st.fragment(run_every=2)
@@ -11523,6 +11687,8 @@ def _rm_hud_frag() -> None:
             _rm_save(sess, force=True)
             st.session_state["rm_setup"] = True
             st.rerun()
+        elif kind == "chart_raw":
+            _rm_chart_from_browser(client, st.session_state.get("rm_brief_bits") or {}, eff[1], eff[2], eff[3])
         elif kind in ("golive", "people", "intro"):
             # The session's start just moved to now, or names changed — the
             # log should say so before anything else happens.
