@@ -32,6 +32,7 @@ import re
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -895,6 +896,105 @@ def scrape_gdelt(
     if callback:
         callback(f"[GDELT] \u2713 {len(signals)} signals")
     return signals
+
+
+# ── News attention over time (the session room's race chart) ────────────────
+# The same free GDELT DOC API, asked a different question: not "which
+# articles" but "how many, day by day". TimelineVolRaw counts the articles
+# that matched each day; TIMELINESMOOTH turns that into a moving average so a
+# jagged news week becomes a line a room can read. Three months back at most.
+
+def _gdelt_json(url: str, timeout: int = 20, retries: int = 1):
+    """GET a GDELT DOC API URL and parse the JSON.
+
+    GDELT answers its refusals — a rate limit, a malformed query, a phrase too
+    short — as plain text, sometimes with a 429. Those raise with GDELT's own
+    words, so the caller can tell "nothing matched" ({} / []) from "GDELT said
+    no". A rate limit is retried once, after the five seconds it asks for."""
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": "Lighthouse/2.0"})
+        _gdelt_gate()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", "replace").strip()[:180]
+            except Exception:
+                body = ""
+            if exc.code == 429 and attempt < retries:
+                time.sleep(6)
+                continue
+            raise RuntimeError(f"GDELT answered {exc.code}: {body or exc.reason}")
+        text = raw.decode("utf-8", "replace").strip()
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            if "limit requests" in text.lower() and attempt < retries:
+                time.sleep(6)
+                continue
+            raise RuntimeError(f"GDELT did not return JSON: {text[:180]}")
+    return {}
+
+
+def gdelt_timeline(query: str, source_country: str = "", timespan: str = "3m",
+                   smooth: int = 7, timeout: int = 20) -> list:
+    """How much news a query drew, day by day: [("YYYY-MM-DD", articles), ...],
+    oldest first. With `smooth` > 1 each day is GDELT's moving average over
+    that many days (at most 30). [] when nothing matched."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    if source_country:
+        q += f" sourcecountry:{source_country}"
+    url = ("https://api.gdeltproject.org/api/v2/doc/doc?query=" + urllib.parse.quote(q)
+           + f"&mode=timelinevolraw&format=json&timespan={timespan}")
+    if smooth and int(smooth) > 1:
+        url += f"&timelinesmooth={min(30, int(smooth))}"
+    data = _gdelt_json(url, timeout=timeout) or {}
+    if data and "timeline" not in data and "query_details" not in data:
+        # An answer in a shape we do not know must not pass for "no news":
+        # that would draw silence where there is a misunderstanding.
+        raise RuntimeError(f"GDELT answered without a timeline (keys: {', '.join(list(data)[:5])})")
+    out: dict = {}
+    for series in (data.get("timeline") or [])[:1]:          # VolRaw has one series
+        for pt in series.get("data") or []:
+            d = re.sub(r"\D", "", str(pt.get("date", "")))[:8]
+            if len(d) != 8:
+                continue
+            try:
+                v = float(pt.get("value") or 0)
+            except (TypeError, ValueError):
+                v = 0.0
+            iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+            out[iso] = out.get(iso, 0.0) + max(0.0, v)
+    return sorted(out.items())
+
+
+def gdelt_top_article(query: str, start_day: str, end_day: str = "",
+                      source_country: str = "", timeout: int = 15) -> Optional[dict]:
+    """The most relevant article for a query between two days (YYYY-MM-DD) —
+    what drove a spike. None when GDELT has nothing with a title and a link."""
+    a = re.sub(r"\D", "", start_day or "")[:8]
+    b = re.sub(r"\D", "", end_day or start_day or "")[:8]
+    q = (query or "").strip()
+    if len(a) != 8 or len(b) != 8 or not q:
+        return None
+    if source_country:
+        q += f" sourcecountry:{source_country}"
+    url = ("https://api.gdeltproject.org/api/v2/doc/doc?query=" + urllib.parse.quote(q)
+           + "&mode=artlist&maxrecords=8&format=json&sort=hybridrel"
+           + f"&startdatetime={a}000000&enddatetime={b}235959")
+    data = _gdelt_json(url, timeout=timeout) or {}
+    for art in data.get("articles") or []:
+        title = _clean_title(art.get("title", ""))
+        if title and title != "(no title)" and art.get("url"):
+            seen = re.sub(r"\D", "", str(art.get("seendate", "")))[:8]
+            return {"title": title[:160], "url": art["url"], "domain": art.get("domain", "") or "",
+                    "day": f"{seen[:4]}-{seen[4:6]}-{seen[6:8]}" if len(seen) == 8 else ""}
+    return None
 
 
 # ── TikTok (Apify actor — needs APIFY_API_TOKEN) ─────────────────────────────

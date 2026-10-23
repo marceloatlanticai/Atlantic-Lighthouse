@@ -59,6 +59,13 @@ USERS = {
 # To switch scanning back on, either flip the default below to "0" or — better,
 # no code change — add this line to the Streamlit secrets:  SCAN_PAUSED = "0"
 SCAN_PAUSED = os.environ.get("SCAN_PAUSED", "1").strip().lower() not in ("0", "false", "no", "off", "")
+# ── Session room buttons ───────────────────────────────────────────────────────
+# The room always answers at ?view=session (team login required). The BUTTONS
+# that lead to it — in the brief's masthead and in the sidebar — stay hidden
+# until this is switched on, so the room can be tried quietly before the team
+# is shown it. To show them, no code change: add to the secrets
+#   SESSION_ROOM_LINKS = "1"
+SESSION_ROOM_LINKS = os.environ.get("SESSION_ROOM_LINKS", "0").strip().lower() in ("1", "true", "yes", "on")
 # ── Public address ────────────────────────────────────────────────────────────
 # The app is served inside an iframe on atlantic-lighthouse.com. A relative link
 # in the Archive resolves against the IFRAME's URL, so "Open ↗" opened the raw
@@ -1318,9 +1325,11 @@ with st.sidebar:
     # The way into the session room. Its own tab, because during a meeting it
     # is the screen the facilitator keeps open while the rest of the app stays
     # available for anything else.
-    if not IS_CLIENT and not st.session_state.get("_is_guest"):
+    if SESSION_ROOM_LINKS and not IS_CLIENT and not st.session_state.get("_is_guest"):
+        # Relative, so the room opens on the app's own address with the
+        # microphone to itself — see _sv_room_link for why.
         st.markdown(
-            f'<a href="{_public_url("view=session")}" target="_blank" rel="noopener" '
+            f'<a href="?view=session" target="_blank" rel="noopener" '
             f'style="display:block;text-align:center;margin:8px 0 4px;padding:9px 0;'
             f'border-radius:6px;background:#0000ff;color:#ffffff;text-decoration:none;'
             f'font-size:13px;font-weight:700;letter-spacing:.02em;">'
@@ -8732,6 +8741,28 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
     return "".join(parts)
 
 
+def _sv_room_link() -> str:
+    """The way into the session room from the brief's masthead.
+
+    HERE BECAUSE THE SIDEBAR IS GONE. The public route — how the team actually
+    reaches the app, through atlantic-lighthouse.com — hides the sidebar, and
+    with it the other link to the room.
+
+    NOT ON A SHARED REPORT. A ?report= link is what gets sent to clients; an
+    internal tool has no business on it.
+
+    RELATIVE ON PURPOSE, unlike the Archive's links. Inside the site's iframe a
+    relative link resolves to the app's own address, so the room opens as a
+    page of its own — and a page of its own gets the microphone with one
+    ordinary prompt. Routed back through the public domain, the room would sit
+    inside that iframe and depend on the site's page delegating the microphone.
+    """
+    if not SESSION_ROOM_LINKS or st.query_params.get("report"):
+        return ""
+    return ('<a class="sv-mast-room" href="?view=session" target="_blank" '
+            'rel="noopener">◉ Session room ↗</a>')
+
+
 def _sv_header(num: str, label: str, question: str) -> str:
     """Section header, matching the HTML component: small tracked label stacked
     above a large headline. The design dropped the big section numbers, so
@@ -9108,6 +9139,14 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 .sv-mast-tag {{
   font-family:{_sans}; font-size:13.5px; line-height:1.45; color:{_ink};
 }}
+/* The way into the session room — a control, so rounded like the others. */
+.sv-mast-room {{
+  display:inline-block; margin-top:16px; padding:8px 14px; border-radius:{_rad};
+  border:1.5px solid {_blue}; color:{_blue} !important; text-decoration:none !important;
+  font-family:{_sans}; font-size:12px; font-weight:700; letter-spacing:.02em;
+  transition:background .15s, color .15s;
+}}
+.sv-mast-room:hover {{ background:{_blue}; color:#ffffff !important; }}
 @media (max-width: 820px) {{
   .sv-masthead {{ grid-template-columns:1fr; gap:18px; }}
 }}
@@ -9239,6 +9278,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
   <div class="sv-mast-side">
     <div class="sv-mast-label">Intelligence Brief</div>
     <div class="sv-mast-tag">{e(_tagline)}</div>
+    {_sv_room_link()}
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -10195,6 +10235,95 @@ except Exception as _rm_exc:
     _rm_listener = None
     print(f"[room] listener component unavailable: {_rm_exc}")
 
+# The live room's panel. Same no-build component pattern as the microphone.
+# Checked for on disk: a missing folder must say so, not leave a blank frame
+# in front of a client.
+_RM_HUD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "components", "session_hud")
+try:
+    _rm_hud = (_rm_components.declare_component("lh_session_hud", path=_RM_HUD_DIR)
+               if os.path.isfile(os.path.join(_RM_HUD_DIR, "index.html")) else None)
+except Exception as _rm_hud_exc:
+    _rm_hud = None
+    print(f"[room] session panel unavailable: {_rm_hud_exc}")
+
+
+# ── Voices: who is speaking ──────────────────────────────────────────────────
+# With ASSEMBLYAI_API_KEY in the app's secrets, the microphone streams to
+# AssemblyAI's EU servers and the voices are told apart. Without it, Chrome
+# transcribes for free and the facilitator taps who is speaking. Both put
+# names on the lines the same way (session_core, "Who is speaking").
+#
+# THE KEY NEVER LEAVES THE SERVER. The browser gets a temporary token minted
+# here, good for opening a connection within ten minutes; AssemblyAI bills
+# the key that minted it. One token serves every connection opened while it
+# is fresh, so it is minted again only when it has under two minutes left.
+# EU by default: audio processed and kept in the EU and, on their terms, not
+# used to train their models. ASSEMBLYAI_REGION=us|edge switches it.
+
+_RM_AAI_REGION = (os.environ.get("ASSEMBLYAI_REGION", "eu") or "eu").strip().lower()
+_RM_AAI_HOST = {"eu": "streaming.eu.assemblyai.com",
+                "us": "streaming.us.assemblyai.com"}.get(_RM_AAI_REGION, "streaming.assemblyai.com")
+_RM_AAI_TOKEN_URL = os.environ.get("ASSEMBLYAI_TOKEN_URL", "") or f"https://{_RM_AAI_HOST}/v3/token"
+_RM_AAI_WS_URL = os.environ.get("ASSEMBLYAI_WS_URL", "") or f"wss://{_RM_AAI_HOST}/v3/ws"
+_RM_AAI_LOCK = _rm_threading.Lock()
+_RM_AAI_TOK = {"token": "", "exp": 0.0, "err": "", "err_t": 0.0}
+
+
+def _rm_aai_key() -> str:
+    return (os.environ.get("ASSEMBLYAI_API_KEY") or "").strip()
+
+
+def _rm_aai_model(lang: str) -> str:
+    """The cheapest model that speaks the room's language ($0.15 an hour, plus
+    the voices); Dutch needs the flagship, which costs three times that."""
+    forced = (os.environ.get("ASSEMBLYAI_MODEL") or "").strip()
+    if forced:
+        return forced
+    code = (lang or "en").split("-")[0].lower()
+    if code == "en":
+        return "universal-streaming-english"
+    if code in ("pt", "es", "fr", "de", "it"):
+        return "universal-streaming-multilingual"
+    return "universal-3-6-pro"
+
+
+def _rm_aai_token() -> tuple:
+    """(token dict for the browser, or None; what went wrong, or "")."""
+    key = _rm_aai_key()
+    if not key:
+        return None, ""
+    now = _rm_time.time()
+    with _RM_AAI_LOCK:
+        if _RM_AAI_TOK["token"] and _RM_AAI_TOK["exp"] - now > 120:
+            return {"token": _RM_AAI_TOK["token"], "exp": int(_RM_AAI_TOK["exp"])}, ""
+        if _RM_AAI_TOK["err"] and now - _RM_AAI_TOK["err_t"] < 30:
+            return None, _RM_AAI_TOK["err"]          # not hammering a service that just said no
+    import urllib.error as _ue
+    try:
+        req = urllib.request.Request(
+            f"{_RM_AAI_TOKEN_URL}?expires_in_seconds=600&max_session_duration_seconds=10800",
+            headers={"Authorization": key})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read().decode("utf-8") or "{}")
+        tok = str(data.get("token") or "")
+        if not tok:
+            raise RuntimeError("no token in the answer")
+        exp = now + int(data.get("expires_in_seconds") or 600)
+        with _RM_AAI_LOCK:
+            _RM_AAI_TOK.update(token=tok, exp=exp, err="", err_t=0.0)
+        return {"token": tok, "exp": int(exp)}, ""
+    except _ue.HTTPError as exc:
+        msg = {401: "AssemblyAI refused the key — check ASSEMBLYAI_API_KEY in the app's secrets",
+               402: "AssemblyAI says the account has no credit left",
+               429: "AssemblyAI is limiting requests — try again in a minute"}.get(
+            exc.code, f"AssemblyAI answered {exc.code} when asked for a token")
+    except Exception as exc:
+        msg = f"AssemblyAI could not be reached ({type(exc).__name__})"
+    with _RM_AAI_LOCK:
+        _RM_AAI_TOK.update(err=msg, err_t=_rm_time.time())
+    print(f"[room] voices: {msg}")
+    return None, msg
+
 
 def _rm_css() -> str:
     s = "'Telegraf', 'Space Grotesk', 'Helvetica Neue', Helvetica, Arial, sans-serif"
@@ -10348,6 +10477,46 @@ button[kind="primary"]:disabled p, [data-testid="stBaseButton-primary"]:disabled
 [data-baseweb="select"] > div {{ border-radius:10.5px !important; }}
 .rm-field {{ font-family:{s}; font-size:10.5px; font-weight:700; letter-spacing:.16em;
   text-transform:uppercase; color:#666; margin-bottom:6px; }}
+/* The first screen — one square card per client, ruled in black, the action a
+   rounded control inside it. */
+[class*="st-key-rmc_"] {{ border:1.5px solid #000000; background:#ffffff; padding:18px 20px 16px;
+  gap:14px !important; min-height:196px; justify-content:space-between; transition:border-color .15s; }}
+[class*="st-key-rmc_"]:hover {{ border-color:#0000ff; }}
+.rm-cc {{ font-family:{s}; }}
+.rm-cc .nm {{ font-size:26px; font-weight:700; letter-spacing:-.022em; line-height:1.08; color:#000; }}
+.rm-cc.new .nm {{ color:#0000ff; }}
+.rm-cc .meta {{ font-size:13px; line-height:1.45; color:#666; margin:7px 0 14px; min-height:19px; }}
+.rm-cc .row {{ display:flex; justify-content:space-between; gap:10px; border-top:1px solid #e6e6e6;
+  padding-top:8px; font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:#666; }}
+.rm-cc .row b {{ color:#0000ff; }}
+.rm-cc .row .lv {{ color:#ff383c; }}
+/* Who said what — one blue card per person (white when the voice has no name) */
+.rm-pp {{ font-family:{s}; background:#0000ff; color:#fff; padding:18px 20px 16px; min-height:150px;
+  display:flex; flex-direction:column; gap:7px; }}
+.rm-pp .vk {{ display:flex; justify-content:space-between; gap:10px; font-size:10px; font-weight:700;
+  letter-spacing:.16em; text-transform:uppercase; color:rgba(255,255,255,.75); }}
+.rm-pp .nm3 {{ font-size:22px; font-weight:700; letter-spacing:-.015em; line-height:1.12; margin:2px 0 0; }}
+.rm-pp .rl {{ font-size:13px; color:rgba(255,255,255,.85); margin-top:-3px; }}
+.rm-pp .air {{ height:6px; background:rgba(255,255,255,.28); position:relative; margin-top:4px; }}
+.rm-pp .air i {{ position:absolute; left:0; top:0; bottom:0; background:#fff; }}
+.rm-pp .airn {{ font-size:12px; color:rgba(255,255,255,.85); font-variant-numeric:tabular-nums; }}
+.rm-pp .k2 {{ font-size:9.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase;
+  color:rgba(255,255,255,.75); margin-top:6px; }}
+.rm-pp ul {{ margin:0; padding-left:16px; font-size:13px; line-height:1.45; }}
+.rm-pp li + li {{ margin-top:3px; }}
+.rm-pp .from {{ font-size:10.5px; color:rgba(255,255,255,.75); margin-top:auto; padding-top:6px; }}
+.rm-pp.unk {{ background:#fff; color:#000; border:1.5px solid #000; }}
+.rm-pp.unk .vk, .rm-pp.unk .k2, .rm-pp.unk .airn, .rm-pp.unk .from {{ color:#666; }}
+.rm-pp.unk .air {{ background:#ececec; }} .rm-pp.unk .air i {{ background:#000; }}
+/* Streamlit colours markdown text itself; on a blue card every colour is pinned */
+.rm-pp .nm3, .rm-pp ul, .rm-pp li, .rm-pp li p {{ color:#fff !important; }}
+.rm-pp .vk, .rm-pp .vk span, .rm-pp .k2, .rm-pp .from {{ color:rgba(255,255,255,.75) !important; }}
+.rm-pp .rl, .rm-pp .airn {{ color:rgba(255,255,255,.85) !important; }}
+.rm-pp.unk .nm3, .rm-pp.unk ul, .rm-pp.unk li, .rm-pp.unk li p {{ color:#000 !important; }}
+.rm-pp.unk .vk, .rm-pp.unk .vk span, .rm-pp.unk .k2, .rm-pp.unk .airn, .rm-pp.unk .from, .rm-pp.unk .rl {{ color:#666 !important; }}
+.rm-line .spk {{ font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+  margin-right:7px; color:#000; }}
+.rm-line .spk.unk {{ color:#666; }}
 @media (prefers-reduced-motion: reduce) {{ .rm-live i, .rm-run::after {{ animation:none; }} }}
 @media (max-width: 820px) {{
   .rm-title {{ font-size:40px; }}
@@ -10543,7 +10712,7 @@ def _rm_sessions_for(fid: str) -> list:
 # through the registry. That is the fourth time this codebase has had to learn
 # the rule, so it is written down where the threads start.
 
-def _rm_ear_worker(jid: str, prompt: str, board: list) -> None:
+def _rm_ear_worker(jid: str, prompt: str, board: list, n_problems: int = 0) -> None:
     """One reading of the room. Haiku: fast, cheap, and the job is to choose
     from a list, not to write."""
     try:
@@ -10558,9 +10727,83 @@ def _rm_ear_worker(jid: str, prompt: str, board: list) -> None:
                     "answer with the JSON object you are asked for."),
             messages=[{"role": "user", "content": prompt}])
         obj = _extract_json(_msg_text(resp))
-        _sc.JOBS.finish(jid, {"insight": _sc.parse_ear(obj, board)})
+        _sc.JOBS.finish(jid, {"insight": _sc.parse_ear(obj, board),
+                              "touched": _sc.parse_touched(obj, n_problems)})
     except Exception as exc:
         _sc.JOBS.finish(jid, error=f"{type(exc).__name__}: {str(exc)[:200]}")
+
+
+def _rm_intro_worker(jid: str, prompt: str, entries: dict) -> None:
+    """Names and roles from the round of introductions. Haiku, temperature 0:
+    the job is to copy what was said, and session_core drops any name that is
+    not in the person's own words."""
+    try:
+        key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not set")
+        import anthropic
+        client = anthropic.Anthropic(api_key=key, timeout=30.0, max_retries=1)
+        resp = client.messages.create(
+            model=CLAUDE_MODEL_FAST, max_tokens=500, temperature=0,
+            system="You read people's introductions and answer only with the JSON asked for.",
+            messages=[{"role": "user", "content": prompt}])
+        _sc.JOBS.finish(jid, {"found": _sc.parse_intro(_extract_json(_msg_text(resp)), entries)})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=f"{type(exc).__name__}: {str(exc)[:200]}")
+
+
+def _rm_intro_tick(sess: dict) -> None:
+    """Read the introductions that have something new in them — one call for
+    everyone at once, never two at a time."""
+    if _sc.JOBS.running(sess["id"], "intro"):
+        return
+    todo = _sc.intro_todo(sess, _sc.intro_texts(sess))
+    if not todo:
+        return
+    tried = sess.setdefault("_intro_tried", {})
+    for pid, text in todo.items():
+        tried[pid] = _sc._words(text)
+    jid = _sc.JOBS.start(sess["id"], "introductions", kind="intro", ids=list(todo))
+    _rm_threading.Thread(target=_rm_intro_worker, args=(jid, _sc.build_intro_prompt(todo), todo),
+                         daemon=True, name=f"lh-intro-{jid}").start()
+
+
+def _rm_intro_pending(sess: dict) -> set:
+    return {i for j in _sc.JOBS.for_session(sess["id"])
+            if j["status"] == "running" and j.get("kind") == "intro" for i in j.get("ids") or []}
+
+
+def _rm_people_notes(sess: dict, client: dict) -> str:
+    """After the meeting: what each person cared about, from their own lines
+    only. Written once per person (again only after a merge), on the script
+    thread — the review waits a few seconds for it. Returns "" or what failed."""
+    lines = _sc.session_lines(sess)
+    have = sess.get("people_notes") or {}
+    tried = set(sess.get("_notes_tried") or [])
+    entries = {k: v for k, v in _sc.people_lines(sess, lines).items() if k not in have and k not in tried}
+    if not entries:
+        return ""
+    sess["_notes_tried"] = sorted(tried | set(entries))
+    labels = {p["id"]: p["label"] for p in _sc.people_view(sess, lines)}
+    try:
+        key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not set")
+        import anthropic
+        api = anthropic.Anthropic(api_key=key, timeout=45.0, max_retries=1)
+        resp = api.messages.create(
+            model=CLAUDE_MODEL_FAST, max_tokens=900, temperature=0.2,
+            system="You sum up what each person in a meeting cared about, from their own words "
+                   "only, and answer only with the JSON asked for.",
+            messages=[{"role": "user", "content": _sc.build_people_prompt(client, entries, labels)}])
+        found = _sc.parse_people_notes(_extract_json(_msg_text(resp)), entries)
+    except Exception as exc:
+        print(f"[room] people notes: {type(exc).__name__}: {str(exc)[:160]}")
+        return f"{type(exc).__name__}"
+    if found:
+        sess["people_notes"] = dict(have, **found)
+        _rm_save(sess, force=True)
+    return ""
 
 
 def _rm_scan_worker(jid: str, p: dict, archive: list) -> None:
@@ -10614,7 +10857,8 @@ def _rm_start_read(sess: dict, asked: str = "") -> str:
         sess["_dirty"] = True
     sess["_last_read_t"] = _rm_time.time()
     jid = _sc.JOBS.start(sess["id"], "reading", kind="ear", asked=asked[:200])
-    _rm_threading.Thread(target=_rm_ear_worker, args=(jid, prompt, board),
+    _n = len(_sc.normalise_client(client)["problems"])
+    _rm_threading.Thread(target=_rm_ear_worker, args=(jid, prompt, board, _n),
                          daemon=True, name=f"lh-ear-{jid}").start()
     return ""
 
@@ -10664,6 +10908,11 @@ def _rm_collect(sess: dict) -> bool:
                 sess["_ear_error"] = j.get("error", "")
                 continue
             sess.pop("_ear_error", None)
+            _probs = _sc.normalise_client(st.session_state.get("rm_client") or {})["problems"]
+            for _i in (j.get("result") or {}).get("touched") or []:
+                _txt = _probs[_i] if isinstance(_i, int) and 0 <= _i < len(_probs) else ""
+                if _sc.touch_problem(sess, _i, True, _rm_now_iso(), len(_probs), text=_txt):
+                    changed = True
             ins = (j.get("result") or {}).get("insight")
             if ins:
                 if j.get("asked"):
@@ -10676,6 +10925,13 @@ def _rm_collect(sess: dict) -> bool:
                 # as "nothing fits" rather than "broken".
                 sess["_quiet_at"] = _rm_now_iso()
                 sess["_quiet_asked"] = j.get("asked", "")
+        elif j.get("kind") == "intro":
+            if j["status"] == "failed":
+                # The cards fall back to asking for the name; nothing else waits on it.
+                print(f"[room] introductions: {j.get('error', '')}")
+                continue
+            if _sc.apply_intro(sess, (j.get("result") or {}).get("found") or {}):
+                changed = True
         elif j.get("kind") == "scan":
             r = j.get("result") or {}
             for s in sess.get("scans") or []:
@@ -10759,17 +11015,84 @@ def _rm_transcript_html(sess: dict, limit: int = 80) -> str:
         return ('<div class="rm-empty">Nothing yet. Start listening above, or type what was '
                 'said — on a video call, paste the other side from the meeting captions.</div>')
     upto = int(sess.get("read_upto", 0))
-    first = max(0, len(chunks) - limit)
+    lines = _sc.session_lines(sess)
+    who = {p["id"]: p for p in _sc.people_view(sess, lines)}
     rows = []
     # Newest first in the markup; the column-reverse container shows it at the
     # bottom and starts scrolled there, like any chat — without a line of JS.
-    for n in range(len(chunks) - 1, first - 1, -1):
-        ch = chunks[n]
-        cls = "rm-line" + (" note" if ch.get("source") != "voice" else "") \
-            + (" new" if n >= upto else "")
-        rows.append(f'<div class="{cls}"><div class="t">{e(_rm_clock(ch.get("t", "")))}</div>'
-                    f'<div class="x">{e(ch.get("text", ""))}</div></div>')
+    for l in reversed(lines[-limit:]):
+        cls = "rm-line" + (" note" if l["note"] else "") + (" new" if l["n"] >= upto else "")
+        p = who.get(l["w"])
+        spk = (f'<span class="spk{"" if (p["name"] or p["you"]) else " unk"}">{e(p["short"])}</span>'
+               if p else "")
+        rows.append(f'<div class="{cls}"><div class="t">{e(_rm_clock(l["t"]))}</div>'
+                    f'<div class="x">{spk}{e(l["x"])}</div></div>')
     return f'<div class="rm-tx">{"".join(rows)}</div>'
+
+
+def _rm_people_section(sess: dict, client: dict) -> None:
+    """WHO SAID WHAT — one card per person: their share of the talk, what they
+    cared about (from their own lines), the problems they raised, what they
+    asked. A voice nobody named gets a form; so does a name that is wrong."""
+    lines = _sc.session_lines(sess)
+    ppl = [p for p in _sc.people_view(sess, lines) if p["words"] or p["name"] or p["you"]]
+    if not ppl:
+        return
+    notes = sess.get("people_notes") or {}
+    c = _sc.normalise_client(client)
+    qa, qb = list(sess.get("quest_at") or []), list(sess.get("quest_by") or [])
+    raised = {}
+    for i, prob in enumerate(c["problems"]):
+        if i < len(qa) and qa[i] and i < len(qb) and qb[i]:
+            raised.setdefault(qb[i], []).append(prob)
+    asked = {}
+    for l in lines:
+        if l["w"] and not l["note"] and not l["intro"] and l["x"].rstrip().endswith("?"):
+            asked.setdefault(l["w"], []).append(l["x"])
+    ppl.sort(key=lambda p: -p["words"])
+    named = sum(1 for p in ppl if p["name"] or p["you"])
+    st.markdown(f'<div class="rm-col-h" style="margin-top:22px">Who said what '
+                f'<span>· {named} of {len(ppl)} named</span></div>'
+                '<div class="rm-sub">Each card comes from that person\'s own lines. Name a voice, or '
+                'say it is someone already here, and the notes and the transcript follow.</div>',
+                unsafe_allow_html=True)
+    others = [p for p in ppl if p["name"]]
+    for r0 in range(0, len(ppl), 3):
+        cols = st.columns(3, gap="medium")
+        for j, p in enumerate(ppl[r0:r0 + 3]):
+            known = p["name"] or p["you"]
+            lists = [("What they cared about", notes.get(p["id"]) or []),
+                     ("Raised", raised.get(p["id"]) or []), ("Asked", (asked.get(p["id"]) or [])[:3])]
+            body = "".join(f'<div class="k2">{k}</div><ul>{"".join(f"<li>{e(x)}</li>" for x in v)}</ul>'
+                           for k, v in lists if v)
+            n_lines = sum(1 for l in lines if l["w"] == p["id"] and not l["note"] and not l["intro"])
+            head = "Facilitator" if p["you"] else f"Voice {p['tag']}"
+            with cols[j]:
+                st.markdown(
+                    f'<div class="rm-pp{"" if known else " unk"}"><div class="vk"><span>{e(head)}</span>'
+                    f'<span>{p["pct"]}% of the talk</span></div>'
+                    f'<div class="nm3">{e(p["name"] or ("You" if p["you"] else "Not named yet"))}</div>'
+                    + (f'<div class="rl">{e(p["role"])}</div>' if p["role"] else "")
+                    + f'<div class="air"><i style="width:{p["pct"]}%"></i></div>'
+                    f'<div class="airn">{p["words"]:,} words · {n_lines} line{"s" if n_lines != 1 else ""}</div>'
+                    + body + ('<div class="from">From their lines only.</div>' if known and body else "")
+                    + "</div>", unsafe_allow_html=True)
+                with st.expander("Name this voice" if not known else "Fix the name", expanded=not known):
+                    with st.form(f"rm_pp_{sess['id']}_{p['id']}", border=False):
+                        nm = st.text_input("Name", value=p["name"], key=f"rm_ppn_{p['id']}")
+                        rl = st.text_input("Role", value=p["role"], key=f"rm_ppr_{p['id']}")
+                        twins = [o for o in others if o["id"] != p["id"]]
+                        same = st.selectbox("…or the same person as", ["—"] + [o["id"] for o in twins],
+                                            key=f"rm_pps_{p['id']}",
+                                            format_func=lambda i: "—" if i == "—" else next(
+                                                o["name"] for o in twins if o["id"] == i)) if twins else "—"
+                        if st.form_submit_button("Save", type="primary"):
+                            if same != "—":
+                                _sc.merge_people(sess, p["id"], same)
+                            else:
+                                _sc.name_person(sess, p["id"], nm, rl)
+                            _rm_save(sess, force=True)
+                            st.rerun()
 
 
 # ── The live fragments ───────────────────────────────────────────────────────
@@ -10786,20 +11109,43 @@ def _rm_listen_frag() -> None:
         return
     if _rm_listener is None:
         st.markdown('<div class="rm-warn">The microphone could not be loaded on this server — '
-                    'type or paste below; everything else works the same.</div>',
+                    'type or paste in The room; everything else works the same.</div>',
                     unsafe_allow_html=True)
         return
+    has_key = bool(_rm_aai_key())
+    # The panel needs the mode from the first second — the round of
+    # introductions opens right after Go live, maybe before the consent box
+    # is ticked: tap mode shows a Next person button, the other only listens.
+    want = (st.session_state.get("rm_engine") or "auto") if has_key else "tap"
+    if not sess.get("voice_mode") or (not has_key and sess.get("voice_mode") != "tap"):
+        sess["voice_mode"] = want
+        _rm_save(sess, force=True)
     if not sess.get("consent"):
         st.markdown('<div class="rm-note" style="margin-bottom:4px">Before the microphone '
                     'switches on:</div>', unsafe_allow_html=True)
-        if st.checkbox("Everyone in the room knows this conversation is being transcribed.",
+        if st.checkbox("Everyone in the room knows this conversation is being transcribed, "
+                       "with names on who said what" + (" — voices are told apart for this "
+                                                        "meeting only." if has_key else "."),
                        key=f"rm_consent_{sess['id']}"):
             sess["consent"] = _rm_now_iso()
             _rm_save(sess, force=True)
             _rm_rerun_fragment()
         return
-    a, b = st.columns([5, 1.5], vertical_alignment="top")
-    with b:
+    mic_key = f"rm_mic_{sess['id']}"
+    # WHAT THE MICROPHONE SENT IS TAKEN FIRST, before anything is drawn, so the
+    # component is drawn already knowing what was acknowledged (ack).
+    cur = st.session_state.get(mic_key)
+    if isinstance(cur, dict):
+        if _sc.take_mic(sess, cur):
+            _rm_save(sess)
+        # "Use the free mode", pressed in the microphone after AssemblyAI said
+        # no: switch here, before the selector below is drawn (a widget's
+        # value cannot change once it is on the page), and only once per press.
+        if cur.get("switch") == "tap" and cur.get("sw") != st.session_state.get("_rm_sw_done"):
+            st.session_state["_rm_sw_done"] = cur.get("sw")
+            st.session_state["rm_engine"] = "tap"
+    cols = st.columns([5, 1.7, 1.4] if has_key else [5, 1.5], vertical_alignment="top")
+    with cols[-1]:
         # The default goes in `index`, NOT pre-written into session state. A key
         # written in one run for a widget first drawn in a later run is shown
         # at the widget's own default by the browser and, one rerun later,
@@ -10811,148 +11157,360 @@ def _rm_listen_frag() -> None:
         lang = st.selectbox("Language", _langs, key="rm_lang", index=_langs.index(_lang0),
                             format_func=lambda k: _RM_LANGS.get(k, k),
                             label_visibility="collapsed")
-    with a:
-        val = _rm_listener(lang=lang, batch_words=18, batch_seconds=12,
-                           start_seq=int(sess.get("last_seq", -1)) + 1,
-                           key=f"rm_mic_{sess['id']}", default=None)
-    if isinstance(val, dict) and str(val.get("text") or "").strip():
-        if _sc.add_chunk(sess, str(val["text"]), "voice", seq=val.get("seq")):
-            _rm_save(sess)
+    mode = "tap"
+    if has_key:
+        with cols[1]:
+            mode = st.selectbox("Voices", ["auto", "tap"], key="rm_engine", index=0,
+                                format_func=lambda k: {"auto": "Voices told apart",
+                                                       "tap": "Tap who speaks · free"}[k],
+                                label_visibility="collapsed",
+                                help="Told apart: AssemblyAI (EU) recognises each voice, about "
+                                     "$0.27 an hour. Tap: Chrome transcribes for free and you "
+                                     "tap who is speaking on the panel (keys 1–9).")
+    if sess.get("voice_mode") != mode:
+        sess["voice_mode"] = mode
+        _rm_save(sess, force=True)
+    aai, aai_err = None, ""
+    if mode == "auto":
+        tok, aai_err = _rm_aai_token()
+        if tok:
+            aai = dict(tok, url=_RM_AAI_WS_URL, model=_rm_aai_model(lang), revise_ms=300000,
+                       max_s=10800)
+    with cols[0]:
+        # Chrome's speech goes in small batches — six seconds or fourteen
+        # words — so a name said in the round reaches its card quickly. The
+        # outbox makes the extra reruns safe: nothing can be dropped.
+        _rm_listener(lang=lang, batch_words=14, batch_seconds=6,
+                     start_seq=int(sess.get("last_seq", -1)) + 1,
+                     ack=int(sess.get("last_seq", -1)), compact=True,
+                     engine="aai" if mode == "auto" else "chrome", aai=aai, aai_error=aai_err,
+                     need_ack=int((cur or {}).get("need") or 0) if isinstance(cur, dict) else 0,
+                     key=mic_key, default=None)
 
 
-@st.fragment
-def _rm_notes_frag() -> None:
+# The networks as the brief labels them, for the voices tile.
+_RM_NET = {"reddit": "Reddit", "tiktok": "TikTok", "instagram": "Instagram", "twitter": "X",
+           "youtube": "YouTube", "web": "Web", "gdelt": "News", "hacker_news": "HN",
+           "rss": "RSS", "db": "Archive"}
+
+
+def _rm_brief_bits(c: dict) -> dict:
+    """The tiles that come from the latest brief for this client.
+
+    Currents (with how long each has run and a six-scan "heat" trail), voices,
+    tensions, provocations and the clichés to keep off the table. The brief for
+    the client's own category and product wins; otherwise the newest brief
+    about the brand. Empty when there is none — the panel says so, tile by tile.
+    """
+    brand = (c.get("brand") or c.get("name") or "").strip()
+    if not brand:
+        return {}
+    try:
+        briefs = _sv_list_briefs(brand, limit=40)
+    except Exception as exc:
+        print(f"[room] briefs for {brand!r}: {exc}")
+        return {}
+    if not briefs:
+        return {}
+    norm = lambda x: str(x or "").strip().lower()
+    cat, prod = norm(c.get("category")), norm(c.get("product"))
+    pick = next((b for b in briefs if (not cat or norm(b.get("category")) == cat)
+                 and (not prod or norm(b.get("product")) == prod)), briefs[0])
+    res, sigs = pick.get("result") or {}, pick.get("signals") or []
+    trends = (res.get("trends") or [])[:3]
+    try:
+        ages, _faded = _sv_trend_history(brand, trends, pick.get("category", ""),
+                                         pick.get("product", ""),
+                                         current_saved_at=pick.get("saved_at", ""))
+    except Exception:
+        ages = ["" for _ in trends]
+    # Heat: was this current in each of the last six scans of the SAME search,
+    # oldest first? The same token comparison the Tideline uses — free, and it
+    # cannot invent a continuity that was not there.
+    same = lambda b: (norm(b.get("category")) == norm(pick.get("category"))
+                      and norm(b.get("product")) == norm(pick.get("product")))
+    peers = [b for b in briefs if same(b)][:6][::-1]
+    drop = frozenset(_sv_terms(f"{pick.get('category', '')} {pick.get('product', '')}"))
+    currents, trails = [], []
+    for n, t in enumerate(trends):
+        trail = [1 if any(_sv_trend_match(t, u, drop)
+                          for u in ((pb.get("result") or {}).get("trends") or [])) else 0
+                 for pb in peers]
+        trails.append(trail)
+        currents.append({"t": t.get("title", ""), "s": t.get("summary", ""),
+                         "age": (ages[n] if n < len(ages) else "") or "",
+                         "heat": ([0] * (6 - len(trail)) + trail)[-6:]})
+    # Our own scans, as the race chart draws them: a dot on a current's line on
+    # every day one of those six briefs found it.
+    scans = [{"date": str(pb.get("saved_at", ""))[:10],
+              "seen": [k for k, tr in enumerate(trails) if tr[j]]}
+             for j, pb in enumerate(peers) if str(pb.get("saved_at", ""))[:10]]
+    voices = []
+    for q in (res.get("insight_quotes") or [])[:6]:
+        try:
+            sg = sigs[int(q.get("signal_index"))]
+        except Exception:
+            continue
+        if not sg:
+            continue
+        txt = (_sv_dehash(_sv_body(sg)) or _sv_body(sg) or "").strip()
+        if not txt:
+            continue
+        src = str(sg.get("source", "") or "").lower()
+        meta = sg.get("meta") or {}
+        voices.append({"n": _RM_NET.get(src, src.replace("_", " ").title()),
+                       "h": _sv_clean_handle(q.get("handle", "")) or _sv_handle(src, meta),
+                       "q": txt[:220], "e": q.get("engagement", "") or _sv_engagement(meta),
+                       "url": sg.get("url", "")})
+    return {
+        "currents": currents, "voices": voices,
+        "tensions": [{"t": t.get("title", ""), "a": t.get("side_a", ""), "b": t.get("side_b", ""),
+                      "o": t.get("opening", "")} for t in (res.get("tensions") or [])[:4]],
+        "starters": [{"q": x.get("starter", ""), "mv": x.get("the_move", ""),
+                      "ca": x.get("cuts_against", "")} for x in (res.get("provocations") or [])[:4]
+                     if x.get("starter")],
+        "cliches": [{"w": x.get("avoid", ""), "why": x.get("why", ""), "ins": x.get("instead", "")}
+                    for x in (res.get("cliche_language") or [])[:6] if x.get("avoid")],
+        "label": " · ".join(p for p in (pick.get("category"), pick.get("product"),
+                                        _sv_fmt_date(pick.get("saved_at", ""))[:11]) if p),
+        "url": _rm_report_url(pick["id"]) if pick.get("id") else "",
+        "brief_id": pick.get("id", "") or pick.get("saved_at", ""),
+        "saved_at": pick.get("saved_at", ""),
+        "scans": scans,
+    }
+
+
+# ── The race chart: news attention per current, fetched in the background ───
+# Three GDELT timelines — one per current — and one article lookup for the
+# spike: around twenty seconds, because GDELT asks for one request every five.
+# So it runs in a thread the moment a client's page opens, never on the
+# screen's time, and a good answer is kept for six hours: every screen that
+# shows this client's board reads the same lines.
+
+_RM_CHART_LOCK = _rm_threading.Lock()
+_RM_CHART: dict = {}
+_RM_CHART_TTL = 6 * 3600       # a good answer is reused for six hours
+_RM_CHART_RETRY = 10 * 60      # a failed one is asked again after ten minutes
+_RM_CHART_STALE = 5 * 60       # a fetch "running" longer than this died with its thread
+_RM_CHART_GAP = float(os.environ.get("LH_GDELT_GAP", "5") or 5)   # GDELT asks for one request every five seconds
+
+
+def _rm_q_phrase(p: str) -> str:
+    """One phrase, safe for GDELT: plain lowercase words, quoted when it has a space."""
+    p = str(p or "").lower().replace("&", " and ").replace("’", "'").replace("'", "")
+    p = re.sub(r"[^a-z0-9 -]+", " ", p)
+    p = re.sub(r"\s+", " ", p).strip(" -")
+    if len(re.sub(r"[^a-z]", "", p)) < 3:
+        return ""
+    return f'"{p}"' if " " in p else p
+
+
+def _rm_q_join(phrases: list) -> str:
+    """GDELT's one OR block (they cannot nest): (a OR "b c" OR d)."""
+    ps = list(dict.fromkeys(x for x in (_rm_q_phrase(p) for p in phrases or []) if x))[:4]
+    if not ps:
+        return ""
+    return ps[0] if len(ps) == 1 else "(" + " OR ".join(ps) + ")"
+
+
+def _rm_chart_queries(currents: list, category: str, product: str, brand: str) -> list:
+    """One GDELT query per current — the words NEWS would use for it.
+
+    A current is an argument ("Boycotts are becoming fandoms"); news does not
+    write arguments, it writes events ("ice cream boycott"). Haiku translates.
+    Without a key, or when it fails, the current's own distinctive words do it,
+    anchored to the category so "protest" does not count every protest on earth."""
+    anchor = _rm_q_phrase(category or product or brand)
+    drop = frozenset(_sv_terms(f"{category} {product}"))
+    fallback = []
+    for c in currents:
+        toks = sorted(_sv_trend_tokens({"title": c.get("t", "")}, drop), key=len, reverse=True)[:3]
+        q = _rm_q_join(toks)
+        fallback.append(f"{anchor} {q}".strip() if (q and anchor) else (q or anchor))
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key or not currents:
+        return fallback
+    try:
+        import anthropic
+        listing = "\n".join(f"{i + 1}. {c.get('t', '')} — {str(c.get('s', ''))[:220]}"
+                            for i, c in enumerate(currents))
+        prompt = (
+            f"Below are cultural currents from a brief about {brand or category} in "
+            f"{category or 'its category'}{(' (' + product + ')') if product else ''}.\n\n{listing}\n\n"
+            "For each current, give 2 to 4 short search phrases (1 to 3 words each) that NEWS "
+            "headlines would use when writing about it. Each phrase must stay inside this category "
+            "on its own: add the category or product word whenever the phrase alone would match "
+            "unrelated news (\"ice cream boycott\", not \"boycott\"). Plain words, lowercase, "
+            "no quotes, no hashtags.\n\n"
+            'Respond ONLY with JSON: {"queries": [["phrase", "phrase"], ["phrase", "phrase"]]} '
+            "— one list per current, in the same order.")
+        r = anthropic.Anthropic(api_key=key).messages.create(
+            model=CLAUDE_MODEL_FAST, max_tokens=500, messages=[{"role": "user", "content": prompt}])
+        lists = (_extract_json(_msg_text(r)) or {}).get("queries") or []
+        return [(_rm_q_join(lists[i]) if i < len(lists) and isinstance(lists[i], list) else "") or fb
+                for i, fb in enumerate(fallback)]
+    except Exception as exc:
+        print(f"[room] chart queries fell back to the currents' own words: {exc}")
+        return fallback
+
+
+def _rm_chart_worker(key: str, currents: list, category: str, product: str, brand: str,
+                     country: str, scans: list, market: str = "") -> None:
+    """Fetch the lines. A thread: nothing in here touches Streamlit."""
+    data, ttl = {"status": "failed"}, _RM_CHART_RETRY
+    try:
+        from ingestion import gdelt_timeline, gdelt_top_article
+        queries = _rm_chart_queries(currents, category, product, brand)
+        titles = [c.get("t", "") for c in currents]
+
+        def fetch(cc: str):
+            out, errs = [], []
+            for n, q in enumerate(queries):
+                if n:
+                    _rm_time.sleep(_RM_CHART_GAP)
+                try:
+                    out.append(gdelt_timeline(q, source_country=cc))
+                except Exception as exc:
+                    errs.append(f"{type(exc).__name__}: {exc}"[:200])
+                    out.append(None)
+            return out, errs
+
+        series, errs = fetch(country)
+        data = _sc.chart_payload(series, titles, scans=scans, queries=queries,
+                                 scope=country or "global")
+        if data.get("status") == "quiet" and country:
+            # One market can be too small a pond for three niche currents; the
+            # world's news is the fairer second look — and the chart says so.
+            _rm_time.sleep(_RM_CHART_GAP)
+            series2, errs2 = fetch("")
+            wide = _sc.chart_payload(series2, titles, scans=scans, queries=queries, scope="global")
+            if wide.get("status") == "ok":
+                data, errs = wide, errs2
+        if errs and data.get("status") == "failed":
+            data["note"] = errs[0]
+        sp = data.get("spike")
+        if data.get("status") == "ok" and sp and 0 <= int(data.get("riser", -1)) < len(queries):
+            _rm_time.sleep(_RM_CHART_GAP)
+            try:
+                art = gdelt_top_article(queries[data["riser"]], sp["from"], sp["date"],
+                                        source_country="" if data.get("scope") == "global" else country)
+                if art:
+                    sp.update(headline=art["title"], url=art["url"], outlet=art.get("domain", ""),
+                              day=art.get("day", ""))
+            except Exception as exc:
+                print(f"[room] the spike's article: {exc}")
+        data["fetched_at"] = _rm_now_iso()
+        data["market"] = market if (country and data.get("scope") != "global") else ""
+        if data.get("status") in ("ok", "quiet"):
+            ttl = _RM_CHART_TTL
+    except Exception as exc:
+        data = {"status": "failed", "note": f"{type(exc).__name__}: {exc}"[:200]}
+    with _RM_CHART_LOCK:
+        _RM_CHART[key] = {"state": "done", "t": _rm_time.time(), "ttl": ttl, "data": data}
+
+
+def _rm_chart_for(client: dict, bits: dict) -> dict:
+    """The race chart for this client's board: cached, being fetched, or started
+    now. Never blocks — until the lines land, the panel draws without them."""
+    cur = (bits or {}).get("currents") or []
+    if not cur:
+        return {"status": "none"}
+    c = _sc.normalise_client(client or {})
+    mk = c.get("market") or DEFAULT_MARKET
+    country = (MARKETS.get(mk) or {}).get("gdelt", "")
+    key = "|".join([str(bits.get("brief_id") or bits.get("label") or ""), country]
+                   + [str(x.get("t", "")) for x in cur])
+    now = _rm_time.time()
+    with _RM_CHART_LOCK:
+        ent = _RM_CHART.get(key)
+        if ent:
+            if ent["state"] == "running" and now - ent["t"] < _RM_CHART_STALE:
+                return {"status": "loading"}
+            if ent["state"] == "done" and now - ent["t"] < ent.get("ttl", _RM_CHART_TTL):
+                return ent["data"]
+        _RM_CHART[key] = {"state": "running", "t": now, "data": {"status": "loading"}}
+        for k in [k for k, x in _RM_CHART.items() if x["state"] == "done" and now - x["t"] > 24 * 3600]:
+            _RM_CHART.pop(k, None)          # a long-lived server keeps only today's charts
+    _rm_threading.Thread(
+        target=_rm_chart_worker, daemon=True,
+        args=(key, [{"t": x.get("t", ""), "s": x.get("s", "")} for x in cur],
+              c.get("category", ""), c.get("product", ""), c.get("brand") or c.get("name", ""),
+              country, list(bits.get("scans") or []), mk)).start()
+    return {"status": "loading"}
+
+
+@st.fragment(run_every=2)
+def _rm_hud_frag() -> None:
+    """The live room: one full-screen panel, redrawn every two seconds.
+
+    Order matters. The panel's pending actions are applied FIRST, from the
+    value it last sent, so what it draws next already contains them; finished
+    readings and searches are collected; a reading starts if enough has been
+    said; the log is saved; and only then is the state handed to the panel."""
     sess = _rm_live()
     if not sess:
         return
-    with st.form("rm_notes_form", clear_on_submit=True, border=False):
-        txt = st.text_area("Notes", height=86, label_visibility="collapsed", key="rm_notes_txt",
-                           placeholder="Type what was said, paste from the meeting captions — "
-                                       "or ask the board something, privately.")
-        a, b, _ = st.columns([1.25, 1.1, 1.6])
-        add = a.form_submit_button("Add to the transcript", use_container_width=True)
-        ask = b.form_submit_button("Ask the board", type="primary", use_container_width=True)
-    txt = (txt or "").strip()
-    if add and txt:
-        if _sc.add_chunk(sess, txt, "note"):
-            _rm_save(sess)
-    elif ask and txt:
-        why = _rm_start_read(sess, asked=txt)
-        st.toast(why or "Asked. The answer lands on the right.")
-
-
-@st.fragment
-def _rm_lookinto_frag() -> None:
-    sess = _rm_live()
-    if not sess:
-        return
-    c = st.session_state.get("rm_client") or {}
-    with st.expander("Look into something else — a full search, in the background"):
-        with st.form("rm_look_form", clear_on_submit=False, border=False):
-            a, b = st.columns(2)
-            cat = a.text_input("Category", value=c.get("category", ""), key="rm_look_cat")
-            prod = b.text_input("Product", value=c.get("product", ""), key="rm_look_prod")
-            go = st.form_submit_button("Start the search", disabled=SCAN_PAUSED)
-        st.caption("Three to four minutes and the same credits as a scan. It lands on the "
-                   "right when it is done, and is filed in the Archive."
-                   + (f" Scanning is paused — {SCAN_PAUSED_MSG}" if SCAN_PAUSED else ""))
-    if go:
-        why = _rm_start_scan(sess, cat, prod, why="asked for in the room")
-        st.toast(why or "Searching in the background.")
-
-
-@st.fragment(run_every=3)
-def _rm_transcript_frag() -> None:
-    sess = _rm_live()
-    if not sess:
-        return
-    n = len(sess.get("chunks") or [])
-    st.markdown(f'<div class="rm-col-h">The room<span>{_sc.word_count(sess):,} words · '
-                f'{n} line{"s" if n != 1 else ""}</span></div>' + _rm_transcript_html(sess),
-                unsafe_allow_html=True)
-
-
-@st.fragment(run_every=3)
-def _rm_ear_frag() -> None:
-    sess = _rm_live()
-    if not sess:
-        return
+    _sc.hud_defaults(sess)
+    client = st.session_state.get("rm_client") or {}
+    n_prob = len(_sc.normalise_client(client)["problems"])
+    key = f"rm_hud_{sess['id']}"
+    before = sess.get("hud_ack", -1)
+    effects = _sc.hud_apply(sess, st.session_state.get(key), n_prob, now=_rm_now_iso(),
+                            problems=_sc.normalise_client(client)["problems"])
+    if sess.get("hud_ack", -1) != before:
+        sess["_dirty"] = True
+    for eff in effects:
+        kind = eff[0]
+        if kind == "note":
+            _sc.add_chunk(sess, eff[1], "note")
+        elif kind == "ask":
+            why = _rm_start_read(sess, asked=eff[1])
+            if why:
+                sess["_notice"] = why
+        elif kind == "read":
+            why = _rm_start_read(sess)
+            if why:
+                sess["_notice"] = why
+        elif kind == "look":
+            why = _rm_start_scan(sess, eff[1], eff[2], why=eff[3])
+            if why:
+                sess["_notice"] = why
+        elif kind == "end":
+            _rm_collect(sess)
+            sess["status"] = "ended"
+            sess["ended_at"] = _rm_now_iso()
+            _rm_save(sess, force=True)
+            st.session_state["rm_review"] = sess
+            st.session_state.pop("rm_sess", None)
+            st.rerun()
+        elif kind == "setup":
+            _rm_save(sess, force=True)
+            st.session_state["rm_setup"] = True
+            st.rerun()
+        elif kind in ("golive", "people", "intro"):
+            # The session's start just moved to now, or names changed — the
+            # log should say so before anything else happens.
+            _rm_save(sess, force=True)
     _rm_collect(sess)
-    if (st.session_state.get("rm_auto", True)
-            and not _sc.JOBS.running(sess["id"], "ear")
+    _rm_intro_tick(sess)
+    if (sess.get("auto", True) and not _sc.JOBS.running(sess["id"], "ear")
             and _sc.should_auto_read(_sc.unread_words(sess),
                                      _rm_time.time() - float(sess.get("_last_read_t") or 0))):
         _rm_start_read(sess)
     if sess.get("_dirty"):
         _rm_save(sess)
-
-    h1, h2 = st.columns([1.35, 1], vertical_alignment="center")
-    with h1:
-        st.markdown('<div class="rm-col-h" style="margin:0">The board says</div>',
-                    unsafe_allow_html=True)
-    with h2:
-        if st.button("Read the room now", key="rm_read_now", type="primary",
-                     use_container_width=True):
-            why = _rm_start_read(sess)
-            if why:
-                st.toast(why)
-            _rm_rerun_fragment()
-    st.toggle("Read as we go — about once a minute of talk", key="rm_auto", value=True)
-
-    if _sc.JOBS.running(sess["id"], "ear"):
-        st.markdown('<div class="rm-quiet">Reading the room…</div><div class="rm-run"></div>',
-                    unsafe_allow_html=True)
-    elif sess.get("_ear_error"):
-        _err = str(sess["_ear_error"])
-        _hint = (" Set it in the app's secrets." if "ANTHROPIC_API_KEY" in _err else "")
-        st.markdown(f'<div class="rm-warn">The last reading failed — {e(_err)}.{_hint}</div>',
-                    unsafe_allow_html=True)
-    elif sess.get("_quiet_at"):
-        _what = "that question" if sess.get("_quiet_asked") else "that"
-        st.markdown(f'<div class="rm-quiet">{e(_rm_clock(sess["_quiet_at"]))} — nothing on the '
-                    f'board bears on {_what}. Silence is an answer.</div>', unsafe_allow_html=True)
-    else:
-        _u = _sc.unread_words(sess)
-        st.markdown(f'<div class="rm-quiet">{_u} new word{"s" if _u != 1 else ""} since the '
-                    f'last reading.</div>', unsafe_allow_html=True)
+    bits = st.session_state.get("rm_brief_bits") or {}
+    state = _sc.hud_state(sess, client, bits,
+                          tz_name=DISPLAY_TZ,
+                          reading_now=bool(_sc.JOBS.running(sess["id"], "ear")),
+                          scan_paused=SCAN_PAUSED, report_url=_rm_report_url,
+                          chart=_rm_chart_for(client, bits),
+                          intro_pending=_rm_intro_pending(sess))
+    if sess.get("_notice"):
+        state["notice"] = sess.pop("_notice")
     if sess.get("_save_failed"):
-        st.markdown('<div class="rm-warn">The log could not be saved just now — it will try '
-                    'again in a few seconds. Keep this tab open.</div>', unsafe_allow_html=True)
-
-    # Searches first: they are the slow, surprising part, and they arrive while
-    # the room is talking about something else.
-    for s in reversed(sess.get("scans") or []):
-        st.markdown(_rm_scan_html(s), unsafe_allow_html=True)
-
-    ins_all = sess.get("insights") or []
-    if not ins_all:
-        st.markdown('<div class="rm-empty">Readings appear here, newest first. Each one cites '
-                    'only what is on the board — or says nothing.</div>', unsafe_allow_html=True)
-    scanned = {str(s.get("label", "")).lower() for s in sess.get("scans") or []}
-
-    def _card(idx: int, ins: dict) -> None:
-        st.markdown(_rm_insight_html(ins), unsafe_allow_html=True)
-        lk = ins.get("look_into") or {}
-        if lk:
-            what = " · ".join(p for p in (lk.get("category"), lk.get("product")) if p)
-            if what.lower() in scanned:
-                return
-            if st.button(f"Look into {what}", key=f"rm_look_{idx}", disabled=SCAN_PAUSED,
-                         help=("Scanning is paused — " + SCAN_PAUSED_MSG) if SCAN_PAUSED
-                         else "A full search in the background — three to four minutes."):
-                why = _rm_start_scan(sess, lk.get("category", ""), lk.get("product", ""),
-                                     why=lk.get("reason", ""))
-                if why:
-                    st.toast(why)
-                _rm_rerun_fragment()
-
-    order = list(range(len(ins_all) - 1, -1, -1))
-    for idx in order[:6]:
-        _card(idx, ins_all[idx])
-    if len(order) > 6:
-        with st.expander(f"Earlier readings ({len(order) - 6})"):
-            for idx in order[6:]:
-                _card(idx, ins_all[idx])
+        state["notice"] = "The log could not be saved just now — it will try again. Keep this tab open."
+    _rm_hud(state=state, key=key, default=None)
 
 
 # ── After the meeting ────────────────────────────────────────────────────────
@@ -10965,11 +11523,18 @@ def _rm_review(sess: dict, client: dict) -> None:
                 f'<div class="rm-sub">{_sc.duration_min(sess)} min · {_sc.word_count(sess):,} words · '
                 f'{n_ins} reading{"s" if n_ins != 1 else ""} · '
                 f'{len(sess.get("scans") or [])} search(es)</div>', unsafe_allow_html=True)
+    # What each person cared about goes into the notes too, so it is written
+    # before them — once per person, a few seconds the first time.
+    if _sc.people_lines(sess) and set(_sc.people_lines(sess)) - set(sess.get("people_notes") or {}) \
+            - set(sess.get("_notes_tried") or []):
+        with st.spinner("Writing what each person cared about…"):
+            _rm_people_notes(sess, client)
     md = _sc.session_markdown(sess, client, link=_rm_report_url, tz_name=DISPLAY_TZ)
     _slug = re.sub(r"[^a-z0-9]+", "-", (client.get("name") or "client").lower()).strip("-")
     st.download_button("Download the notes (.md)", md,
                        file_name=f"session-{_slug}-{str(sess.get('started_at', ''))[:10]}.md",
                        mime="text/markdown", key=f"rm_dl_{sess.get('id')}")
+    _rm_people_section(sess, client)
     left, right = st.columns([1.15, 1], gap="large")
     with left:
         st.markdown('<div class="rm-col-h">The room</div>' + _rm_transcript_html(sess, limit=600),
@@ -11037,43 +11602,176 @@ def _rm_material_section(c: dict, items: list, mine: list) -> None:
                 st.rerun()
 
 
-def render_session_room() -> None:
+def _rm_prepare_material(c: dict) -> tuple:
+    """What the ear may cite: this client's material (or the whole board while
+    it has none), then the latest briefs about the brand. Built on the script
+    thread, once per full run, and handed to the fragments through state."""
+    items = _rm_all_items()
+    mine = _rm_client_items(c, items)
+    board = [i for i in items if str(i.get("user", "")) == _SV_BOARD_USER] or items
+    briefs = _sv_list_briefs(c["brand"] or c["name"], limit=6)
+    arch = _sc.archive_items(briefs)
+    for a_ in arch:
+        a_["url"] = _rm_report_url(a_["report_id"]) if a_.get("report_id") else ""
+    st.session_state["rm_material"] = _sc.ear_material(mine, board, arch)
+    return items, mine, briefs
+
+
+def _rm_live_screen(c: dict, sess: dict) -> None:
+    """The live room: the microphone strip and, under it, the panel filling the
+    rest of the screen. Nothing else — no picker, no profile, no footer."""
+    st.session_state["rm_client"] = c
+    _rm_prepare_material(c)
+    try:
+        st.session_state["rm_brief_bits"] = _rm_brief_bits(c)
+    except Exception as exc:
+        print(f"[room] brief tiles: {exc}")
+        st.session_state["rm_brief_bits"] = {}
+    # Full bleed: the room stylesheet puts content on a 1240px column with
+    # padding; the panel wants every pixel. Declared after it, and stronger.
+    st.markdown("""<style>
+.stApp [data-testid="stMain"] .block-container, .stApp .block-container {
+  max-width:100% !important; padding:0 !important; }
+/* The page's invisible blocks (stylesheets, helper scripts) each cost a 16px
+   gap above the strip — about 100px of dead screen. The panel wants them. */
+.stApp [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] { gap:0 !important; }
+.st-key-rm_mic_box { padding:8px 14px 6px !important; }
+.st-key-rm_mic_box [data-testid="stCheckbox"] label p { font-size:13px !important; }
+</style>""", unsafe_allow_html=True)
+    with st.container(key="rm_mic_box"):
+        _rm_listen_frag()
+    if _rm_hud is None:
+        st.error("The session panel needs the folder **components/session_hud/** on the server, "
+                 "next to app.py. Upload it to the repository; nothing else is affected.")
+        return
+    _rm_hud_frag()
+
+
+def _rm_latest_brief(c: dict) -> dict:
+    """The brief the board would use for this client — its date and currents —
+    from the archive the brief list already holds in memory."""
+    brand = (c.get("brand") or c.get("name") or "").strip()
+    if not brand:
+        return {}
+    try:
+        briefs = _sv_list_briefs(brand, limit=40)
+    except Exception:
+        return {}
+    norm = lambda x: str(x or "").strip().lower()
+    cat, prod = norm(c.get("category")), norm(c.get("product"))
+    return next((b for b in briefs if (not cat or norm(b.get("category")) == cat)
+                 and (not prod or norm(b.get("product")) == prod)), briefs[0] if briefs else {})
+
+
+def _rm_chooser(clients: list) -> None:
+    """THE FIRST SCREEN: who are we meeting? One card per client.
+
+    Everything after it is about one client — their opening, their board,
+    their log — so the choice comes first, on its own, and big enough to make
+    on a meeting-room screen. Deliberately cheap: names and the latest brief's
+    date come from what is already in memory; no transcripts are loaded here."""
+    st.markdown('<div class="rm-title">Who are we meeting?</div>'
+                '<div class="rm-stand">Choose the client. Their session opens on the race '
+                'between their currents in the news — who rose, who fell — and goes live when '
+                'the room is ready.</div>', unsafe_allow_html=True)
+    live = st.session_state.get("rm_sess") or {}
+    live_id = live.get("client_id") if live.get("status") == "live" else ""
+    cards = [("__new__", None)] + [(c["folder_id"], c) for c in clients]
+    per_row = 3
+    for r0 in range(0, len(cards), per_row):
+        cols = st.columns(per_row, gap="medium")
+        for j, (fid, c) in enumerate(cards[r0:r0 + per_row]):
+            with cols[j]:
+                with st.container(key=f"rmc_{r0 + j}"):
+                    if c is None:
+                        st.markdown('<div class="rm-cc new"><div class="nm">＋ New client</div>'
+                                    '<div class="meta">Fill in the profile before the meeting — '
+                                    'the problems they bring are what the room listens for.</div>'
+                                    '<div class="row"><span>Profile · material · brief</span></div></div>',
+                                    unsafe_allow_html=True)
+                        lab = "Add a client"
+                    else:
+                        b = _rm_latest_brief(c)
+                        when = _sv_fmt_date(b.get("saved_at", ""))[:11] if b else ""
+                        meta = " · ".join(x for x in (c.get("category"), c.get("product"), c.get("market")) if x)
+                        n_prob = len(c.get("problems") or [])
+                        right = ('<span class="lv">● Live now</span>' if fid == live_id else
+                                 f"<span>{n_prob} problem{'s' if n_prob != 1 else ''}</span>")
+                        st.markdown(f'<div class="rm-cc"><div class="nm">{e(c["name"] or c["brand"])}</div>'
+                                    f'<div class="meta">{e(meta) or "&nbsp;"}</div>'
+                                    f'<div class="row"><span>{("Latest brief · <b>" + e(when) + "</b>") if when else "No brief yet"}</span>'
+                                    f"{right}</div></div>", unsafe_allow_html=True)
+                        lab = "Back to the live session" if fid == live_id else "Open ›"
+                    if st.button(lab, key=f"rm_choose_{r0 + j}", use_container_width=True,
+                                 type="primary" if fid == live_id else "secondary"):
+                        if fid == live_id:
+                            st.session_state.pop("rm_setup", None)
+                        st.session_state["_rm_pick_next"] = fid
+                        st.rerun()
+
+
+def render_session_room() -> bool:
+    """The session room. Returns True when the live panel took the whole screen
+    (the route then leaves the footer out — the panel must not scroll)."""
     user = st.session_state.get("logged_in_user", "")
     st.markdown(_rm_css(), unsafe_allow_html=True)
-    st.markdown(f'<div class="rm-top"><div class="rm-eyebrow">The Lighthouse · Session room</div>'
-                f'<a class="rm-back" href="{_public_url("")}" target="_blank" rel="noopener">'
-                f'The Lighthouse ↗</a></div>', unsafe_allow_html=True)
 
     clients = _rm_load_clients()
     by_id = {c["folder_id"]: c for c in clients}
-    opts = [c["folder_id"] for c in clients] + ["__new__"]
-    # A pending choice from the last run (a client just created, "back to the
-    # live session") — written before the selector exists, never after.
+
+    # THE LIVE ROOM COMES FIRST and takes the screen. "Setup" (from the panel)
+    # steps out to the profile and material without ending anything.
+    _live = st.session_state.get("rm_sess")
+    _live = _live if (_live and _live.get("status") == "live") else None
+    if _live and not st.session_state.get("rm_setup") and _live.get("client_id") in by_id:
+        _rm_live_screen(by_id[_live["client_id"]], _live)
+        return True
+
+    st.markdown(f'<div class="rm-top"><div class="rm-eyebrow">The Lighthouse · Session room</div>'
+                f'<a class="rm-back" href="{_public_url("")}" target="_blank" rel="noopener">'
+                f'The Lighthouse ↗</a></div>', unsafe_allow_html=True)
+    if _live:
+        st.markdown(f'<div class="rm-warn">The session with <b>{e(_live.get("client_name", ""))}</b> '
+                    f'is still live. The microphone is paused while you are here; nothing else '
+                    f'stops.</div>', unsafe_allow_html=True)
+        if st.button("← Back to the room", key="rm_back_room", type="primary"):
+            st.session_state.pop("rm_setup", None)
+            st.session_state["_rm_pick_next"] = _live.get("client_id")
+            st.rerun()
+    # WHICH CLIENT. A pending choice from the last run wins (a card just
+    # clicked, a client just created, "back to the live session"); then the
+    # address bar, so a reload comes back to the same page; otherwise the first
+    # screen asks. With no clients at all there is nothing to choose from, so
+    # it goes straight to the new-client form.
     if "_rm_pick_next" in st.session_state:
         st.session_state["rm_pick"] = st.session_state.pop("_rm_pick_next")
-    if st.session_state.get("rm_pick") not in opts:
+    if "rm_pick" not in st.session_state:
         qp = str(st.query_params.get("client", "") or "")
-        st.session_state["rm_pick"] = qp if qp in by_id else (opts[0] if clients else "__new__")
-
-    pa, pb = st.columns([2.2, 3], vertical_alignment="bottom")
-    with pa:
-        st.markdown('<div class="rm-field">Client</div>', unsafe_allow_html=True)
-        pick = st.selectbox("Client", opts, key="rm_pick", label_visibility="collapsed",
-                            format_func=lambda k: "＋  New client" if k == "__new__"
-                            else (by_id[k]["name"] or by_id[k]["brand"]))
+        st.session_state["rm_pick"] = qp if (qp in by_id or qp == "__new__") else ""
+    pick = st.session_state.get("rm_pick") or ""
+    if _live and st.session_state.get("rm_setup") and not pick:
+        pick = _live.get("client_id", "")         # Setup is about the client in the room
+    if pick and pick != "__new__" and pick not in by_id:
+        pick = ""                                  # a client that no longer exists
+    if not clients:
+        pick = "__new__"
+    if not pick:
+        if st.query_params.get("client"):
+            del st.query_params["client"]
+        _rm_chooser(clients)
+        return False
+    if clients and st.button("← All clients", key="rm_all_clients"):
+        st.session_state["rm_pick"] = ""
+        if st.query_params.get("client"):
+            del st.query_params["client"]
+        st.rerun()
     if pick != "__new__" and st.query_params.get("client") != pick:
         st.query_params["client"] = pick       # a reload comes back to the same client
 
     sess = st.session_state.get("rm_sess")
-    live_other = bool(sess and sess.get("status") == "live" and sess.get("client_id") != pick)
-    if live_other:
-        with pb:
-            st.markdown(f'<div class="rm-warn" style="margin:0">A session with '
-                        f'<b>{e(sess.get("client_name", ""))}</b> is live. Its microphone is '
-                        f'paused while you look at another client.</div>', unsafe_allow_html=True)
-            if st.button("Back to the live session", key="rm_back_live"):
-                st.session_state["_rm_pick_next"] = sess.get("client_id")
-                st.rerun()
+    # A session is live in this browser (we are in Setup): no second one may
+    # start, here or for another client — the banner above leads back to it.
+    live_other = bool(sess and sess.get("status") == "live")
 
     if pick == "__new__":
         st.markdown('<div class="rm-title">New client</div>'
@@ -11085,62 +11783,18 @@ def render_session_room() -> None:
         if prof:
             st.session_state["_rm_pick_next"] = prof["folder_id"]
             st.rerun()
-        return
+        return False
 
     c = by_id[pick]
     st.session_state["rm_client"] = c
 
-    # What the ear may cite: this client's material (or the whole board while
-    # it has none), then the latest briefs about the brand. Built on the script
-    # thread, once per full run, and handed to the fragments through state.
-    items = _rm_all_items()
-    mine = _rm_client_items(c, items)
-    board = [i for i in items if str(i.get("user", "")) == _SV_BOARD_USER] or items
-    briefs = _sv_list_briefs(c["brand"] or c["name"], limit=6)
-    arch = _sc.archive_items(briefs)
-    for a_ in arch:
-        a_["url"] = _rm_report_url(a_["report_id"]) if a_.get("report_id") else ""
-    st.session_state["rm_material"] = _sc.ear_material(mine, board, arch)
-
-    live = bool(sess and sess.get("status") == "live" and sess.get("client_id") == c["folder_id"])
-    if live:
-        _started = _rm_clock(sess.get("started_at", ""))
-        st.markdown(f'<div class="rm-livebar"><span class="rm-live"><i></i>Live</span>'
-                    f'<span class="who">{e(c["name"] or c["brand"])}</span>'
-                    f'<span class="meta">started {e(_started)}'
-                    f'{" UTC" if not DISPLAY_TZ else ""} · {_sc.duration_min(sess)} min · '
-                    f'{len(st.session_state["rm_material"])} items it can cite</span></div>',
-                    unsafe_allow_html=True)
-        b1, b2, _ = st.columns([1.3, 1.1, 4])
-        with b1:
-            st.download_button("Download the notes", _sc.session_markdown(
-                sess, c, link=_rm_report_url, tz_name=DISPLAY_TZ),
-                file_name=f"session-notes-{str(sess.get('started_at', ''))[:10]}.md",
-                mime="text/markdown", key="rm_dl_live", use_container_width=True)
-        with b2:
-            with st.popover("End the session", use_container_width=True):
-                st.caption("The transcript and everything raised stay in the log.")
-                if st.button("End it now", type="primary", key="rm_end"):
-                    _rm_collect(sess)
-                    sess["status"] = "ended"
-                    sess["ended_at"] = _rm_now_iso()
-                    _rm_save(sess, force=True)
-                    st.session_state["rm_review"] = sess
-                    st.session_state.pop("rm_sess", None)
-                    st.rerun()
-        left, right = st.columns([1.12, 1], gap="large")
-        with left:
-            with st.container(key="rm_mic_box"):
-                _rm_listen_frag()
-            _rm_notes_frag()
-            _rm_lookinto_frag()
-            _rm_transcript_frag()
-        with right:
-            _rm_ear_frag()
-        st.markdown('<div class="rm-lbl">The client</div>', unsafe_allow_html=True)
-        st.markdown(_rm_profile_html(c), unsafe_allow_html=True)
-        _rm_material_section(c, items, mine)
-        return
+    items, mine, briefs = _rm_prepare_material(c)
+    # The opening's chart takes GDELT twenty seconds or so: ask now, in the
+    # background, so it is there by the time someone presses Start.
+    try:
+        _rm_chart_for(c, _rm_brief_bits(c))
+    except Exception as exc:
+        print(f"[room] chart prefetch: {exc}")
 
     # ── Not live: the preparation view ──────────────────────────────────────
     st.markdown(f'<div class="rm-title">{e(c["name"] or c["brand"])}</div>'
@@ -11179,6 +11833,7 @@ def render_session_room() -> None:
             if _rm_save(s, force=True):
                 st.session_state["rm_sess"] = s
                 st.session_state.pop("rm_review", None)
+                st.session_state.pop("rm_setup", None)
                 st.rerun()
             else:
                 st.error("Could not open the session log — the database did not answer.")
@@ -11197,8 +11852,9 @@ def render_session_room() -> None:
             if p.get("status") == "live" and not live_other:
                 if st.button("Resume", key=f"rm_resume_{p.get('id')}", use_container_width=True):
                     s = {k: v for k, v in p.items() if not str(k).startswith("_")}
-                    st.session_state["rm_sess"] = s
+                    st.session_state["rm_sess"] = _sc.hud_defaults(s)
                     st.session_state.pop("rm_review", None)
+                    st.session_state.pop("rm_setup", None)
                     st.rerun()
             elif st.button("Open", key=f"rm_open_{p.get('id')}", use_container_width=True):
                 st.session_state["rm_review"] = {k: v for k, v in p.items()
@@ -11210,6 +11866,7 @@ def render_session_room() -> None:
     rev = st.session_state.get("rm_review")
     if rev and rev.get("client_id") == c["folder_id"]:
         _rm_review(rev, c)
+    return False
 
 
 # ── Top-level navigation: Trends / Dispatch / Projects / Road Map ──────────
@@ -11243,8 +11900,8 @@ if IS_SESSION:
         st.error("The session room needs **session_core.py** next to app.py on the server — "
                  "upload it to the repository with app.py. The rest of the Lighthouse is unaffected.")
         st.stop()
-    render_session_room()
-    render_footer()
+    if not render_session_room():      # the live panel fills the screen: no footer
+        render_footer()
     st.stop()
 
 # ── Hero masthead — always visible, above all tabs ─────────────────────────

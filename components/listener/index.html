@@ -4,23 +4,40 @@
 <!--
   THE LIGHTHOUSE LISTENER — a Streamlit component with no build step.
 
-  Uses the browser's own speech recognition (Chrome and Edge). Free, no key, no
-  new vendor — and NOT private: Chrome sends the audio to Google to transcribe
-  it. The room must be told, which is why the notice below is always visible.
+  TWO ENGINES, chosen by the app (args.engine):
 
-  Remote meetings: the microphone hears only the person at this computer.
-  Chrome cancels echo, so a client's voice coming out of the speakers is
-  removed from the signal on purpose. For the other side of a call, paste from
-  the meeting's captions into the notes box in the app.
+  "chrome" — the browser's own speech recognition (Chrome and Edge). Free, no
+  key — and NOT private: Chrome sends the audio to Google to transcribe it.
+  It cannot tell voices apart; the facilitator taps who is speaking on the
+  panel, and every piece of speech goes out with its browser times
+  (parts: [{x, t0, t1}]) so the app can put each piece on whoever was tapped.
+
+  "aai" — AssemblyAI's streaming API on its EU servers, with voices told apart
+  (speaker_labels). The app mints a short-lived token on the server and hands
+  it over in args.aai; the API key never reaches the browser. Audio goes as
+  16 kHz 16-bit PCM in 50 ms frames. Each finished turn goes out labelled with
+  its voice ("A", "B"…) and the connection it was heard on, because labels
+  only mean something inside one connection. The service's later corrections
+  of earlier labels (SpeakerRevision) are passed on as they come.
+  BILLED BY THE MINUTE THE CONNECTION IS OPEN, so Stop always ends it
+  properly (Terminate, then wait for the last turns), and so does leaving
+  the page.
+
+  NOTHING IS LOST, NOTHING IS SENT TWICE. Every item is numbered and kept in
+  an outbox until the app acknowledges it (args.ack): a component holds one
+  value at a time, and two pieces of speech can land between two reruns.
+
+  Remote meetings: the microphone hears only the room this computer is in.
+  Echo cancellation removes a call's voices coming out of the speakers, on
+  purpose. For the other side of a call, paste from the meeting's captions.
 
   PROTOCOL, read off Streamlit 1.58's own bundle rather than from memory:
   every message to the parent must carry an own property `isStreamlitMessage`
   or it is silently discarded; the type travels in `type`; the app sends args
-  back as `streamlit:render`. Written from memory of the old library, this
-  component would have been mute without a single error.
+  back as `streamlit:render`.
 -->
 <style>
-  :root { --blue:#0000ff; --ink:#000; --faint:#666; --red:#ff383c; --pale:#eaeef7; }
+  :root { --blue:#0000ff; --ink:#000; --faint:#666; --red:#ff383c; --red-text:#ed0005; --pale:#eaeef7; }
   * { box-sizing:border-box; }
   html, body { margin:0; padding:0; background:transparent;
     font-family:'Telegraf','Space Grotesk','Helvetica Neue',Helvetica,Arial,sans-serif;
@@ -30,33 +47,42 @@
     border:1.5px solid var(--blue); background:var(--blue); color:#fff;
     padding:9px 16px; border-radius:6px; cursor:pointer; }
   button.stop { background:#fff; color:var(--blue); }
+  button.ghost { background:#fff; color:var(--blue); padding:5px 10px; font-size:12px; margin-left:8px; }
   button:disabled { opacity:.45; cursor:not-allowed; }
   .dot { width:10px; height:10px; border-radius:50%; background:#c9cbd3; flex:none; }
   .on .dot { background:var(--red); animation:pulse 1.4s ease-in-out infinite; }
+  .wait .dot { background:var(--blue); animation:pulse .8s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.25; } }
   .state { font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
     color:var(--faint); }
-  .on .state { color:var(--red); }
+  .on .state { color:var(--red-text); }
+  .wait .state { color:var(--blue); }
+  .eng { font-size:10px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--blue); }
   .count { font-size:12px; color:var(--faint); margin-left:auto; }
   .live { margin-top:10px; font-size:13.5px; line-height:1.45;
     color:var(--faint); font-style:italic; }
   .bar.on + .live { min-height:20px; }        /* reserve the line only while listening */
   .bar:not(.on) + .live:empty { margin-top:0; }
-  .msg { margin-top:8px; font-size:12px; line-height:1.45; color:var(--red); }
+  .msg { margin-top:8px; font-size:12px; line-height:1.45; color:var(--red-text); }
+  .msg:empty { display:none; }
   .note { margin-top:8px; font-size:11px; line-height:1.45; color:var(--faint); }
-  @media (prefers-reduced-motion: reduce) { .on .dot { animation:none; } }
+  @media (prefers-reduced-motion: reduce) { .on .dot, .wait .dot { animation:none; } }
+  /* compact: a strip above the session panel — the consent was already given */
+  .compact .note { display:none; }
+  .compact .live { margin-top:4px; }
+  .compact .bar.on + .live { min-height:18px; }
 </style></head>
 <body>
 <div id="root">
   <div class="bar" id="bar">
     <span class="dot"></span><span class="state" id="state">Not listening</span>
     <button id="toggle">Start listening</button>
+    <span class="eng" id="eng"></span>
     <span class="count" id="count"></span>
   </div>
   <div class="live" id="live"></div>
   <div class="msg" id="msg"></div>
-  <div class="note">Chrome sends the audio to Google to transcribe it — ask the room first.
-    On a video call it hears only this computer; paste the other side from the captions.</div>
+  <div class="note" id="note"></div>
 </div>
 <script>
 (function () {
@@ -70,32 +96,71 @@
     send("streamlit:setFrameHeight", { height: Math.ceil(document.body.scrollHeight) + 4 });
   }
 
-  var args = { lang: "en-US", batch_words: 18, batch_seconds: 12, start_seq: 0 };
-  var seq = -1;            // last batch number sent
-  var sentWords = 0;
-
-  window.addEventListener("message", function (e) {
-    var d = e.data || {};
-    if (d.type !== "streamlit:render") return;
-    var a = d.args || {};
-    if (a.lang) args.lang = a.lang;
-    if (a.batch_words) args.batch_words = a.batch_words;
-    if (a.batch_seconds) args.batch_seconds = a.batch_seconds;
-    // NEVER REUSE A NUMBER THE APP HAS ALREADY TAKEN. After a page reload this
-    // script starts from scratch, while the session remembers the last batch it
-    // accepted; anything at or below that would be thrown away as a repeat.
-    if (typeof a.start_seq === "number" && seq < a.start_seq - 1) seq = a.start_seq - 1;
-    if (rec && listening && rec.lang !== args.lang) restart();   // language changed live
-    setHeight();
-  });
-
-  // ── Speech ───────────────────────────────────────────────────────────────
-  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var $ = function (id) { return document.getElementById(id); };
-  var bar = $("bar"), stateEl = $("state"), toggle = $("toggle"),
-      live = $("live"), msg = $("msg"), countEl = $("count");
+  var bar = $("bar"), stateEl = $("state"), toggle = $("toggle"), engEl = $("eng"),
+      live = $("live"), msg = $("msg"), countEl = $("count"), noteEl = $("note");
 
-  var rec = null, listening = false, pending = "", lastFlush = Date.now();
+  var args = { lang: "en-US", batch_words: 18, batch_seconds: 12, start_seq: 0, ack: -1,
+               engine: "chrome", aai: null, aai_error: "" };
+  var seq = -1;            // last item number given out
+  var outbox = [];         // items the app has not acknowledged yet
+  var need = 0;            // token requests (a new number makes the app mint one)
+  var sentWords = 0;
+  var listening = false;   // the facilitator wants the microphone on
+  var running = "";        // which engine is actually running: "", "chrome", "aai"
+  var resumeAs = "";       // after "Use the free mode": start listening once the switch arrives
+
+  // ── The outbox ───────────────────────────────────────────────────────────
+  function words(s) { return (String(s || "").match(/\S+/g) || []).length; }
+  function flushOut() {
+    send("streamlit:setComponentValue", { value: { items: outbox, need: need }, dataType: "json" });
+  }
+  function pushItem(it) {
+    seq += 1; it.seq = seq; it.lang = args.lang;
+    outbox.push(it);
+    if (outbox.length > 80) outbox = outbox.slice(-80);
+    if (it.text) { sentWords += words(it.text); countEl.textContent = sentWords + " words sent"; }
+    flushOut();
+  }
+  function requestToken() { need += 1; flushOut(); }
+
+  function setState(cls, label) {
+    bar.classList.toggle("on", cls === "on");
+    bar.classList.toggle("wait", cls === "wait");
+    stateEl.textContent = label;
+    toggle.textContent = listening ? "Stop" : "Start listening";
+    toggle.classList.toggle("stop", listening);
+    setHeight();
+  }
+  function say(text, fallback) {
+    msg.innerHTML = "";
+    if (!text) { setHeight(); return; }
+    msg.appendChild(document.createTextNode(text));
+    if (fallback) {
+      var b = document.createElement("button"); b.className = "ghost"; b.textContent = "Use the free mode";
+      b.onclick = function () {
+        resumeAs = "chrome";             // start again as soon as the app has switched
+        // `sw` makes the request one-off: the value stays put until the next
+        // speech, and the app must not read it again as a new request.
+        send("streamlit:setComponentValue", { value: { items: outbox, need: need, switch: "tap", sw: Date.now() }, dataType: "json" });
+      };
+      msg.appendChild(b);
+    }
+    setHeight();
+  }
+  function engineNote() {
+    if (args.engine === "aai") {
+      engEl.textContent = "Voices told apart · AssemblyAI EU";
+      noteEl.textContent = "AssemblyAI transcribes the audio on its EU servers and tells the voices apart for this meeting only — ask the room first. On a video call it hears only this room; paste the other side from the captions.";
+    } else {
+      engEl.textContent = "Chrome · tap who speaks";
+      noteEl.textContent = "Chrome sends the audio to Google to transcribe it — ask the room first. On a video call it hears only this computer; paste the other side from the captions.";
+    }
+  }
+
+  // ══ ENGINE 1 — Chrome's speech recognition ═══════════════════════════════
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var rec = null, parts = [], lastFlush = Date.now(), segStart = {};
   var startedAt = 0, quickEnds = 0, restartTimer = null, netWarn = false;
 
   // ONE RESTART AT A TIME, AND ONLY FOR THE CURRENT INSTANCE.
@@ -109,7 +174,7 @@
     if (restartTimer) return;
     restartTimer = setTimeout(function () {
       restartTimer = null;
-      if (listening) begin();
+      if (listening && running === "chrome") chromeBegin();
     }, delay);
   }
   function disarm(r) {
@@ -117,67 +182,49 @@
     r.onresult = r.onerror = r.onend = null;
     try { (r.abort || r.stop).call(r); } catch (e) {}
   }
-
-  function words(s) { return (s.match(/\S+/g) || []).length; }
-
-  function setState(on, label) {
-    listening = on;
-    bar.classList.toggle("on", on);
-    stateEl.textContent = label || (on ? "Listening" : "Not listening");
-    toggle.textContent = on ? "Stop" : "Start listening";
-    toggle.classList.toggle("stop", on);
-    setHeight();
-  }
-
-  function flush(force) {
-    var text = pending.trim();
-    if (!text) return;
-    var w = words(text);
+  function chromeFlush(force) {
+    if (!parts.length) return;
+    var text = parts.map(function (p) { return p.x; }).join(" ").trim();
     var waited = (Date.now() - lastFlush) / 1000;
-    if (!force && w < args.batch_words && waited < args.batch_seconds) return;
-    seq += 1;
-    send("streamlit:setComponentValue", {
-      value: { seq: seq, text: text, t: Date.now(), lang: args.lang },
-      dataType: "json"
-    });
-    sentWords += w;
-    countEl.textContent = sentWords + " words sent";
-    pending = "";
+    if (!force && words(text) < args.batch_words && waited < args.batch_seconds) return;
+    pushItem({ kind: "talk", text: text, parts: parts, t0: parts[0].t0, t1: parts[parts.length - 1].t1 });
+    parts = [];
     lastFlush = Date.now();
   }
-
-  function build() {
+  function chromeBuild() {
     var r = new SR();
     r.continuous = true;
     r.interimResults = true;
     r.lang = args.lang;
+    segStart = {};
     r.onresult = function (ev) {
       if (r !== rec) return;
-      if (netWarn) { msg.textContent = ""; netWarn = false; }   // it recovered
-      var interim = "";
+      if (netWarn) { say(""); netWarn = false; }   // it recovered
+      var interim = "", now = Date.now();
       for (var i = ev.resultIndex; i < ev.results.length; i++) {
         var res = ev.results[i];
-        if (res.isFinal) pending += " " + res[0].transcript;
-        else interim += res[0].transcript;
+        // WHEN A PIECE OF SPEECH STARTED is the first time Chrome shows it to
+        // us, half-heard. Its end is when Chrome settles on it. The taps on
+        // the panel are matched against these two moments.
+        if (!segStart[i]) segStart[i] = now;
+        if (res.isFinal) {
+          var x = String(res[0].transcript || "").trim();
+          if (x) parts.push({ x: x, t0: segStart[i], t1: now });
+          delete segStart[i];
+        } else interim += res[0].transcript;
       }
       live.textContent = interim;
-      flush(false);
+      chromeFlush(false);
     };
     r.onerror = function (ev) {
       if (r !== rec) return;
       var code = ev.error || "";
       if (code === "not-allowed" || code === "service-not-allowed") {
-        msg.textContent = "Microphone blocked. Allow it for this site in the browser bar, then press Start again.";
-        setState(false); return;
+        say("Microphone blocked. Allow it for this site in the browser bar, then press Start again.");
+        stopAll(); return;
       }
-      if (code === "audio-capture") {
-        msg.textContent = "No microphone found on this computer.";
-        setState(false); return;
-      }
-      if (code === "network") {
-        msg.textContent = "Speech service unreachable — retrying.";
-        netWarn = true;
-      }
+      if (code === "audio-capture") { say("No microphone found on this computer."); stopAll(); return; }
+      if (code === "network") { say("Speech service unreachable — retrying."); netWarn = true; }
       // "no-speech" and "aborted" are normal pauses; onend restarts us.
     };
     r.onend = function () {
@@ -185,63 +232,308 @@
       // While the facilitator still wants to listen, start again — but not in a
       // tight loop if something keeps ending it immediately.
       if (r !== rec) return;
-      if (!listening) {
+      if (!listening || running !== "chrome") {
         // Stopped on purpose: Chrome hands over the last sentence before this
         // event, so send whatever arrived after the Stop click.
-        flush(true); live.textContent = ""; return;
+        chromeFlush(true); live.textContent = ""; return;
       }
-      if (restartTimer) return;          // a restart is already on its way
+      if (restartTimer) return;
       var lived = Date.now() - startedAt;
       quickEnds = lived < 1500 ? quickEnds + 1 : 0;
       if (quickEnds >= 5) {
-        msg.textContent = "Listening keeps stopping. Check the microphone, then press Start again.";
-        flush(true); setState(false); return;
+        say("Listening keeps stopping. Check the microphone, then press Start again.");
+        chromeFlush(true); stopAll(); return;
       }
       scheduleRestart(quickEnds ? 600 * quickEnds : 150);
     };
     return r;
   }
-
-  function begin() {
+  function chromeBegin() {
     disarm(rec);
-    rec = build();
+    rec = chromeBuild();
     startedAt = Date.now();
     try { rec.start(); } catch (e) { /* already started — harmless */ }
   }
-  // Used when the language changes mid-session: end this instance and let the
-  // normal restart path pick up the new language.
-  function restart() { try { rec.stop(); } catch (e) {} }
-
-  toggle.addEventListener("click", function () {
-    msg.textContent = "";
-    if (!SR) return;
-    if (listening) {
-      setState(false);
-      if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
-      // stop(), not abort(): Chrome still returns the sentence in progress.
-      // The instance stays armed until its `end`, which sends that last bit.
-      try { if (rec) rec.stop(); } catch (e) {}
-      flush(true);
-      live.textContent = "";
-    } else {
-      quickEnds = 0;
-      setState(true);
-      begin();
-    }
-  });
-
-  // Time-based flush: a slow speaker should not leave words sitting unsent.
-  setInterval(function () { if (pending.trim()) flush(false); }, 2000);
-
-  if (!SR) {
-    toggle.disabled = true;
-    stateEl.textContent = "Can't listen here";
-    msg.textContent = "This browser has no speech recognition. Use Chrome or Edge — or type notes in the box below.";
+  function chromeStart() {
+    if (!SR) { say("This browser has no speech recognition. Use Chrome or Edge — or type in The room."); stopAll(); return; }
+    running = "chrome"; quickEnds = 0;
+    setState("on", "Listening");
+    chromeBegin();
+  }
+  function chromeStop() {
+    if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+    // stop(), not abort(): Chrome still returns the sentence in progress. The
+    // instance stays armed until its `end`, which sends that last bit.
+    try { if (rec) rec.stop(); } catch (e) {}
+    chromeFlush(true);
+    live.textContent = "";
   }
 
+  // ══ ENGINE 2 — AssemblyAI streaming, voices told apart ═══════════════════
+  var A = { stream: null, ctx: null, node: null, src: null, conn: null, queue: [], waitingToken: false,
+            tries: 0, retryT: 0, rotateT: 0, model: "" };
+  var MAX_QUEUE = 40;      // 2 s of audio kept while (re)connecting; older frames are dropped
+
+  // The audio worklet: whatever rate the microphone runs at → 16 kHz, 16-bit,
+  // 800-sample frames (50 ms). Built from a string: no extra file to serve.
+  var WORKLET = [
+    "class LhPcm extends AudioWorkletProcessor {",
+    "  constructor() { super(); this.r = sampleRate / 16000; this.t = 0; this.last = 0; this.y = 0;",
+    "    this.a = this.r > 1.01 ? 1 - Math.exp(-2 * Math.PI * 7000 / sampleRate) : 1;",
+    "    this.out = new Int16Array(800); this.n = 0; }",
+    "  process(inputs) {",
+    "    var x = inputs[0] && inputs[0][0]; if (!x) return true;",
+    "    var a = this.a, f = new Float32Array(x.length), y = this.y;",
+    "    for (var k = 0; k < x.length; k++) { y += a * (x[k] - y); f[k] = y; }",   // gentle low-pass before thinning
+    "    this.y = y;",
+    "    var t = this.t;",
+    "    while (t < f.length - 1) {",
+    "      var i = Math.floor(t), fr = t - i, p = i < 0 ? this.last : f[i], q = f[i + 1];",
+    "      var v = p + (q - p) * fr; v = v < -1 ? -1 : v > 1 ? 1 : v;",
+    "      this.out[this.n++] = v < 0 ? v * 32768 : v * 32767;",
+    "      if (this.n === 800) { this.port.postMessage(this.out.buffer.slice(0)); this.n = 0; }",
+    "      t += this.r;",
+    "    }",
+    "    this.last = f[f.length - 1]; this.t = t - f.length;",
+    "    return true;",
+    "  }",
+    "}",
+    "registerProcessor('lh-pcm', LhPcm);"
+  ].join("\n");
+
+  function tokenOk() { return !!(args.aai && args.aai.token && (+args.aai.exp || 0) * 1000 - Date.now() > 15000); }
+
+  function aaiStart() {
+    running = "aai"; A.tries = 0;
+    setState("wait", "Starting the microphone…");
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { say("This browser cannot open the microphone here."); stopAll(); return; }
+    navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+      .then(function (stream) {
+        if (!listening || running !== "aai") { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+        A.stream = stream;
+        return audioUp(stream).then(function () { aaiConnect(); });
+      })
+      .catch(function (e) {
+        var n = (e && e.name) || "";
+        say(n === "NotAllowedError" ? "Microphone blocked. Allow it for this site in the browser bar, then press Start again."
+          : n === "NotFoundError" ? "No microphone found on this computer." : "The microphone could not start (" + (e && e.message || n) + ").");
+        stopAll();
+      });
+  }
+  function audioUp(stream) {
+    var AC = window.AudioContext || window.webkitAudioContext, ctx;
+    try { ctx = new AC({ sampleRate: 16000 }); } catch (e) { ctx = new AC(); }     // the worklet resamples if needed
+    A.ctx = ctx;
+    if (!ctx.audioWorklet) return Promise.reject(new Error("no AudioWorklet in this browser"));
+    var url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
+    return ctx.audioWorklet.addModule(url).then(function () {
+      URL.revokeObjectURL(url);
+      A.src = ctx.createMediaStreamSource(stream);
+      A.node = new AudioWorkletNode(ctx, "lh-pcm");
+      A.node.port.onmessage = function (ev) { audioFrame(ev.data); };
+      A.src.connect(A.node);
+      // The node must reach the output to keep pulling audio in some browsers;
+      // a silent gain keeps the room from hearing itself.
+      var mute = ctx.createGain(); mute.gain.value = 0; A.node.connect(mute); mute.connect(ctx.destination);
+      if (ctx.state === "suspended") return ctx.resume();
+    });
+  }
+  function audioDown() {
+    try { if (A.src) A.src.disconnect(); } catch (e) {}
+    try { if (A.node) { A.node.port.onmessage = null; A.node.disconnect(); } } catch (e) {}
+    try { if (A.ctx) A.ctx.close(); } catch (e) {}
+    try { if (A.stream) A.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    A.src = A.node = A.ctx = A.stream = null; A.queue = [];
+  }
+  function audioFrame(buf) {
+    var c = A.conn;
+    if (c && c.ws && c.ws.readyState === 1 && c.begun) {
+      while (A.queue.length) { c.ws.send(A.queue.shift()); c.sent += 1; }
+      c.ws.send(buf); c.sent += 1;          // 50 ms of audio each
+    } else {
+      A.queue.push(buf);
+      if (A.queue.length > MAX_QUEUE) A.queue.shift();
+    }
+  }
+
+  function aaiConnect() {
+    if (!listening || running !== "aai") return;
+    if (!tokenOk()) {                            // ask the app for a fresh one; args bring it back
+      A.waitingToken = true; setState("wait", "Connecting…"); requestToken(); return;
+    }
+    A.waitingToken = false;
+    var a = args.aai;
+    var ep = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    var q = { sample_rate: 16000, speech_model: a.model, speaker_labels: "true", format_turns: "true", token: a.token };
+    if (a.revise_ms) q.speaker_labels_revision_interval_ms = a.revise_ms;
+    var url = a.url + "?" + Object.keys(q).map(function (k) { return k + "=" + encodeURIComponent(q[k]); }).join("&");
+    var c = { ws: null, ep: ep, sent: 0, begun: false, done: {}, pending: null, pendT: 0, model: a.model, closing: false };
+    try { c.ws = new WebSocket(url); } catch (e) { connLost(c, "could not open the connection"); return; }
+    c.ws.binaryType = "arraybuffer";
+    A.conn = c; A.model = a.model;
+    setState("wait", "Connecting…");
+    c.ws.onmessage = function (ev) { onMessage(c, ev); };
+    c.ws.onclose = function (ev) { onClose(c, ev); };
+    c.ws.onerror = function () { /* the close event that follows carries what we need */ };
+  }
+  function onMessage(c, ev) {
+    var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.type === "Begin") {
+      c.begun = true; A.tries = 0;
+      if (c === A.conn) { say(""); setState("on", "Listening · voices told apart"); }
+      // Sessions end on their own after the token's limit (3 h by default):
+      // a minute and a half before that, start a new one.
+      var maxS = (args.aai && +args.aai.max_s) || 10800;
+      var ends = m.expires_at ? +m.expires_at * 1000 : Date.now() + maxS * 1000;
+      clearTimeout(A.rotateT);
+      A.rotateT = setTimeout(function () { if (c === A.conn && listening) rotate(); }, Math.max(60000, Math.min(ends, Date.now() + maxS * 1000) - Date.now() - 90000));
+    } else if (m.type === "Turn") {
+      onTurn(c, m);
+    } else if (m.type === "SpeakerRevision") {
+      var revs = (m.revisions || []).filter(function (r) { return r && typeof r.turn_order === "number"; })
+        .map(function (r) { return [r.turn_order, String(r.speaker_label || "")]; });
+      if (revs.length) pushItem({ kind: "rev", ep: c.ep, revs: revs });
+    } else if (m.type === "Error") {
+      c.error = (m.error_code ? m.error_code + " · " : "") + (m.error || "error");
+    } else if (m.type === "Termination") {
+      c.terminated = true;
+    }
+  }
+  function onTurn(c, m) {
+    // A finished turn arrives twice on the Universal-Streaming models (plain,
+    // then formatted); keep the formatted one, but never lose the plain one if
+    // the formatted never comes.
+    if (c.pending && c.pending.turn !== m.turn_order) commit(c, c.pending);
+    if (!m.end_of_turn) { if (c === A.conn) live.textContent = m.transcript || ""; return; }
+    // WHEN IT WAS SAID, on the browser's clock (the panel's taps and the round
+    // of introductions use it): now, minus how far back in the audio each word
+    // is. Counted backwards from the moment the turn arrives, so a microphone
+    // whose clock runs a little slow never drifts the times over a long meeting.
+    var w = m.words || [], now = Date.now(), sentMs = c.sent * 50;
+    var back = function (ms) { return Math.round(now - Math.max(0, sentMs - (+ms || 0))); };
+    var it = { kind: "turn", ep: c.ep, turn: m.turn_order, spk: String(m.speaker_label || ""), text: String(m.transcript || "").trim(),
+               t0: w.length ? back(w[0].start) : now, t1: w.length ? back(w[w.length - 1].end) : now };
+    if (m.turn_is_formatted) { commit(c, it); }
+    else {
+      c.pending = it; clearTimeout(c.pendT);
+      c.pendT = setTimeout(function () { if (c.pending === it) commit(c, it); }, 2500);
+    }
+    if (c === A.conn) live.textContent = "";
+  }
+  function commit(c, it) {
+    if (c.pending === it || (c.pending && c.pending.turn === it.turn)) { c.pending = null; clearTimeout(c.pendT); }
+    if (c.done[it.turn] || !it.text) return;
+    c.done[it.turn] = 1;
+    pushItem(it);
+  }
+  function onClose(c, ev) {
+    if (c.pending) commit(c, c.pending);
+    if (c !== A.conn) return;                    // an old connection that was rotated out, finishing up
+    A.conn = null;
+    if (!listening || running !== "aai" || c.closing) return;
+    var why = c.error || (ev && ev.reason) || ("closed, code " + (ev && ev.code));
+    connLost(c, why);
+  }
+  function connLost(c, why) {
+    // Refused before it began (an expired or bad token, a bad model, no
+    // credit left): one more try with a fresh token, then say so and stop.
+    if (!c.begun) {
+      if (A.tries < 1) { A.tries += 1; args.aai = null; aaiConnect(); return; }
+      say("AssemblyAI did not accept the connection — " + why + ".", true);
+      stopAll(); return;
+    }
+    // Lost mid-meeting (network): reconnect, a little slower each time.
+    A.tries += 1;
+    if (A.tries > 6) { say("Lost the connection to AssemblyAI — " + why + ". Press Start to try again.", true); stopAll(); return; }
+    setState("wait", "Reconnecting…");
+    clearTimeout(A.retryT);
+    A.retryT = setTimeout(aaiConnect, Math.min(8000, 700 * A.tries));
+  }
+  function endConn(c, hard) {
+    if (!c || !c.ws) return;
+    c.closing = true;
+    try { if (c.ws.readyState === 1) c.ws.send(JSON.stringify({ type: "Terminate" })); } catch (e) {}
+    // Keep reading after Terminate: the last turns and the final speaker
+    // revision come after it. Close for good a few seconds later at most.
+    var ws = c.ws;
+    if (hard) { try { ws.close(1000); } catch (e) {} return; }
+    setTimeout(function () { try { ws.close(1000); } catch (e) {} }, 5000);
+  }
+  function rotate() {                            // a new connection; the old one finishes its last turns
+    var old = A.conn; A.conn = null;
+    endConn(old, false);
+    aaiConnect();
+  }
+  function aaiStop() {
+    clearTimeout(A.retryT); clearTimeout(A.rotateT); A.waitingToken = false;
+    var c = A.conn; A.conn = null;
+    audioDown();
+    endConn(c, false);
+    live.textContent = "";
+  }
+
+  // ── Start / stop / switch ────────────────────────────────────────────────
+  function startEngine() {
+    say("");
+    if (args.engine === "aai") {
+      if (!args.aai && args.aai_error) { say(args.aai_error, true); stopAll(); return; }
+      aaiStart();
+    } else chromeStart();
+  }
+  function stopEngine() {
+    if (running === "chrome") chromeStop();
+    if (running === "aai") aaiStop();
+    running = "";
+  }
+  function stopAll() { listening = false; stopEngine(); setState("", "Not listening"); }
+
+  toggle.addEventListener("click", function () {
+    if (listening) { stopAll(); return; }
+    listening = true;
+    startEngine();
+  });
+
+  // Leaving the page must close a paid connection, not leave it open.
+  window.addEventListener("pagehide", function () { if (A.conn) endConn(A.conn, true); });
+
+  // Time-based flush: a slow speaker should not leave words sitting unsent.
+  setInterval(function () { if (running === "chrome" && parts.length) chromeFlush(false); }, 2000);
+
+  // ── Args from the app ────────────────────────────────────────────────────
+  window.addEventListener("message", function (e) {
+    var d = e.data || {};
+    if (d.type !== "streamlit:render") return;
+    var a = d.args || {};
+    var was = { engine: args.engine, lang: args.lang };
+    ["lang", "batch_words", "batch_seconds", "engine", "aai_error"].forEach(function (k) { if (a[k] !== undefined && a[k] !== null) args[k] = a[k]; });
+    if (a.aai !== undefined) args.aai = a.aai;
+    if (typeof a.compact === "boolean") document.body.classList.toggle("compact", a.compact);
+    // NEVER REUSE A NUMBER THE APP HAS ALREADY TAKEN. After a page reload this
+    // script starts from scratch, while the session remembers the last item
+    // it accepted; anything at or below that would be thrown away as a repeat.
+    if (typeof a.start_seq === "number" && seq < a.start_seq - 1) seq = a.start_seq - 1;
+    if (typeof a.ack === "number") outbox = outbox.filter(function (it) { return it.seq > a.ack; });
+    engineNote();
+    if (resumeAs && args.engine === resumeAs && !listening) { resumeAs = ""; listening = true; startEngine(); }
+    else if (listening) {
+      if (args.engine !== running && running) { stopEngine(); startEngine(); }          // the engine was switched live
+      else if (running === "chrome" && rec && rec.lang !== args.lang) { try { rec.stop(); } catch (er) {} }   // onend restarts it in the new language
+      else if (running === "aai") {
+        if (A.waitingToken && tokenOk()) aaiConnect();
+        else if (!args.aai && args.aai_error && !A.conn) { say(args.aai_error, true); stopAll(); }
+        else if (A.conn && args.aai && args.aai.model && args.aai.model !== A.model && A.conn.begun) rotate();  // a language that needs another model
+      }
+    }
+    setHeight();
+  });
+
+  engineNote();
   send("streamlit:componentReady", { apiVersion: 1 });
   setHeight();
   window.addEventListener("resize", setHeight);
+  // test hook: what is running and waiting (read-only)
+  window.__lh = { state: function () { return { listening: listening, running: running, seq: seq, outbox: outbox.length, need: need,
+    conn: A.conn ? { ep: A.conn.ep, begun: A.conn.begun } : null, queue: A.queue.length }; } };
 })();
 </script>
 </body></html>
