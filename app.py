@@ -4149,6 +4149,13 @@ except Exception as _src_imp_exc:
     _lhsrc = None
     print(f"[overview] sources.py unavailable — no window, no By the numbers: {_src_imp_exc}")
 _SV_WINDOW_DEFAULT = getattr(_lhsrc, "DEFAULT_WINDOW", 12)
+# The prompt bar, Must mention and the Refine question (refine.py). Same guard:
+# without the file the form loses those three controls and nothing else.
+try:
+    import refine as _lhref
+except Exception as _ref_imp_exc:
+    _lhref = None
+    print(f"[overview] refine.py unavailable — no prompt bar, focus or question: {_ref_imp_exc}")
 
 
 # ── What the line says while it works ────────────────────────────────────────
@@ -4967,7 +4974,7 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
 # Cost: up to 4 web searches (US$0.01 each) plus Haiku tokens — a few cents a
 # brief. LH_NUMBERS=off in the secrets switches the lane off without a deploy.
 def _sv_gather_numbers(brand: str, category: str, product: str, market: str,
-                       months: int, competitors: str = "") -> dict:
+                       months: int, competitors: str = "", focus: str = "") -> dict:
     """Figures for the brief, checked. Runs in a worker thread; never raises
     and never touches Streamlit."""
     if _lhsrc is None:
@@ -4992,7 +4999,7 @@ def _sv_gather_numbers(brand: str, category: str, product: str, market: str,
                                   brand=brand or "", category=category or "",
                                   product=product or "", market=market or "",
                                   iso=_mk.get("trends", ""), months=int(months or 0),
-                                  competitors=competitors or "")
+                                  competitors=competitors or "", focus=focus or "")
     except Exception as exc:
         return {"items": [], "error": f"the search failed ({type(exc).__name__})",
                 "secs": round(_t.monotonic() - t0, 1)}
@@ -5010,9 +5017,100 @@ def _sv_gather_numbers(brand: str, category: str, product: str, market: str,
             out["pages"] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
     out["secs"] = round(_t.monotonic() - t0, 1)
     out["at"] = datetime.utcnow().isoformat(timespec="seconds")
+    if focus:
+        out["focus"] = focus
     print(f"[numbers] {len(out.get('items') or [])} figures, "
           f"{len(out.get('dropped') or [])} dropped, {out.get('searches', 0)} searches, "
           f"{out['secs']}s" + (f" — {out['error']}" if out.get("error") else ""))
+    return out
+
+
+# ── The prompt bar and the Refine question (refine.py does the thinking) ────
+def _sv_windows() -> list:
+    return list(_lhsrc.WINDOWS) if _lhsrc else [3, 6, 12, 24]
+
+
+def _sv_parse_setup(text: str) -> tuple:
+    """The prompt bar: one sentence → the scan's settings. Returns (setup, why).
+    The cheap model reads; refine.clean_setup decides what is allowed in."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {}, "The prompt bar needs ANTHROPIC_API_KEY. Fill the fields below instead."
+    try:
+        import anthropic
+        cl = anthropic.Anthropic(api_key=key)
+        r = cl.messages.create(
+            model=CLAUDE_MODEL_FAST, max_tokens=700,
+            messages=[{"role": "user", "content": _lhref.setup_prompt(
+                text, list(MARKETS), _sv_windows())}])
+        out = _lhref.clean_setup(_extract_json(_msg_text(r)), list(MARKETS), _sv_windows())
+    except Exception as exc:
+        print(f"[prompt bar] {type(exc).__name__}: {str(exc)[:160]}")
+        return {}, (f"The request could not be read ({type(exc).__name__}). "
+                    f"Fill the fields below instead.")
+    if not (out.get("brand") or out.get("category") or out.get("product")):
+        return {}, "Could not tell what to look into — name a brand, a category or a product."
+    return out, ""
+
+
+def _sv_setup_note(s: dict) -> str:
+    """One line under the bar saying what it understood (HTML, escaped)."""
+    bits = [f"<b>{e(s['brand'])}</b>" if s.get("brand") else ""]
+    bits += [e(s.get(k, "")) for k in ("category", "product", "market")]
+    if s.get("window") and _lhsrc:
+        bits.append("last " + e(_lhsrc.window_label(s["window"])))
+    if s.get("competitors"):
+        bits.append("vs " + e(s["competitors"]))
+    if s.get("focus"):
+        bits.append("must mention " + e(s["focus"]))
+    line = " · ".join(b for b in bits if b)
+    q = " The question is in Refine." if s.get("question") else ""
+    return f"Set up: {line}.{q} Check the fields, then Run Lighthouse."
+
+
+def _sv_set_q(text: str) -> None:
+    """A Try chip or Ask next: writes the question. Runs as a widget callback,
+    the one moment a widget's own value may be set."""
+    st.session_state["sv_q"] = text
+
+
+def _sv_question_queries(question: str, brand: str, category: str, product: str,
+                         market: str) -> list:
+    """The Refine question as 2-3 searches. Empty on any failure: the scan then
+    runs exactly as it would without a question, and the brief still answers it
+    from what the normal searches found."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not (key and _lhref and question):
+        return []
+    try:
+        import anthropic
+        cl = anthropic.Anthropic(api_key=key)
+        r = cl.messages.create(
+            model=CLAUDE_MODEL_FAST, max_tokens=300,
+            messages=[{"role": "user", "content": _lhref.queries_prompt(
+                question, brand, category, product, market)}])
+        return _lhref.clean_queries(_extract_json(_msg_text(r)))
+    except Exception as exc:
+        print(f"[refine] question searches unavailable: {type(exc).__name__}: {str(exc)[:120]}")
+        return []
+
+
+def _sv_asked_before(active: str, limit: int = 3) -> list:
+    """Earlier questions for this client, newest first, each linking to its brief."""
+    out, seen = [], set()
+    try:
+        for b in _sv_list_briefs(active, limit=40):
+            q = str(((b.get("result") or {}).get("_question") or {}).get("q", "") or "").strip()
+            if not q or q.lower() in seen:
+                continue
+            seen.add(q.lower())
+            rid = urllib.parse.quote(str(b.get("id", "")), safe="")
+            out.append({"q": q[:90], "day": _sv_pretty_day(str(b.get("saved_at", ""))[:10]),
+                        "url": _public_url(f"view=overview&report={rid}")})
+            if len(out) >= limit:
+                break
+    except Exception as exc:
+        print(f"[refine] asked-before unavailable: {exc}")
     return out
 
 
@@ -5079,13 +5177,19 @@ def _sv_social_queries(product: str, brand: str, competitors: str,
 def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                progress=None, product: str = "", brand: str = "",
                competitors: str = "", archive: Optional[list] = None,
-               months: int = _SV_WINDOW_DEFAULT) -> tuple:
+               months: int = _SV_WINDOW_DEFAULT, focus: str = "",
+               extra_queries: Optional[list] = None) -> tuple:
     """Collect signals across sources. Returns (signals, per-source tally).
 
     `months` is the window. It reaches each source in the form that source
     understands — YouTube's publishedAfter, Hacker News' date floor, Firecrawl's
     date range — and then everything that carries a date is checked once more
     on the way out, the archive included. 0 = no window.
+
+    `focus` is Must mention: every query carries it and every signal has to,
+    archive included. `extra_queries` are the Refine question's searches: run on
+    the free sources as a lane of their own, and swapped INTO the paid
+    scrapers' query list rather than added to it — the same budget, split.
 
     RUN IN PARALLEL. The three Apify actors alone took about 150s in sequence —
     roughly 60% of a four-minute scan — and they spend that time waiting on
@@ -5137,8 +5241,15 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
         # more specific of the two. "Food Soup" should fall back to "Soup".
         _queries.append(_content[-1])
     _queries = list(dict.fromkeys(q for q in _queries if q.strip()))
+    # MUST MENTION reaches the searches first: every query carries the focus,
+    # so the widening can no longer fall back to a bare "Sneakers".
+    _fitems = _lhref.focus_items(focus) if (_lhref and focus) else []
+    if _fitems:
+        _queries = list(dict.fromkeys(_lhref.with_focus(q, _fitems) for q in _queries))
+    _xq = [(_lhref.with_focus(q, _fitems) if _fitems else q)
+           for q in (extra_queries or []) if str(q).strip()][:3]
 
-    def _widen(fn, want: int, budget: float = 35.0) -> list:
+    def _widen(fn, want: int, budget: float = 35.0, queries: Optional[list] = None) -> list:
         """Run fn(query) over progressively broader queries until `want` results.
         Reddit, GDELT, HN and the YouTube API are free or quota-based, so an
         extra call costs time, not money.
@@ -5152,7 +5263,7 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
         import time
         deadline = time.monotonic() + budget
         seen, got, err = set(), [], None
-        for q in _queries:
+        for q in (queries or _queries):
             try:
                 for s in fn(q):
                     if s.url in seen:
@@ -5194,7 +5305,36 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
         "hacker_news": lambda: _widen(_hn, 5),
     }
     if ytkey:
-        jobs["youtube"] = lambda: _widen(_yt, 8)
+        # YOUTUBE NEVER WIDENS TO ONE WORD, and only widens when it is short.
+        # It used to want 8 from a search that returns 6, so it ALWAYS widened —
+        # down to the bare product noun, sorted by all-time views: the Puma
+        # brief got a ₹799 Myntra ad (111M views) and a children's cartoon.
+        _yt_q = [q for q in _queries if len(q.split()) >= 2] or _queries[:1]
+        jobs["youtube"] = lambda: _widen(_yt, 6, queries=_yt_q)
+    if _xq:
+        # THE QUESTION'S LANE. Its searches, on the free sources — tagged, so the
+        # diagnostic can say how much of the pool the question brought in.
+        def _question_lane():
+            got, seen_u, errs = [], set(), []
+            for q in _xq:
+                for fn in ((lambda q=q: scrape_reddit(q, max_items=6)),
+                           (lambda q=q: scrape_gdelt(q, n=5, source_country=_mk["gdelt"])),
+                           ((lambda q=q: _yt(q)) if ytkey else None)):
+                    if fn is None:
+                        continue
+                    try:
+                        for s in fn():
+                            if s.url in seen_u:
+                                continue
+                            seen_u.add(s.url)
+                            s.raw_meta = dict(s.raw_meta or {}, q=1)
+                            got.append(s)
+                    except Exception as exc:
+                        errs.append(exc)
+            if not got and errs:
+                raise errs[0]
+            return got
+        jobs["question"] = _question_lane
     if apify:
         # BETTER QUESTIONS, NOT MORE OF THEM.
         # The three paid scrapers now ask about the brand, the product and the
@@ -5205,6 +5345,12 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
         # costs the same as one query at twelve, and asks four useful questions
         # instead of one useless one.
         _sq = _sv_social_queries(product, brand, competitors, search_terms)[:4]
+        if _fitems:
+            _sq = list(dict.fromkeys(_lhref.with_focus(q, _fitems) for q in _sq))
+        if _xq:
+            # The question's searches take the last two slots: four queries
+            # either way, so the bill is the same.
+            _sq = list(dict.fromkeys(_sq[:2] + _xq[:2]))
 
         def _across(fn, total: int):
             """Run a scraper over each query, merged and de-duplicated by URL."""
@@ -5225,10 +5371,13 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                     except Exception as exc:
                         errs.append(exc)
                         continue             # one dead query must not kill the network
+                    _from_q = qfuts[qf] in _xq
                     for sig in got:
                         if sig.url in seen:
                             continue
                         seen.add(sig.url)
+                        if _from_q:
+                            sig.raw_meta = dict(sig.raw_meta or {}, q=1)
                         out.append(sig)
             if not out and errs:
                 # Every query FAILED — re-raise so the tally reports the cause
@@ -5312,12 +5461,16 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                 # to be thrown away here, which is why a promoted card could only
                 # ever show bare text — no @name, no likes.
                 _rm = s.raw_meta or {}
-                out.append({"title": s.title, "content": s.content, "source": name,
+                # The question's lane mixes networks, so its signals keep their
+                # own; every other lane IS its network.
+                out.append({"title": s.title, "content": s.content,
+                            "source": (str(getattr(s, "source", "") or name)
+                                       if name == "question" else name),
                             "url": s.url, "timestamp": s.timestamp,
                             "meta": {k: _rm[k] for k in
                                      ("subreddit", "author", "owner", "handle", "channel",
                                       "likes", "plays", "views", "score", "points",
-                                      "retweets", "comments", "num_comments")
+                                      "retweets", "comments", "num_comments", "q")
                                      if k in _rm}})
             tally[name] = len(sigs)
             if progress:
@@ -5383,6 +5536,14 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
         out, _old = _lhsrc.in_window(out, months)
         if _old:
             tally["older than the window"] = _old
+    # MUST MENTION, on the way out: a signal that does not carry the focus is
+    # not about this brief, however popular it is.
+    if _fitems:
+        _keep = [sg for sg in out
+                 if _lhref.focus_hit(f"{sg.get('title', '')} {sg.get('content', '')}", _fitems)]
+        if len(_keep) < len(out):
+            tally["without the focus words"] = len(out) - len(_keep)
+        out = _keep
 
     _terms = _sv_terms(search_terms)
     try:
@@ -5403,6 +5564,10 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             if _lhsrc and months and _lhsrc.too_old(s.get("timestamp"), months):
                 old += 1
                 continue
+            if _fitems and not _lhref.focus_hit(
+                    f"{s.get('title', '')} {s.get('content', '')}", _fitems):
+                skipped += 1
+                continue
             out.append({"title": s.get("title", ""), "content": s.get("content", ""),
                         "source": s.get("source", "db"), "url": s.get("url", ""),
                         "timestamp": s.get("timestamp", ""),
@@ -5420,7 +5585,8 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
 
 def _sv_synthesize(signals: list, category: str, competitors: list, brand: str = "the brand",
                    trade: Optional[list] = None, letters: Optional[list] = None,
-                   numbers: Optional[list] = None, months: int = 0) -> dict:
+                   numbers: Optional[list] = None, months: int = 0,
+                   question: str = "", focus: str = "") -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key or not signals:
         return {}
@@ -5449,6 +5615,29 @@ def _sv_synthesize(signals: list, category: str, competitors: list, brand: str =
     else:
         when_text = (f"TODAY: {_today}. Every signal shows its DATE; never present an old "
                      "event as if it were happening now.\n")
+    if focus:
+        when_text += (f"FOCUS: this brief is about {focus}. Every signal below mentions it; "
+                      f"keep the currents on it.\n")
+    # THE REFINE QUESTION. Asked first in the JSON, because the brief opens with
+    # it and a truncated answer must lose the clichés, not the answer. The model
+    # POINTS at posts and says which way each leans; it never counts — every
+    # number in that section is computed from its list.
+    q_shape, q_rules = "", ""
+    if question:
+        q_shape = (
+            '  "question": {"answer": "an ARGUMENTATIVE headline that answers the question",\n'
+            '               "summary": "2 sentences: what the posts say, and the tension in it",\n'
+            '               "for_means": "what counts as FOR here, e.g. positive about the activism",\n'
+            '               "touched": [{"i": 3, "lean": "for"}, {"i": 7, "lean": "against"}],\n'
+            '               "ask_next": "the sharpest follow-up question this answer raises"},\n')
+        q_rules = (
+            f'- THE QUESTION the team asked: "{question}". Answer it from the SIGNALS only. '
+            '"touched" lists EVERY signal whose words speak to the question - not just the best '
+            'ones - by its [index] in the SIGNALS list; "lean" is "for", "mixed" or "against" '
+            'relative to for_means. Do NOT count, estimate or quote a percentage for it: the '
+            'numbers are counted from your list. If almost nothing speaks to it, say so - '
+            '"Barely anyone is talking about it" is a real answer. answer max 14 words, '
+            'summary max 40 words, for_means max 8 words, ask_next max 16 words.\n')
     # THE ONLY NUMBERS THE BRIEF MAY QUOTE. Found on research and statistics
     # pages and checked against them (sources.py); the [F#] index lets a card
     # link its stat back to the page.
@@ -5509,7 +5698,7 @@ SIGNALS:
 
 Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
 {{
-  "trends": [
+{q_shape}  "trends": [
     {{"title": "argumentative headline", "summary": "2-3 sharp sentences with a point of view",
       "stat": "one momentum line. If a FIGURE [F#] supports this current, use it with its source, e.g. '+27% sales, H1 2026 · Circana', and set figure_index. Otherwise a REAL handle or engagement figure from the signals; otherwise a qualitative phrase like 'rising across TikTok & Reddit'. NEVER invent a percentage.",
       "figure_index": null,
@@ -5643,6 +5832,7 @@ Rules:
   sentence. If you have to reach for the link, do not write it.
 - NEVER invent statistics — use the FIGURES block, real figures from the signals, or qualitative phrasing. figure_index is the NUMBER INSIDE [F#] (a fourth sequence, separate from SIGNALS, [T#] and [N#]), or null. Only set it when that figure is really about this current; a loosely related number is worse than none.
 - RECENCY: the currents describe what is happening inside the window. A signal dated before it never anchors a current.
+{q_rules}
 - Tensions and clichés draw on both the signals AND your knowledge of the category's marketing conventions.
 - Editorial, punchy, opinionated. A brief a strategist reads and thinks "yes, exactly."
 
@@ -5848,14 +6038,41 @@ def _sv_in_language(txt: str, lang: str) -> bool:
 _SV_SELLING = re.compile(
     r"(?i)\b(for\s*sale|dm\s*(?:me\s*)?to\s*(?:buy|order)|shop\s*now|buy\s*now"
     r"|link\s*in\s*bio|order\s*(?:now|here)|in\s*stock|free\s*shipping"
-    r"|bolt\s*pattern|shipping\s*available|price\s*:|asking\s*\$|obo)\b"
-    r"|\$\s?\d{3,}")
+    r"|bolt\s*pattern|shipping\s*available|price\s*:|asking\s*\$|obo"
+    # The Puma brief (Oct 23) printed "Puma Speedcat Red 36//37//38… Call or
+    # WhatsApp 07… We deliver countrywide" and a Myntra ad at "₹799!" as voices.
+    r"|call\s*(?:or|/|&)\s*(?:text|whats\s?app)|whats\s?app\s*(?:me|us|\+?\d)"
+    r"|we\s*deliver|delivery\s*available|cash\s*on\s*delivery|dm\s*for\s*(?:price|orders?)"
+    r"|pre-?order\s*now)\b"
+    r"|[$£€₹]\s?\d{3,}|\bR\$\s?\d{2,}"
+    # a run of shoe or clothing sizes: 36//37//38//39, 7/8/9/10
+    r"|\b\d{1,2}(?:\s*/{1,2}\s*\d{1,2}){3,}\b")
 
 
 def _sv_is_listing(txt: str) -> bool:
     """Is this an advert or a classified rather than a voice?"""
     return len(set(_SV_SELLING.findall(txt or ""))) >= 2 or \
         len(_SV_SELLING.findall(txt or "")) >= 2
+
+
+# A JOB AD IS NOT A VOICE EITHER. Same Puma brief: "A PUMA está contratando!
+# 50 vagas temporárias…" sat among the consumer quotes. The strong phrases are
+# unambiguous on their own; the weak ones ("vaga" is also a parking space or a
+# spot in a final) need a second hit.
+_SV_JOB_STRONG = re.compile(
+    r"(?i)\b(we(?:'|’)?re\s+hiring|now\s+hiring|is\s+hiring|job\s+openings?"
+    r"|est(?:á|amos|ão)\s+contratando|vagas?\s+de\s+emprego|vagas?\s+tempor[aá]rias?"
+    r"|estamos\s+contratando|ofertas?\s+de\s+empleo|vacantes?\s+disponibles"
+    r"|offres?\s+d(?:'|’)emploi|stellenangebote?|wir\s+stellen\s+ein)\b")
+_SV_JOB_WEAK = re.compile(
+    r"(?i)\b(hiring|apply\s+now|join\s+our\s+team|vagas?|curr[ií]culo|requisitos"
+    r"|candidat[ae]s?|recruiting|recrutamento|empleo|salary|sal[aá]rio)\b")
+
+
+def _sv_is_job(txt: str) -> bool:
+    """Is this a recruitment post rather than somebody saying something?"""
+    t = txt or ""
+    return bool(_SV_JOB_STRONG.search(t)) or len(set(m.lower() for m in _SV_JOB_WEAK.findall(t))) >= 2
 
 
 # Words that name a whole domain rather than a product. A newsletter that says
@@ -7054,7 +7271,7 @@ def _sv_diagnostics(res: dict) -> None:
                 _paid = {"tiktok", "instagram", "twitter"}
                 _rows = []
                 for k in ("reddit", "gdelt", "hacker_news", "youtube", "web",
-                          "tiktok", "instagram", "twitter", "archive", "apify"):
+                          "tiktok", "instagram", "twitter", "question", "archive", "apify"):
                     if k not in _t:
                         continue
                     v = _t[k]
@@ -7069,6 +7286,9 @@ def _sv_diagnostics(res: dict) -> None:
                 if _t.get("older than the window"):
                     _rows.append(f"{'window':14} -{_t['older than the window']} older than "
                                  f"the window (dropped)")
+                if _t.get("without the focus words"):
+                    _rows.append(f"{'must mention':14} -{_t['without the focus words']} without "
+                                 f"the focus words (dropped)")
                 _wm = ((_result or {}).get("_meta") or {}).get("window")
                 st.code("\n".join(_rows) or "no data")
                 if _wm and _lhsrc:
@@ -7083,6 +7303,24 @@ def _sv_diagnostics(res: dict) -> None:
                            f"code are TikTok 8 · Instagram 12 · X 8 = 28. Well under "
                            f"that means a scraper is failing quietly, not that the "
                            f"scan was cheap.")
+
+            # THE REFINE — what the question searched for and what came back.
+            _qd = (_result or {}).get("_question")
+            if isinstance(_qd, dict) and _qd.get("q"):
+                _qsd = _qd.get("stats") or {}
+                with st.expander(f"Refine — {_qsd.get('n', 0)} of {_qsd.get('total', 0)} posts "
+                                 f"touched the question", expanded=False):
+                    st.caption("Question: " + _qd["q"])
+                    st.caption("Searched for: " + (" · ".join(_qd.get("queries") or [])
+                                                   or "no extra searches — answered from the normal ones"))
+                    st.caption(f"{_qd.get('from_searches', 0)} signals came from the question's "
+                               f"own searches.")
+                    st.code(f"share      {_qsd.get('share')}  ({_qsd.get('n')} of {_qsd.get('total')})\n"
+                            f"strength   {_qsd.get('strength')}\n"
+                            f"direction  {_qsd.get('direction') or '—'}  "
+                            f"(older half {_qsd.get('share_old')}, newer half {_qsd.get('share_new')})\n"
+                            f"leans      {_qsd.get('leans')}\n"
+                            f"networks   {_qsd.get('nets')}")
 
             # BY THE NUMBERS — the audit trail. Every figure the search came back
             # with, what happened to it, and why. This is the answer to "where
@@ -7625,6 +7863,50 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .nbwhere{margin-top:22px;padding-top:14px;border-top:1px solid rgba(0,0,0,.14);
   font-size:11.5px;line-height:1.6;color:__BODY__;}
 .statlink{color:inherit;text-decoration:none;margin-left:6px;font-weight:700;}
+/* ── 00Q · Your question ─────────────────────────────────────────────────────
+   The approved Refine prototype: the brief opens with the answer. White
+   section, blue headline, three blue cards whose every number is counted. */
+.qsec{border-bottom:3px solid __INK__;}
+.qgrid{display:grid;grid-template-columns:1fr 300px;gap:48px;align-items:start;}
+.qask{font-size:22px;font-weight:700;font-style:italic;line-height:1.3;color:__INK__;margin:0 0 14px;}
+.qsec .q{margin-bottom:18px;}
+.qtags{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px;}
+.qtag{font-size:10.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  padding:7px 12px;border:1.5px solid __BLUE__;color:__BLUE__;}
+.qtag.on{background:__BLUE__;color:#ffffff;}
+.qsq{font-size:12.5px;border:1.5px solid __INK__;padding:7px 10px;margin-bottom:8px;color:__INK__;}
+.qnote{font-size:11.5px;line-height:1.5;color:__META__;border-left:2px solid __INK__;
+  padding-left:10px;margin-top:14px;}
+.qcards{margin-top:8px;}
+.qcard{background:__BLUE__;padding:22px 24px;color:#ffffff;}
+.qcl{font-size:10px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;
+  margin-bottom:14px;color:#ffffff;}
+.qbig{font-size:58px;font-weight:700;letter-spacing:-.04em;line-height:1;color:#ffffff;
+  margin-bottom:10px;}
+.qsub{font-size:12.5px;line-height:1.5;color:rgba(255,255,255,.9);margin-top:8px;}
+.qbar{height:6px;background:rgba(255,255,255,.3);margin-top:14px;}
+.qbar i,.qnet b i{display:block;height:100%;background:#ffffff;}
+.qnet{display:grid;grid-template-columns:84px 1fr 28px;gap:10px;align-items:center;
+  font-size:12.5px;margin-bottom:7px;color:#ffffff;}
+.qnet b{display:block;height:6px;background:rgba(255,255,255,.3);}
+.qnet em{font-style:normal;font-weight:700;text-align:right;}
+.qstack{display:flex;height:14px;margin-bottom:14px;gap:2px;}
+.qstack i{display:block;height:100%;}
+.qstack .f{background:#ffffff;}
+.qstack .m{background:rgba(255,255,255,.55);}
+.qstack .a{background:rgba(255,255,255,.25);}
+.qlean3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.qmid{font-size:30px;font-weight:700;letter-spacing:-.03em;color:#ffffff;}
+.qll{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#ffffff;}
+.qll.m{opacity:.75;}
+.qll.a{opacity:.6;}
+.qdir{margin-top:16px;font-size:13.5px;font-weight:700;color:__BLUE__;}
+.qevl{margin-top:30px;}
+.qlean{display:inline-block;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+  font-weight:700;border:1px solid rgba(255,255,255,.85);border-radius:10.5px;padding:3px 9px;
+  color:#ffffff;}
+.qlean.against{background:rgba(255,255,255,.18);}
+@media(max-width:820px){.qgrid{grid-template-columns:1fr;gap:20px;}}
 .nbgrid.n1{grid-template-columns:1fr;}
 .nbgrid.n2{grid-template-columns:repeat(2,1fr);}
 @media(max-width:820px){
@@ -7691,6 +7973,105 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         except Exception:
             return None
         return it if it and it.get("check") in ("page", "excerpt") else None
+
+    # ── 00Q · Your question ──────────────────────────────────────────────────
+    # The Refine, as the approved prototype draws it: the brief OPENS with the
+    # answer. Every number here is counted from the posts the model pointed at
+    # (refine.question_stats), always with the total in view; under six posts
+    # we say it is too few rather than call a side or a direction.
+    _qq_ = res.get("_question") if isinstance(res.get("_question"), dict) else None
+    if "00Q" in which and _qq_ and _qq_.get("q"):
+        _st = _qq_.get("stats") or {}
+        _n, _tot = int(_st.get("n") or 0), int(_st.get("total") or 0)
+        _enough = bool(_st.get("enough"))
+        _strength = {"strong": "Strong signal", "some": "Some signal",
+                     "almost nothing": "Almost nothing", "too few": "Too few posts to call"
+                     }.get(_st.get("strength", ""), "")
+        _dir = {"rising": "▲ Rising", "fading": "▼ Fading", "steady": "■ Steady"
+                }.get(_st.get("direction", ""), "")
+        H.append('<section class="sec qsec"><div class="qgrid"><div class="qmain">')
+        H.append('<div class="slabel">Your question</div>')
+        H.append(f'<div class="qask">“{e(_qq_["q"])}”</div>')
+        if _qq_.get("answer"):
+            H.append(f'<div class="q">{e(_qq_["answer"])}</div>')
+        _tags = ""
+        if _strength:
+            _tags += f'<span class="qtag on">● {e(_strength)}</span>'
+        if _dir and _enough:
+            _tags += f'<span class="qtag">{e(_dir)}</span>'
+        if _tags:
+            H.append(f'<div class="qtags">{_tags}</div>')
+        if _qq_.get("summary"):
+            H.append(f'<div class="lead">{e(_qq_["summary"])}</div>')
+        H.append('</div><div class="qside">')
+        if _qq_.get("queries"):
+            H.append('<div class="slabel">Searched for</div>')
+            for _sq_ in _qq_["queries"][:3]:
+                H.append(f'<div class="qsq">{e(_sq_)}</div>')
+        H.append('<div class="qnote">Every number in this section is counted from the posts '
+                 'this scan collected — never estimated.</div></div></div>')
+        h += 420
+        # the three cards
+        _share = float(_st.get("share") or 0)
+        _c1 = (f'<div class="qcard"><div class="qcl">Share of the conversation</div>'
+               f'<div class="qbig">{round(_share * 100)}%</div>'
+               f'<div class="qsub">{_n} of the {_tot} posts collected touched it</div>'
+               f'<div class="qbar"><i style="width:{min(100, round(_share * 100))}%"></i></div></div>')
+        _nets = _st.get("nets") or []
+        _mx = max([c for _, c in _nets] or [1])
+        _rows = "".join(
+            f'<div class="qnet"><span>{e(nm)}</span><b><i style="width:{round(100 * c / _mx)}%">'
+            f'</i></b><em>{c}</em></div>' for nm, c in _nets[:6])
+        _c2 = (f'<div class="qcard"><div class="qcl">Where it is said</div>'
+               f'{_rows or "<div class=qsub>No posts touched it.</div>"}</div>')
+        _ln = _st.get("leans") or {}
+        if _enough and _n:
+            _pf, _pm, _pa = (round(100 * int(_ln.get(k, 0)) / _n) for k in ("for", "mixed", "against"))
+            _c3 = (f'<div class="qcard"><div class="qcl">How they lean</div>'
+                   f'<div class="qstack"><i class="f" style="width:{_pf}%"></i>'
+                   f'<i class="m" style="width:{_pm}%"></i><i class="a" style="width:{_pa}%"></i></div>'
+                   f'<div class="qlean3"><div><div class="qmid">{_pf}%</div><div class="qll">■ For</div></div>'
+                   f'<div><div class="qmid">{_pm}%</div><div class="qll m">■ Mixed</div></div>'
+                   f'<div><div class="qmid">{_pa}%</div><div class="qll a">✕ Against</div></div></div>'
+                   f'<div class="qsub">{int(_ln.get("for", 0))} for · {int(_ln.get("mixed", 0))} mixed · '
+                   f'{int(_ln.get("against", 0))} against, of {_n} posts'
+                   + (f'<br>“For” = {e(_qq_["for_means"])}' if _qq_.get("for_means") else "")
+                   + '</div></div>')
+        else:
+            _c3 = (f'<div class="qcard"><div class="qcl">How they lean</div>'
+                   f'<div class="qsub">{_n} post{"s" if _n != 1 else ""} — too few to call a side. '
+                   f'Under six, we count but do not call it.</div></div>')
+        H.append(f'<div class="row3 qcards">{_c1}{_c2}{_c3}</div>'); h += 260
+        if _enough and _lhref:
+            _dl = _lhref.direction_line(_st)
+            if _dl:
+                H.append(f'<div class="qdir">{e(_dl)}</div>'); h += 40
+        # the evidence: the posts that touched it, loudest first
+        _ev = []
+        for _t in (_st.get("touched") or []):
+            _s_ = sig(_t.get("i"))
+            if _s_:
+                _tx_ = _sv_dehash(_sv_body(_s_))
+                if _sv_is_listing(_tx_) or _sv_is_job(_tx_):
+                    continue
+                _ev.append((_sv_weight(_s_.get("meta") or {}), _t.get("lean", "mixed"), _s_))
+        _ev.sort(key=lambda x: -x[0])
+        if _ev:
+            H.append('<div class="slabel qevl">The evidence</div><div class="row3">')
+            for _w, _lean, _s_ in _ev[:6]:
+                _k_ = str(_s_.get("source", "") or "")
+                _txt = (_sv_dehash(_sv_body(_s_)) or _sv_body(_s_))[:220]
+                _hd = _sv_handle(_k_, _s_.get("meta") or {})
+                _u = _s_.get("url", "")
+                _lt = {"for": "■ For", "against": "✕ Against"}.get(_lean, "■ Mixed")
+                H.append(f'<div class="qc"><div class="qhead"><span class="qsrc">'
+                         f'{e(SRC.get(_k_, _k_.title()))}</span><span class="qhandle">{e(_hd)}</span></div>'
+                         f'<div class="qtext">“{e(_txt)}”</div><div class="qdiv"></div>'
+                         f'<div class="qctx"><span class="qlean {e(_lean)}">{e(_lt)}</span>'
+                         + (f' &nbsp;<a href="{e(_u)}" target="_blank" style="color:#fff">Open ↗</a>' if _u else "")
+                         + '</div></div>')
+            H.append('</div>'); h += ((min(6, len(_ev)) + 2) // 3) * 260
+        H.append('</section>'); h += 120
 
     if "01" in which:
         H.append(open_sec("01") + head("01", "The Currents", f"What is trending in {category}"))
@@ -7862,6 +8243,11 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             if not _sv_in_language(_sv_dehash(_sv_body(s_)), _lang):
                 _dropped_curated += 1
                 continue
+            # Nor is an advert or a job ad ever a voice, whoever picked it.
+            _ctext = _sv_dehash(_sv_body(s_))
+            if _sv_is_listing(_ctext) or _sv_is_job(_ctext):
+                _dropped_curated += 1
+                continue
             k = str(s_.get("source", "") or "").lower() or "other"
             # The LABEL comes from the source, not from the model. It wrote
             # "Reddit" for a Hacker News post once, and the card then sat under
@@ -7918,6 +8304,9 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 continue
             if _sv_is_listing(_clean):
                 _no(k, "a listing, not a voice")
+                continue
+            if _sv_is_job(_clean):
+                _no(k, "a job ad, not a voice")
                 continue
             cands.setdefault(k, []).append((i2, sg, _clean))
         for k, lst in cands.items():
@@ -8774,6 +9163,41 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
 <div class="tag">{e(tagline)}</div>
 <div class="vol">Live Brief — {e(date_label)}</div>''']
 
+    # YOUR QUESTION, first on paper too — with its counted numbers spelled out.
+    _qx = res.get("_question") if isinstance(res.get("_question"), dict) else None
+    if _qx and _qx.get("q"):
+        _qs = _qx.get("stats") or {}
+        _qn_, _qt_ = int(_qs.get("n") or 0), int(_qs.get("total") or 0)
+        parts.append(_sec("Q", "Your question", f"“{_qx['q']}”"))
+        if _qx.get("answer"):
+            parts.append(f'<div class="q" style="font-size:26px;color:{GOLD};margin:0 0 12px;">'
+                         f'{e(_qx["answer"])}</div>')
+        if _qx.get("summary"):
+            parts.append(f'<div class="lead">{e(_qx["summary"])}</div>')
+        _cards = [("Share of the conversation",
+                   f'{round(float(_qs.get("share") or 0) * 100)}%',
+                   f"{_qn_} of the {_qt_} posts collected touched it"),
+                  ("Where it is said", "",
+                   " · ".join(f"{nm} {c}" for nm, c in (_qs.get("nets") or [])[:6]) or "—")]
+        _ln_ = _qs.get("leans") or {}
+        if _qs.get("enough") and _qn_:
+            _cards.append(("How they lean",
+                           f'{round(100 * int(_ln_.get("for", 0)) / _qn_)}% for',
+                           f'{int(_ln_.get("for", 0))} for · {int(_ln_.get("mixed", 0))} mixed · '
+                           f'{int(_ln_.get("against", 0))} against'
+                           + (f' — “for” = {_qx["for_means"]}' if _qx.get("for_means") else "")))
+        else:
+            _cards.append(("How they lean", "", f"{_qn_} posts — too few to call a side"))
+        parts.append('<div class="cards">' + "".join(
+            f'<div class="card"><div class="clabel">{e(a)}</div>'
+            + (f'<div style="font-size:36px;font-weight:700;letter-spacing:-.03em;color:{GOLD};">'
+               f'{e(b)}</div>' if b else "")
+            + f'<div class="cbody">{e(c)}</div></div>' for a, b, c in _cards) + '</div>')
+        if _qs.get("enough") and _lhref:
+            _dl_ = _lhref.direction_line(_qs)
+            if _dl_:
+                parts.append(f'<div class="stat" style="border:none;">{e(_dl_)}</div>')
+
     # Confirmed figures only — paper goes to clients, and an unconfirmed number
     # never leaves the building.
     _nb = res.get("_numbers") if isinstance(res.get("_numbers"), dict) else {}
@@ -9427,6 +9851,62 @@ button[kind="primary"]:disabled span,
 .sv-paused {{ font-family:{_sans}; font-size:12.5px; line-height:1.55; color:{_muted};
   background:#ffffff; border-left:3px solid {_red}; padding:9px 13px; margin:2px 0 16px; }}
 .sv-paused b {{ color:{_ink}; font-weight:700; }}
+/* ── Ask the Lighthouse (prompt bar) · Refine ─────────────────────────────── */
+.sv-ask-lbl {{ font-family:{_sans}; font-size:10.5px; letter-spacing:.16em; text-transform:uppercase;
+  color:{_blue}; font-weight:700; margin:0 0 6px; }}
+.st-key-sv_ask input {{ font-size:16px !important; padding-top:12px !important;
+  padding-bottom:12px !important; }}
+/* "Set up" is a control, not the main action: black outline, like the Try
+   chips. The one solid blue button on the form stays Run Lighthouse. */
+.st-key-sv_ask_box button {{ background:#ffffff !important; border:1.5px solid {_ink} !important;
+  min-height:46px !important; }}
+.st-key-sv_ask_box button p {{ color:{_ink} !important; font-weight:700 !important;
+  -webkit-text-fill-color:{_ink} !important; }}
+.st-key-sv_ask_box button:hover {{ background:{_ink} !important; }}
+.st-key-sv_ask_box button:hover p {{ color:#ffffff !important; -webkit-text-fill-color:#ffffff !important; }}
+.sv-ask-note {{ font-family:{_sans}; font-size:12.5px; line-height:1.5; color:{_muted};
+  margin:-4px 0 16px; }}
+.sv-ask-note b {{ color:{_blue}; }}
+.sv-ref-head {{ display:flex; align-items:baseline; gap:12px; margin:10px 0 6px; padding-top:14px;
+  border-top:1px solid #dddddd; font-family:{_sans}; flex-wrap:wrap; }}
+.sv-ref-lbl {{ font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; color:{_blue};
+  font-weight:700; }}
+.sv-ref-opt {{ font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:{_faint};
+  border:1px solid #cccccc; padding:2px 6px; font-weight:700; }}
+.sv-ref-hint {{ font-size:12.5px; color:{_muted}; }}
+.sv-try-lbl {{ font-family:{_sans}; font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+  color:{_faint}; font-weight:700; padding-top:8px; }}
+/* The app-wide button rules ("div[data-testid=stButton] > button" transparent,
+   secondary labels at 19px) are more specific than a bare key selector, so
+   these carry the app container in front to win. Measured in the browser:
+   without it the chips rendered as 19px default buttons. */
+[data-testid="stAppViewContainer"] [class*="st-key-sv_try_"] div[data-testid="stButton"] > button,
+[data-testid="stAppViewContainer"] .st-key-sv_asknext div[data-testid="stButton"] > button {{
+  border-radius:10.5px !important; border:1.5px solid {_ink} !important;
+  background:#ffffff !important; min-height:0 !important; padding:3px 10px !important; }}
+[data-testid="stAppViewContainer"] [class*="st-key-sv_try_"] button[kind="secondary"] p,
+[data-testid="stAppViewContainer"] .st-key-sv_asknext button[kind="secondary"] p {{
+  font-size:12px !important; font-weight:600 !important; color:{_ink} !important;
+  -webkit-text-fill-color:{_ink} !important; white-space:nowrap; }}
+/* RUN LIGHTHOUSE IS THE ONE SOLID BLUE BUTTON. The same app-wide rule had made
+   it transparent — white text on the light ground, so it read as disabled. */
+[data-testid="stAppViewContainer"] .st-key-sv_scan div[data-testid="stButton"] > button {{
+  background:{_blue} !important; border:1.5px solid {_blue} !important;
+  border-radius:{_rad} !important; min-height:46px !important; }}
+[data-testid="stAppViewContainer"] .st-key-sv_scan div[data-testid="stButton"] > button p {{
+  color:#ffffff !important; -webkit-text-fill-color:#ffffff !important; font-weight:700 !important; }}
+[data-testid="stAppViewContainer"] .st-key-sv_scan div[data-testid="stButton"] > button:disabled {{
+  background:#f2f2f2 !important; border-color:#cccccc !important; }}
+[data-testid="stAppViewContainer"] .st-key-sv_scan div[data-testid="stButton"] > button:disabled p {{
+  color:{_faint} !important; -webkit-text-fill-color:{_faint} !important; }}
+.sv-asked {{ font-family:{_sans}; font-size:12.5px; color:{_muted}; margin:8px 0 6px; line-height:1.9; }}
+.sv-asked b {{ font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:{_faint};
+  margin-right:16px; }}
+.sv-asked i {{ font-style:normal; color:{_faint}; margin-right:6px; }}
+.sv-asked a {{ color:{_blue}; text-decoration:none; margin-right:20px; }}
+.sv-next {{ font-family:{_sans}; font-size:13px; color:{_muted}; padding-top:9px; }}
+.sv-next b {{ font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:{_blue};
+  margin-right:12px; }}
 [data-testid="stDownloadButton"] button, .stDownloadButton button {{
   background-color:{_gold} !important; border-color:{_gold} !important; color:#ffffff !important; }}
 /* Inputs: white field, black text/border on the grey ground */
@@ -9692,6 +10172,37 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # Six fields now. The two selects get the width their longest option needs
     # ("United States", "12 months") — measured, not guessed: at 1.0 they
     # truncated to "United Stat…" and "12 mon…".
+    # ── ASK THE LIGHTHOUSE — the prompt bar ────────────────────────────────
+    # Pat, Oct 23: "a chat-friendly prompt bar at the top". One sentence in,
+    # the settings out — filled into the fields below, where they are read
+    # before anything runs. Nothing is searched until Run Lighthouse.
+    if _lhref:
+        st.markdown('<div class="sv-ask-lbl">Ask the Lighthouse</div>', unsafe_allow_html=True)
+        _askbox = st.container(key="sv_ask_box")
+        with _askbox, st.form("sv_ask_form", clear_on_submit=False, border=False):
+            _ak1, _ak2 = st.columns([6, 1], gap="small")
+            with _ak1:
+                _ask_txt = st.text_input(
+                    "Ask the Lighthouse", key="sv_ask", label_visibility="collapsed",
+                    placeholder="e.g. Puma basketball shoes in the US over the last 6 months, "
+                                "against Nike and Adidas — how are women hoopers reacting?")
+            with _ak2:
+                _ask_go = st.form_submit_button("Set up ↵", use_container_width=True)
+        _ask_note = st.session_state.pop("_sv_ask_note", "")
+        if _ask_go and str(_ask_txt or "").strip():
+            with st.spinner("Reading the request…"):
+                _setup, _setup_err = _sv_parse_setup(_ask_txt)
+            if _setup:
+                # Into a pending slot and round again: a widget's value can be
+                # written before the widget exists in a run, never after.
+                st.session_state["_sv_fields_from_prompt"] = _setup
+                st.session_state["_sv_ask_note"] = _sv_setup_note(_setup)
+                st.rerun()
+            else:
+                st.warning(_setup_err)
+        elif _ask_note:
+            st.markdown(f'<div class="sv-ask-note">{_ask_note}</div>', unsafe_allow_html=True)
+
     _ic1, _ic2, _ic3, _ic5, _ic6, _ic4 = st.columns([0.95, 1.2, 0.95, 1.2, 1.05, 0.95],
                                                     gap="medium")
     # THE FIELDS FOLLOW THE CLIENT SELECTOR.
@@ -9715,8 +10226,31 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # drawn, so the first pass had nothing to show but the previous subject.
     # It is handed back here through a pending slot and one rerun; a widget's
     # key can be written before the widget exists, never after.
+    _ppend = st.session_state.pop("_sv_fields_from_prompt", None) if _lhref else None
     _pending = st.session_state.pop("_sv_fields_from_report", None)
-    if _pending:
+    if _ppend:
+        # FROM THE PROMPT BAR. Only what it actually read is written; a field it
+        # left blank keeps what is there.
+        _nbr = (_ppend.get("brand") or "").strip() or str(st.session_state.get("sv_brand") or _active)
+        st.session_state["sv_brand"] = _nbr
+        # Tell the next pass which client this brand is (or that it is none),
+        # so it does not read the new brand as a switch of client and reset
+        # every field the prompt just filled.
+        st.session_state["_fields_for"] = next(
+            (c for c in CLIENTS if c.strip().lower() == _nbr.lower()),
+            st.session_state.get("active_client", DEFAULT_CLIENT))
+        if _ppend.get("category"):
+            st.session_state["sv_cat"] = _ppend["category"]
+        if _ppend.get("product"):
+            st.session_state["sv_prod"] = _ppend["product"]
+        if _ppend.get("market") in MARKETS:
+            st.session_state["sv_market"] = _ppend["market"]
+        if _lhsrc and _ppend.get("window") in _lhsrc.WINDOWS:
+            st.session_state["sv_window"] = _ppend["window"]
+        st.session_state["sv_comp"] = _ppend.get("competitors", "")
+        st.session_state["sv_focus"] = _ppend.get("focus", "")
+        st.session_state["sv_q"] = _ppend.get("question", "")
+    elif _pending:
         st.session_state["_fields_for"] = _active
         st.session_state["sv_brand"] = _pending.get("brand") or _active
         st.session_state["sv_cat"]   = _pending.get("category") or ""
@@ -9727,12 +10261,21 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         # Briefs from before the window existed have none and leave it alone.
         if _lhsrc and _pending.get("window") in _lhsrc.WINDOWS:
             st.session_state["sv_window"] = _pending["window"]
+        # …and its competitors, focus and question, for the same reason.
+        st.session_state["sv_comp"] = _pending.get("competitors") or ""
+        st.session_state["sv_focus"] = _pending.get("focus") or ""
+        st.session_state["sv_q"] = _pending.get("question") or ""
     elif st.session_state.get("_fields_for") != _active:
         st.session_state["_fields_for"] = _active
         st.session_state["sv_brand"]  = _active
         st.session_state["sv_cat"]    = _prof["category"].title()
         st.session_state["sv_prod"]   = _prof.get("product", "")
         st.session_state["sv_market"] = _prof.get("market", DEFAULT_MARKET)
+        # A client's own rivals. An unknown brand starts with none: borrowing
+        # the sidebar client's list is how a Puma brief was handed Topo Chico.
+        st.session_state["sv_comp"] = str((CLIENTS.get(_active) or {}).get("competitors", "") or "")
+        st.session_state["sv_focus"] = ""
+        st.session_state["sv_q"] = ""
 
     with _ic1:
         st.markdown('<div class="sv-input-lbl">Brand</div>', unsafe_allow_html=True)
@@ -9810,6 +10353,53 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         st.markdown(
             f'<div class="sv-paused"><b>Scanning paused — no credits.</b> {e(SCAN_PAUSED_MSG)}</div>',
             unsafe_allow_html=True)
+
+    # ── Competitors · Must mention ───────────────────────────────────────────
+    # Pat's "category-based inputs". Competitors used to come silently from the
+    # sidebar client, so a Puma scan run while Rambler was selected was briefed
+    # against Topo Chico and LaCroix. Now they are on screen and editable, and
+    # Must mention says what every signal has to be about.
+    _jc1, _jc2 = st.columns([2.3, 1.4], gap="medium")
+    with _jc1:
+        st.markdown('<div class="sv-input-lbl">Competitors</div>', unsafe_allow_html=True)
+        _in_comp = st.text_input("Competitors", key="sv_comp", label_visibility="collapsed",
+                                 placeholder="Names, separated by commas")
+    with _jc2:
+        st.markdown('<div class="sv-input-lbl">Must mention</div>', unsafe_allow_html=True)
+        _in_focus = st.text_input(
+            "Must mention", key="sv_focus", label_visibility="collapsed",
+            placeholder="e.g. basketball, hoops", disabled=_lhref is None,
+            help=("Every signal has to carry one of these — commas separate alternatives. "
+                  "Empty takes everything about the product." if _lhref else
+                  "refine.py is missing on the server."))
+    _prof_competitors = str(_in_comp or "").strip()
+    _in_focus = str(_in_focus or "").strip() if _lhref else ""
+
+    # ── REFINE — one specific thing to read the networks for ─────────────────
+    # The approved Refine prototype: the question becomes two or three extra
+    # searches (same budget), and the brief opens with the answer.
+    _in_q = ""
+    if _lhref:
+        st.markdown('<div class="sv-ref-head"><span class="sv-ref-lbl">Refine</span>'
+                    '<span class="sv-ref-opt">Optional</span>'
+                    '<span class="sv-ref-hint">One specific thing to read the networks for.</span>'
+                    '</div>', unsafe_allow_html=True)
+        _in_q = str(st.text_input(
+            "Refine", key="sv_q", label_visibility="collapsed",
+            placeholder="How is Gen Z reacting to the brand's activism?") or "").strip()
+        _rivals = [c.strip() for c in _prof_competitors.split(",") if c.strip()]
+        _chips = _lhref.try_chips(_in_brand, _in_prod, _rivals[0] if _rivals else "")
+        _tc = st.columns([0.45] + [1.0] * len(_chips) + [2.0], gap="small")
+        _tc[0].markdown('<div class="sv-try-lbl">Try</div>', unsafe_allow_html=True)
+        for _ti, (_tl, _tq) in enumerate(_chips):
+            _tc[_ti + 1].button(_tl, key=f"sv_try_{_ti}", on_click=_sv_set_q, args=(_tq,),
+                                use_container_width=True)
+        _asked = _sv_asked_before(_active)
+        if _asked:
+            st.markdown('<div class="sv-asked"><b>Asked before</b>' + "".join(
+                f'<i>{e(a["day"])}</i><a href="{e(a["url"])}" target="_blank" '
+                f'rel="noopener">{e(a["q"])} ↗</a>' for a in _asked[:3]) + '</div>',
+                unsafe_allow_html=True)
     # `disabled` already blocks the click; the second guard is belt and braces
     # so no future rerun path can fire a scan while the switch is on.
     if _run and not SCAN_PAUSED:
@@ -9919,13 +10509,27 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # no data and waiting for one before starting the other simply added
             # its 20-odd seconds to the total.
             from concurrent.futures import ThreadPoolExecutor
+            # THE REFINE QUESTION becomes two or three searches, before anything
+            # else starts, because the lanes below need them. A couple of
+            # seconds on the cheap model; on failure the scan simply runs
+            # without them and the brief still answers from what it found.
+            _qq = (_sv_question_queries(_in_q, _in_brand or _active,
+                                        _in_cat or _prof["category"], _in_prod, _in_market)
+                   if _in_q else [])
+            if _in_q:
+                _mark("question → searches (Haiku, main thread)")
+            # Must mention sharpens the trade and newsletter searches too. Their
+            # articles are not filtered by it — the industry's week is context.
+            _search_f = (_lhref.with_focus(_search, _lhref.focus_items(_in_focus))
+                         if (_lhref and _in_focus) else _search)
             with ThreadPoolExecutor(max_workers=4) as _pool:
                 # Fourth lane: BY THE NUMBERS. Started first because it is the
                 # one that waits on a model (searching, then reading pages);
                 # it is done long before the nine sources are.
                 _f_numbers = _pool.submit(_sv_gather_numbers, _in_brand or _active,
                                           _in_cat or _prof["category"], _in_prod,
-                                          _in_market, _in_window, _prof_competitors)
+                                          _in_market, _in_window, _prof_competitors,
+                                          _in_focus)
                 # Resolved here, on the main thread, then handed to the worker.
                 try:
                     _outs_pre = _sv_trade_outlets(_in_cat or _prof["category"],
@@ -9941,18 +10545,19 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                     print(f"[lighthouse] newsletter discovery failed: {_lexc}")
                     _lets_pre = []
                 _mark("outlet + newsletter lists (Haiku, main thread)")
-                _f_trade = _pool.submit(_sv_gather_trade, _search,
+                _f_trade = _pool.submit(_sv_gather_trade, _search_f,
                                         _in_cat or _prof["category"], _in_market,
                                         _in_prod, _outs_pre, _in_window)
                 # Third lane. Costs no wall-clock in the normal case: it is
                 # pure RSS, typically the first of the three to finish.
-                _f_letters = _pool.submit(_sv_gather_letters, _search,
+                _f_letters = _pool.submit(_sv_gather_letters, _search_f,
                                           _in_cat or _prof["category"], _in_market,
                                           _in_prod, _lets_pre, _in_window)
                 _signals, _src_tally = _sv_gather(
                     _search, _active, _in_market, progress=_tick,
                     product=_in_prod, brand=_in_brand or _active,
-                    competitors=_prof_competitors, months=_in_window)
+                    competitors=_prof_competitors, months=_in_window,
+                    focus=_in_focus, extra_queries=_qq)
                 _mark("nine sources collected")
                 # THE OTHER BLIND SPOT, and it is the same one.
                 # Once the nine sources are home the app still waits on the
@@ -10023,11 +10628,14 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _result, _api_err = {}, ""
             if _signals:
                 try:
+                    # The competitors ON SCREEN, not the sidebar client's.
+                    _scan_comps = [c.strip() for c in _prof_competitors.split(",") if c.strip()]
                     _result = _sv_synthesize(_signals, _in_cat or _prof["category"],
-                                             _competitors, _in_brand or _active,
+                                             _scan_comps, _in_brand or _active,
                                              trade=_trade_sigs, letters=_let_sigs,
                                              numbers=_numbers.get("items") or [],
-                                             months=_in_window)
+                                             months=_in_window, question=_in_q,
+                                             focus=_in_focus)
                 except Exception as _exc:
                     _name = type(_exc).__name__
                     if "Authentication" in _name or "PermissionDenied" in _name:
@@ -10123,7 +10731,39 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # never says "beer".
             _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
                                 "product": _in_prod, "market": _in_market,
-                                "competitors": _prof_competitors, "window": _in_window}
+                                "competitors": _prof_competitors, "window": _in_window,
+                                "focus": _in_focus, "question": _in_q}
+            # THE ANSWER'S NUMBERS, counted here from the posts the model
+            # pointed at — share, networks, lean, direction, strength. The model
+            # never produces a figure for this section.
+            if _in_q and _lhref:
+                try:
+                    _qa = _result.get("question") if isinstance(_result.get("question"), dict) else {}
+                    # The same rule as the quote cards: an advert or a job ad is
+                    # nobody's opinion, so it is not counted as an answer either.
+                    _tq_ok = []
+                    for _t in (_qa.get("touched") or []):
+                        try:
+                            _sgq = _signals[:60][int(_t.get("i"))]
+                        except Exception:
+                            continue
+                        _txq = _sv_dehash(_sv_body(_sgq))
+                        if not (_sv_is_listing(_txq) or _sv_is_job(_txq)):
+                            _tq_ok.append(_t)
+                    _qstats = _lhref.question_stats(
+                        _signals[:60], _tq_ok,
+                        label=lambda sg: _SV_SRC_LABEL.get(str(sg.get("source", "")),
+                                                           str(sg.get("source", "")).title()))
+                    _result["_question"] = {
+                        "q": _in_q, "queries": _qq,
+                        "answer": str(_qa.get("answer", "") or "")[:200],
+                        "summary": str(_qa.get("summary", "") or "")[:400],
+                        "for_means": str(_qa.get("for_means", "") or "")[:80],
+                        "ask_next": str(_qa.get("ask_next", "") or "")[:200],
+                        "from_searches": sum(1 for sg in _signals if (sg.get("meta") or {}).get("q")),
+                        "stats": _qstats}
+                except Exception as _qexc:
+                    print(f"[refine] answer could not be counted: {type(_qexc).__name__}: {_qexc}")
             # BY THE NUMBERS, stored whole — figures, what was thrown out and
             # why, what was searched — so a reopened brief shows the same
             # section and the diagnostic can answer "where did this come from".
@@ -10237,7 +10877,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # first load of a ?report= link — no scan, no API call, no cost.
             st.session_state["_sv_fields_from_report"] = dict(
                 {k: str(_m.get(k, "") or "") for k in
-                 ("brand", "category", "product", "market")},
+                 ("brand", "category", "product", "market", "competitors", "focus",
+                  "question")},
                 window=_m.get("window"))
             st.rerun()
 
@@ -10319,8 +10960,18 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             print(f"[overview] trend history unavailable: {_aexc}")
             _ages, _faded = [], []
         # (The Tideline was computed further up, before the diagnostic panels.)
+        # ASK NEXT — the follow-up the answer raised, one click from the field.
+        _qn = ""
+        if _lhref and isinstance(_res.get("_question"), dict):
+            _qn = str(_res["_question"].get("ask_next", "") or "").strip()
+        if _qn:
+            _an1, _an2 = st.columns([5, 1.25], gap="small")
+            _an1.markdown(f'<div class="sv-next"><b>Ask next</b>{e(_qn)}</div>',
+                          unsafe_allow_html=True)
+            _an2.button("Use this question", key="sv_asknext", on_click=_sv_set_q,
+                        args=(_qn,), use_container_width=True)
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
-                                     ("01", "01N", "02", "02T", "02N", "03", "04", "05", "06"),
+                                     ("00Q", "01", "01N", "02", "02T", "02N", "03", "04", "05", "06"),
                                      "screen",
                                      trade_sigs=_res.get("_trade_sigs") or [],
                                      trend_ages=_ages, faded=_faded,
