@@ -5932,6 +5932,199 @@ a better field, not a lazy one. Never pad a line to reach a number.
         return {}
 
 
+# ── Editing the currents: remove one and get another, or ask for your own ─────
+# Pat, Oct 23: delete an unwanted insight and have a new one generated; input a
+# custom current (an athlete, a trend) and have the system search the data pool.
+# One model call each, on signals already collected (and, for a custom current,
+# the client's saved archive) — no new scraping, cents per click.
+def _sv_sig_listing(items: list) -> str:
+    _day = (lambda v: _lhsrc.day(v)) if _lhsrc else (lambda v: str(v or "")[:10] or "undated")
+    return "\n\n".join(
+        f"[{j}] SOURCE: {s.get('source', '')} | DATE: {_day(s.get('timestamp'))} | URL: {s.get('url', '')}\n"
+        f"TITLE: {str(s.get('title', ''))[:110]}\nCONTENT: {str(s.get('content', ''))[:260]}"
+        for j, s in enumerate(items))
+
+
+def _sv_one_current(res: dict, sigs: list, active: str, avoid: list,
+                    custom: str = "") -> tuple:
+    """One new current for an existing brief. Returns (trend, new_sigs, why).
+
+    `avoid` = titles the brief already has plus the ones the team removed.
+    For a custom current only signals that mention it are offered — from this
+    brief, then from the client's saved archive — and the model may answer that
+    none of them is really about it, which is shown as an honest "nothing yet".
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {}, sigs, "needs ANTHROPIC_API_KEY"
+    meta = (res or {}).get("_meta") or {}
+    brand, category = meta.get("brand") or active, meta.get("category") or ""
+    if custom:
+        items = _lhref.focus_items(custom) if _lhref else [[w] for w in _sv_terms(custom)]
+        hit = ((lambda s_: _lhref.focus_hit(f"{s_.get('title', '')} {s_.get('content', '')}", items))
+               if _lhref else (lambda s_: any(w[0] in f"{s_.get('title', '')} {s_.get('content', '')}".lower() for w in items)))
+        cand = [(i, s_) for i, s_ in enumerate(sigs) if hit(s_)]
+        urls = {s_.get("url") for s_ in sigs}
+        try:
+            for a in _load_signals_raw(limit=300):
+                if len(cand) >= 40:
+                    break
+                if a.get("url") in urls or not _signal_matches_client(a, active) or not hit(a):
+                    continue
+                urls.add(a.get("url"))
+                cand.append((None, {"title": a.get("title", ""), "content": a.get("content", ""),
+                                    "source": a.get("source", "db"), "url": a.get("url", ""),
+                                    "timestamp": a.get("timestamp", ""),
+                                    "meta": a.get("meta") or a.get("raw_meta") or {}}))
+        except Exception as exc:
+            print(f"[edit] archive unavailable: {exc}")
+        if not cand:
+            return {}, sigs, (f"Nothing collected for this brief, or saved for {active}, mentions "
+                              f"“{custom}”. Add it to Must mention and run a scan to go and find it.")
+    else:
+        cand = list(enumerate(sigs[:60]))
+    listing = _sv_sig_listing([s_ for _, s_ in cand])
+    keep = "\n".join(f"- {t}" for t in avoid if t)
+    ask = (f'The team wants a current about "{custom}". Build it ONLY from the signals below '
+           f'that are really about it. If none is, answer exactly {{"none": "one sentence saying '
+           f'why"}}.' if custom else
+           "The team removed a current. Write ONE new current that is not in the list above "
+           "and not a rewording of anything in it.")
+    prompt = f"""You are the editor of "The Lighthouse", a cultural-intelligence brief for {brand} in the {category} category. Today is {datetime.utcnow().strftime('%d %B %Y').lstrip('0')}.
+
+The brief already has, or has rejected, these currents — never repeat or reword them:
+{keep or "- (none)"}
+
+{ask}
+
+SIGNALS:
+{listing}
+
+Respond ONLY with JSON: {{"title": "argumentative headline", "summary": "2-3 sharp sentences with a point of view", "stat": "one momentum line — a real handle or engagement figure from the signals, or a qualitative phrase. NEVER invent a percentage.", "signal_indexes": [0, 3]}}
+Rules: title max 8 words and an ARGUMENT, not a description; summary max 32 words; stat max 10 words; 2 to 6 signal_indexes, real numbers from the list; a signal dated long ago never anchors it."""
+    try:
+        import anthropic
+        cl = anthropic.Anthropic(api_key=key)
+        r = cl.messages.create(model=CLAUDE_MODEL, max_tokens=900,
+                               messages=[{"role": "user", "content": prompt}])
+        data = _extract_json(_msg_text(r)) or {}
+    except Exception as exc:
+        return {}, sigs, f"the model could not be reached ({type(exc).__name__})"
+    if data.get("none"):
+        return {}, sigs, str(data["none"])[:240]
+    if not data.get("title"):
+        return {}, sigs, "the model did not return a current — try again"
+    new_sigs, idx = list(sigs), []
+    for j in data.get("signal_indexes") or []:
+        try:
+            j = int(j)
+            i0, s_ = cand[j]
+        except (TypeError, ValueError, IndexError):
+            continue
+        if i0 is None:                       # from the saved archive: joins this brief
+            new_sigs.append(s_)
+            i0 = len(new_sigs) - 1
+        if i0 not in idx:
+            idx.append(i0)
+    trend = {"title": str(data["title"])[:120], "summary": str(data.get("summary", ""))[:400],
+             "stat": str(data.get("stat", ""))[:120], "signal_indexes": idx[:6]}
+    if custom:
+        trend["_custom"] = custom[:80]
+    if _lhsrc:
+        try:
+            _lhsrc.check_stats([trend], [], [f"{s_.get('title', '')} {s_.get('content', '')}"
+                                             for s_ in new_sigs])
+        except Exception:
+            pass
+    return trend, new_sigs, ""
+
+
+def _sv_edit_panel(res: dict, sigs: list, active: str, saved_at: str) -> None:
+    """Remove a current and get another; or ask for one of your own."""
+    trends = res.get("trends") or []
+    note = st.session_state.pop("_sv_edit_note", "")
+    with st.expander("Edit the currents — remove one, or add your own", expanded=bool(note)):
+        if note:
+            st.markdown(f'<div class="sv-ask-note">{note}</div>', unsafe_allow_html=True)
+        for i, t in enumerate(trends[:6]):
+            c1, c2 = st.columns([6, 1.4], gap="small")
+            lab = " · yours" if t.get("_custom") else ""
+            c1.markdown(f'<div class="sv-next" style="padding-top:6px"><b>Current {i + 1}{e(lab)}</b>'
+                        f'{e(t.get("title", ""))}</div>', unsafe_allow_html=True)
+            if c2.button("✕ Replace", key=f"sv_rep_{i}", use_container_width=True,
+                         help="Remove this current and write a different one from the same signals"):
+                avoid = [x.get("title", "") for x in trends] + list(res.get("_removed") or [])
+                with st.spinner("Writing a different current…"):
+                    new, new_sigs, why = _sv_one_current(res, sigs, active, avoid)
+                if new:
+                    res.setdefault("_removed", []).append(t.get("title", ""))
+                    trends[i] = new
+                    _sv_commit_edit(res, new_sigs, active, saved_at,
+                                    f"Replaced “{e(t.get('title', ''))}” with “{e(new['title'])}”.")
+                else:
+                    st.warning(f"Could not replace it: {why}")
+        st.markdown('<div class="sv-input-lbl" style="margin-top:12px">Add your own current</div>',
+                    unsafe_allow_html=True)
+        a1, a2 = st.columns([6, 1.4], gap="small")
+        ask = a1.text_input("Add your own current", key="sv_custom", label_visibility="collapsed",
+                            placeholder="An athlete, a trend, a worry — e.g. Caitlin Clark, refill culture")
+        if a2.button("Find it", key="sv_custom_go", use_container_width=True) and ask.strip():
+            if len(trends) >= 6:
+                st.warning("Six currents is the most a brief holds — replace one first.")
+            else:
+                avoid = [x.get("title", "") for x in trends] + list(res.get("_removed") or [])
+                with st.spinner(f"Looking for “{ask.strip()}” in this brief and the saved archive…"):
+                    new, new_sigs, why = _sv_one_current(res, sigs, active, avoid, custom=ask.strip())
+                if new:
+                    trends.append(new)
+                    res["trends"] = trends
+                    _sv_commit_edit(res, new_sigs, active, saved_at,
+                                    f"Added “{e(new['title'])}” — built from "
+                                    f"{len(new.get('signal_indexes') or [])} signals that mention "
+                                    f"“{e(ask.strip())}”.")
+                else:
+                    st.info(why)
+
+
+def _sv_commit_edit(res: dict, sigs: list, active: str, saved_at: str, note: str) -> None:
+    res.pop("_tideline", None)               # recomputed from the new currents
+    st.session_state["sv_result"] = res
+    st.session_state["sv_signals"] = sigs
+    _sv_update_brief(active, st.session_state.get("sv_brief_id", ""), res, sigs, saved_at)
+    st.session_state["_sv_edit_note"] = note
+    st.rerun()
+
+
+def _sv_update_brief(active: str, rid: str, result: dict, signals: list, saved_at: str) -> None:
+    """Write an edited brief back over its own archive row (same id, same day)."""
+    if not rid:
+        return
+    clean = {k: v for k, v in (result or {}).items() if k not in ("_tideline", "_decks", "_gates")}
+    trimmed = [{"title": s.get("title", "")[:160], "content": s.get("content", "")[:400],
+                "source": s.get("source", ""), "url": s.get("url", ""),
+                "timestamp": s.get("timestamp", ""), "meta": s.get("meta") or {}}
+               for s in (signals or [])[:260]]
+    meta = clean.get("_meta", {}) or {}
+    payload = {"_overview": True, "_client": active, "sv_result": clean, "sv_signals": trimmed,
+               "saved_at": saved_at or datetime.utcnow().isoformat(),
+               "brand": meta.get("brand", active), "category": meta.get("category", ""),
+               "product": meta.get("product", ""), "signal_count": len(signals or [])}
+    try:
+        if hasattr(_db, "update_dispatch"):
+            _db.update_dispatch(rid, f"__overview__{active}", payload)
+        else:
+            # An older db.py: better a copy in the Archive than an edit that is
+            # lost on the next reload.
+            _db.save_dispatch(payload, f"__overview__{active}")
+            st.session_state["sv_brief_id"] = str(payload.get("_dispatch_id", "") or "")
+        try:
+            _db.invalidate_dispatch_cache()
+        except AttributeError:
+            pass
+    except Exception as exc:
+        print(f"[edit] could not update the archived brief: {exc}")
+
+
 # Scrapers append a metadata footer to every post body — TikTok writes
 # "Author: @x | Views: 1,203 | Likes: 40", Instagram "@x | Likes: 4 | Comments: 1",
 # Reddit "Points: 61 | Comments: 81". Harmless when the model reads it, ugly on a
@@ -6075,6 +6268,24 @@ _SV_JOB_STRONG = re.compile(
 _SV_JOB_WEAK = re.compile(
     r"(?i)\b(hiring|apply\s+now|join\s+our\s+team|vagas?|curr[ií]culo|requisitos"
     r"|candidat[ae]s?|recruiting|recrutamento|empleo|salary|sal[aá]rio)\b")
+
+
+# A REDDIT TITLE WITH NOTHING UNDER IT IS NOT A VOICE. The Rambler brief (Oct 26)
+# showed "Dragonflies on sparkling waters" (a photo in r/dragonfly) and a game
+# post whose body was Reddit's own placeholder text. Both name the product and
+# say nothing about it. A raw Reddit top-up now needs a dozen words of its own
+# beyond the title; the model's picks are unaffected.
+_SV_REDDIT_PLACEHOLDER = re.compile(
+    r"(?i)this post contains content not supported on old reddit|\[removed\]|\[deleted\]")
+
+
+def _sv_reddit_thin(sig: dict, clean: str) -> bool:
+    body = _SV_REDDIT_PLACEHOLDER.sub(" ", clean or "")
+    title = " ".join(str(sig.get("title") or "").split())
+    if title and body.lower().startswith(title.lower()):
+        body = body[len(title):]
+    body = re.sub(r"(?i)click here to view the full post", " ", body)
+    return len(re.findall(r"[A-Za-z\u00c0-\u024f']{2,}", body)) < 12
 
 
 def _sv_is_job(txt: str) -> bool:
@@ -6603,7 +6814,7 @@ def _sv_pretty_day(day: str) -> str:
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def _sv_group_currents(titles: tuple, category: str) -> list:
+def _sv_group_currents(titles: tuple, category: str, summaries: tuple = ()) -> list:
     """Which of these headlines are the same running story, said differently?
 
     FOUR ATTEMPTS AT A LEXICAL MATCHER ENDED HERE, and the reason is structural
@@ -6631,16 +6842,26 @@ def _sv_group_currents(titles: tuple, category: str) -> list:
     try:
         import anthropic
         cl = anthropic.Anthropic(api_key=key)
-        listing = "\n".join(f"{i}. {t}" for i, t in enumerate(titles))
+        # THE HEADLINE AND ITS ARGUMENT. Headlines alone hid the obvious: a
+        # Rambler Tideline (Oct 26) kept "Scarcity is the new sparkling-water
+        # marketing" and "Topo Chico's scarcity built a cult, not a brand" on
+        # separate rows — one claim, two wordings. The summary says what is
+        # being argued, so the model can see it.
+        def _one(i, t):
+            sm = (summaries[i] if i < len(summaries) else "") or ""
+            sm = " ".join(str(sm).split()[:30])
+            return f"{i}. {t}" + (f" — {sm}" if sm else "")
+        listing = "\n".join(_one(i, t) for i, t in enumerate(titles))
         prompt = (
             f"These are trend headlines written for the {category} category over "
             f"several weeks by the same tool. It rewrites its headlines every run, "
             f"so the SAME ongoing story often appears under completely different "
             f"wording.\n\n{listing}\n\n"
             "Group the numbers that are the same ongoing story told again.\n\n"
-            "Group only when a strategist would say it is one argument re-worded: "
-            "same claim, same tension, same thing being asserted about the "
-            "category. Two DIFFERENT arguments that happen to share a subject stay "
+            "Group when a strategist would say it is one argument re-worded: the "
+            "same claim about the category, even if the example changed (one run "
+            "cites Topo Chico, the next Bubly — both say scarcity builds devotion: "
+            "one story). Two DIFFERENT arguments that happen to share a subject stay "
             "apart — 'provenance beats flavour' and 'nobody agrees what this "
             "product is' are both about authenticity and are not the same story.\n"
             "When unsure, leave it on its own. A wrongly merged pair claims a "
@@ -6762,7 +6983,8 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
     _titles = tuple(t.get("title", "") for _di, t in cards)
     _groups = []
     try:
-        _groups = _sv_group_currents(_titles, category or "")
+        _groups = _sv_group_currents(_titles, category or "",
+                                     tuple(str(t.get("summary", "") or "") for _di, t in cards))
     except Exception as exc:
         print(f"[tideline] grouping unavailable: {exc}")
 
@@ -8144,7 +8366,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         H.append(open_sec("01") + head("01", "The Currents", f"What is trending in {category}"))
         H.append('<div class="row3">')
         _ages = trend_ages or []
-        for _ti, t in enumerate((res.get("trends") or [])[:3]):
+        for _ti, t in enumerate((res.get("trends") or [])[:6]):
             links = ""
             for ix in (t.get("signal_indexes") or [])[:6]:
                 s = sig(ix)
@@ -8164,7 +8386,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             # The age rides on the existing "Current" label rather than adding a
             # row, so nothing in the layout moves.
             _age = _ages[_ti] if _ti < len(_ages) else ""
-            _lbl = ('Current'
+            _lbl = (('Your current' if t.get("_custom") else 'Current')
                     + (f'<span class="cage">{e(_age)}</span>' if _age else ""))
             H.append(f'<div class="card"><div class="clabel">{_lbl}</div>'
                      f'<div class="ctitle">{e(t.get("title",""))}</div>'
@@ -8383,6 +8605,9 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 continue
             if _sv_is_job(_clean):
                 _no(k, "a job ad, not a voice")
+                continue
+            if k == "reddit" and _sv_reddit_thin(sg, _clean):
+                _no(k, "a title with no post behind it")
                 continue
             cands.setdefault(k, []).append((i2, sg, _clean))
         for k, lst in cands.items():
@@ -9306,11 +9531,11 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
     if tr:
         parts.append(_sec("01", "The Currents", "What is trending"))
         parts.append('<div class="cards">')
-        for t in tr[:3]:
+        for t in tr[:6]:
             _f = _nfig(t.get("figure_index"))
             _cite = (f' <a href="{e(_f["url"])}" style="color:{GOLD};">↗</a>' if _f else "")
             _st = f'<div class="stat">{e(t.get("stat",""))}{_cite}</div>' if t.get("stat") else ""
-            parts.append(f'<div class="card"><div class="clabel">Current</div>'
+            parts.append(f'<div class="card"><div class="clabel">{"Your current" if t.get("_custom") else "Current"}</div>'
                          f'<div class="ctitle">{e(t.get("title",""))}</div>'
                          f'<div class="cbody">{e(t.get("summary",""))}</div>{_st}</div>')
         parts.append('</div>')
@@ -10911,7 +11136,9 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 _in_prod, _in_market)
             st.session_state["sv_saved_at"] = datetime.utcnow().isoformat()
             st.session_state.pop("sv_hunch_result", None)   # new search → fresh reading
-            _sv_save_brief(_active, _result, _signals)      # archive this run
+            # archive this run — and remember its id, so editing the currents
+            # later updates THIS brief instead of filing a copy
+            st.session_state["sv_brief_id"] = _sv_save_brief(_active, _result, _signals)
             st.rerun()
         elif _api_err:
             # Shown INSTEAD of the generic synthesis message, because "press Run
@@ -10954,6 +11181,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             st.session_state["sv_client"]    = _active
             st.session_state["sv_saved_at"]  = _saved_at
             st.session_state["sv_report_id"] = _req_id
+            st.session_state["sv_brief_id"] = _req_id
             # An archived report is authoritative for whatever it says it is
             # about, so its own metadata becomes the key. Without this the next
             # rerun would compare it against the on-screen fields and blank it.
@@ -11062,6 +11290,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                           unsafe_allow_html=True)
             _an2.button("Use this question", key="sv_asknext", on_click=_sv_set_q,
                         args=(_qn,), use_container_width=True)
+        # ── EDIT THE CURRENTS ────────────────────────────────────────────────
+        _sv_edit_panel(_res, _sigs, _active, _saved_at)
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
                                      ("00Q", "01", "01N", "02", "09", "02T", "02N", "03", "04", "05", "06"),
                                      "screen",

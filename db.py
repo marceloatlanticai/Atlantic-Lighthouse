@@ -395,6 +395,50 @@ def upsert_record(record_id: str, topic: str, data: dict, label: str = "") -> bo
         return False
 
 
+def update_dispatch(dispatch_id: str, topic: str, content: dict) -> bool:
+    """Rewrite an existing dispatch (a brief) in place, keeping its id and date.
+
+    Unlike upsert_record this does NOT mark the row as a record, so it stays in
+    the Archive — editing a brief's currents must not make the brief vanish."""
+    if not dispatch_id:
+        return False
+    full = dict(content or {})
+    full["_dispatch_id"] = dispatch_id
+    full.pop("_record", None)
+    ts = str(full.get("saved_at") or "") or _now_iso()
+    row = {"timestamp": ts, "dispatch_id": dispatch_id, "topic": topic,
+           "content": str((full.get("lead") or {}).get("title", "") if isinstance(full.get("lead"), dict) else ""),
+           "full_json": full}
+    sb = _get_sb()
+    if sb:
+        try:
+            sb.table("dispatches").upsert(row, on_conflict="dispatch_id").execute()
+            return True
+        except Exception as exc:
+            print(f"[db] update_dispatch Supabase error: {exc}")
+    try:
+        _mkdir()
+        lines = []
+        if os.path.exists(_DISPATCHES_FILE):
+            with open(_DISPATCHES_FILE) as f:
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if rec.get("dispatch_id") != dispatch_id:
+                        lines.append(rec)
+        lines.append({"timestamp": ts, "dispatch_id": dispatch_id, "topic": topic,
+                      "content": row["content"], "full": full})
+        with open(_DISPATCHES_FILE, "w") as f:
+            for rec in lines:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return True
+    except Exception as exc:
+        print(f"[db] update_dispatch file error: {exc}")
+        return False
+
+
 def _record_from_row(row: dict) -> dict:
     full = row.get("full_json") if "full_json" in row else row.get("full")
     if isinstance(full, str):
