@@ -6356,7 +6356,13 @@ def _sv_brand_ok(hits: set, strong: Optional[set], brands: Optional[set]) -> boo
         return bool(hits)
     brands = brands or set()
     nb = hits - brands
-    return bool(nb & strong) or len(nb) >= 2 or (bool(hits & brands) and len(nb) >= 1)
+    # A WORD LIKE "WATER" NAMES A WHOLE DOMAIN, not a product (Oct 26: a cat
+    # drinking puddle water and a racehorse called Corach Rambler being given
+    # buckets of water reached a Rambler sparkling-water brief). A broad word
+    # never carries a post alone, and a brand cannot lean on one either —
+    # "Rambler" + "water" is a horse; "Rambler sparkling water" is the brand.
+    sharp = nb - _SV_BROAD
+    return bool(sharp & strong) or len(nb) >= 2 or (bool(hits & brands) and bool(sharp))
 
 
 def _sv_tagged_on_topic(sig: dict, terms: list, max_tags: int = 6,
