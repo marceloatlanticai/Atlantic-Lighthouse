@@ -6115,8 +6115,41 @@ def _sv_tags(sig: dict) -> list:
     return [t.lower() for t in _SV_HASHTAG.findall(raw)]
 
 
+def _sv_term_hits(terms: list, hay: str) -> set:
+    """Which search terms the text really contains — as WORDS.
+
+    It used to be a substring test, and "water" is inside "watermark": a Rambler
+    brief (Oct 26) filled its Hacker News deck with posts about AI watermarks,
+    Google's data-centre water bills and a Texas water arrest. Now a term counts
+    as a whole word (plural allowed), or inside a hashtag, where words are glued
+    together on purpose (#sparklingwater)."""
+    hay = (hay or "").lower()
+    words = set(re.findall(r"[a-z0-9]+", hay))
+    tags = re.findall(r"#([a-z0-9_]+)", hay)
+    hits = set()
+    for t in terms:
+        st = t.rstrip("s")
+        if t in words or st in words or st + "s" in words or st + "es" in words:
+            hits.add(t)
+        elif any(t in g or st in g for g in tags):
+            hits.add(t)
+    return hits
+
+
+def _sv_brand_ok(hits: set, strong: Optional[set], brands: Optional[set]) -> bool:
+    """The display rule, shared by text and hashtags. One strong non-brand term
+    is enough; otherwise two terms — and a brand never counts as its own friend:
+    "Liquid Death" is two words of ONE name, which is how a Harry Potter post
+    about Death Eaters and a concert recap reached a sparkling-water brief."""
+    if not strong:
+        return bool(hits)
+    brands = brands or set()
+    nb = hits - brands
+    return bool(nb & strong) or len(nb) >= 2 or (bool(hits & brands) and len(nb) >= 1)
+
+
 def _sv_tagged_on_topic(sig: dict, terms: list, max_tags: int = 6,
-                        strong: Optional[set] = None) -> bool:
+                        strong: Optional[set] = None, brands: Optional[set] = None) -> bool:
     """Is the post LABELLED as being about our subject, rather than net-casting?
 
     Yesterday's rule judged relevance on the dehashed text alone, which was
@@ -6135,9 +6168,7 @@ def _sv_tagged_on_topic(sig: dict, terms: list, max_tags: int = 6,
     hits = {t for tag in tags for t in terms if t in tag or t.rstrip("s") in tag}
     if not hits:
         return False
-    if not strong:
-        return True
-    return bool(hits & strong) or len(hits) >= 2
+    return _sv_brand_ok(hits, strong, brands)
 
 
 def _sv_strong_terms(terms: list, meta: dict) -> set:
@@ -6227,7 +6258,7 @@ def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None,
         return True
     hay = (text if text is not None
            else f"{sig.get('title','')} {sig.get('content','')}").lower()
-    hits = {t for t in terms if t in hay or t.rstrip("s") in hay}
+    hits = _sv_term_hits(terms, hay)
     if not hits:
         return False
     if not strong:
@@ -6244,8 +6275,7 @@ def _sv_on_topic(sig: dict, terms: list, text: Optional[str] = None,
     # gate governs RAW TOP-UPS only. The model's own picks never pass through it,
     # so a genuinely good brand-only post still reaches the brief by the route
     # that has an editor behind it.
-    _hard = hits & (strong - (brands or set()))
-    return bool(_hard) or len(hits) >= 2
+    return _sv_brand_ok(hits, strong, brands)
 
 
 # The model does not say "I don't know" — it writes a phrase that LOOKS like an
@@ -6688,7 +6718,9 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
 
     days = sorted(by_day)[-8:]                 # oldest → newest, at most eight
     if len(days) < 2:
-        return {}                              # one column is not a timeline
+        # One column is not a timeline — but say so on screen instead of the
+        # section silently not existing (Oct 26: "the Tideline didn't appear").
+        return {"days": days, "runs": [], "first": True}
 
     # ── Grouping ─────────────────────────────────────────────────────────────
     # The model reads the headlines and says which are the same story. The
@@ -8304,7 +8336,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 _no(k, "empty after cleaning")
                 continue
             if not (_sv_on_topic(sg, _terms, _clean, _strong, _brands)
-                    or _sv_tagged_on_topic(sg, _terms, strong=_strong)):
+                    or _sv_tagged_on_topic(sg, _terms, strong=_strong, brands=_brands)):
                 _no(k, "off topic once hashtags removed")
                 continue
             if not _sv_in_language(_clean, _lang):
@@ -8690,6 +8722,15 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
     # design brief: a long bar is a long story.
     _tl = res.get("_tideline") or {}
     _tl_days, _tl_runs = _tl.get("days") or [], _tl.get("runs") or []
+    if "09" in which and mode == "screen" and _tl.get("first"):
+        _m9 = res.get("_meta") or {}
+        _what = " · ".join(x for x in (_m9.get("category", ""), _m9.get("product", "")) if x)
+        H.append(open_sec("09") + head("09", "The Tideline", "Which currents are actually holding"))
+        H.append('<div class="lead">The Tideline starts on the second day. This is the first '
+                 'day this search' + (f' ({e(_what)})' if _what else '') + ' has been run — '
+                 'run it again on another day, with the same category and product, and every '
+                 'current gets its time axis.</div>')
+        H.append('</section>'); h += 260
     if "09" in which and len(_tl_days) >= 2 and _tl_runs:
         H.append(open_sec("09") + head("09", "The Tideline",
                                        "Which currents are actually holding"))
