@@ -6670,6 +6670,24 @@ def _sv_group_currents(titles: tuple, category: str) -> list:
         return []
 
 
+def _sv_same_subject(cat_a: str, prod_a: str, cat_b: str, prod_b: str) -> bool:
+    """Are two briefs of the same brand about the same thing?
+
+    Not the same spelling: "Mineral sparkling water" and "Sparkling water" are
+    one subject. The PRODUCT has to share a word (so Heinz soup and Heinz
+    ketchup stay apart even though both sit in "comfort food"), and the
+    subject as a whole has to be one inside the other or mostly shared."""
+    pa, pb = set(_sv_terms(prod_a or cat_a or "")), set(_sv_terms(prod_b or cat_b or ""))
+    if not pa:
+        return True
+    if not (pa & pb):
+        return False
+    a = set(_sv_terms(f"{cat_a} {prod_a}")); b = set(_sv_terms(f"{cat_b} {prod_b}"))
+    if a <= b or b <= a:
+        return True
+    return len(a & b) / max(1, len(a | b)) >= 0.5
+
+
 def _sv_tideline(active: str, trends: list, category: str = "", product: str = "",
                  current_saved_at: str = "") -> dict:
     """Every current this search has produced, laid out on a time axis.
@@ -6698,15 +6716,27 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
     cat, prod = (category or "").strip().lower(), (product or "").strip().lower()
     # The subject of the brief is not evidence that two currents are the same.
     _drop = frozenset(_sv_terms(f"{category} {product}"))
+    # SAME BRAND, SAME SUBJECT — NOT THE SAME SPELLING. The match used to be
+    # exact, so "Mineral sparkling water" and "Sparkling water" were two
+    # different searches with no shared history (Oct 26). Now two briefs of
+    # this brand belong together when their subject words overlap: one set
+    # inside the other, or most words shared. A footwear test run under the
+    # same brand shares nothing with water and stays out.
+    def _same_subject(b) -> bool:
+        return _sv_same_subject(category, product, b.get("category", ""), b.get("product", ""))
+
     by_day: dict = {}
+    _related: list = []
     for b in past:
         day = str(b.get("saved_at", ""))[:10]
         if not day:
             continue
-        if cat and str(b.get("category", "")).strip().lower() != cat:
+        if not _same_subject(b):
             continue
-        if prod and str(b.get("product", "")).strip().lower() != prod:
-            continue
+        _subj = " · ".join(x for x in (str(b.get("category", "")).strip(),
+                                       str(b.get("product", "")).strip()) if x)
+        if _subj and _subj.lower() not in (x.lower() for x in _related):
+            _related.append(_subj)
         # Newest-first list, so the first entry for a day wins: several runs in
         # one afternoon are one day's reading, not several days of history.
         by_day.setdefault(day, (b.get("result") or {}).get("trends") or [])
@@ -6824,7 +6854,7 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
                 near.append({"a": r1["title"][:44], "b": r2["title"][:44],
                              "score": round(score, 2), "shared": sorted(sh)[:5]})
     near.sort(key=lambda n: -n["score"])
-    return {"days": [_sv_pretty_day(d) for d in days], "runs": out[:10],
+    return {"related": _related[:6], "days": [_sv_pretty_day(d) for d in days], "runs": out[:10],
             "near": near[:6], "by": "model" if _groups else "tokens",
             "grouped": [r.get("members") for r in runs
                         if len(r.get("members") or []) > 1][:8]}
@@ -6864,11 +6894,8 @@ def _sv_trend_history(active: str, trends: list, category: str = "", product: st
     cat, prod = (category or "").strip().lower(), (product or "").strip().lower()
 
     def _matches(b: dict) -> bool:
-        if cat and str(b.get("category", "")).strip().lower() != cat:
-            return False
-        if prod and str(b.get("product", "")).strip().lower() != prod:
-            return False
-        return True
+        # Same rule as the Tideline: a close wording is the same subject.
+        return _sv_same_subject(category, product, b.get("category", ""), b.get("product", ""))
 
     # Briefs are grouped by DAY: eight runs in one afternoon are one day's
     # reading, not eight days of history.
@@ -8727,9 +8754,10 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         _what = " · ".join(x for x in (_m9.get("category", ""), _m9.get("product", "")) if x)
         H.append(open_sec("09") + head("09", "The Tideline", "Which currents are actually holding"))
         H.append('<div class="lead">The Tideline starts on the second day. This is the first '
-                 'day this search' + (f' ({e(_what)})' if _what else '') + ' has been run — '
-                 'run it again on another day, with the same category and product, and every '
-                 'current gets its time axis.</div>')
+                 'day this brand has been searched on this subject' + (f' ({e(_what)})' if _what else '')
+                 + ' — run it again on another day (a close wording, like “sparkling water” for '
+                 '“mineral sparkling water”, counts as the same subject) and every current gets '
+                 'its time axis.</div>')
         H.append('</section>'); h += 260
     if "09" in which and len(_tl_days) >= 2 and _tl_runs:
         H.append(open_sec("09") + head("09", "The Tideline",
@@ -8765,10 +8793,13 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                      f'<div class="tltrack" style="{_cols}">{seg}{dots}</div></div>')
         H.append('</div></div>')
         _live = sum(1 for r in _tl_runs if r.get("live"))
+        _rel = _tl.get("related") or []
         H.append(f'<div class="tlfoot">{_live} of {len(_tl_runs)} currents are still '
                  f'running. The rest appeared, held for a while and stopped — which is '
                  f'often the more useful signal: it says a story you were briefing '
-                 f'against has ended.</div>')
+                 f'against has ended.'
+                 + (f'<br>Includes this brand\'s related searches: {e(" · ".join(_rel))}.'
+                    if len(_rel) > 1 else '') + '</div>')
         H.append('</section>'); h += 260 + len(_tl_runs) * 46
 
     # Auto-fit: components.v1.html needs a fixed height, and any estimate is
