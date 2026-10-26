@@ -506,6 +506,30 @@ def json_lines(text: str) -> list:
 
 _CHECK_RANK = {"page": 0, "excerpt": 1, "": 2}
 
+# "CAGR 2020-2025": a figure about a stretch of years that is already over. It
+# can be published last month and still describe the past — Pat's ring-fence
+# is about what is happening NOW, so a multi-year history is not a current
+# number. A forecast ("2025-2030") reaches into the future and stays.
+_RANGE = re.compile(r"\b((?:19|20)\d{2})\s*(?:-|–|—|to|through|thru)\s*((?:19|20)?\d{2})\b",
+                    re.I)
+
+
+def is_history(text: str, now: Optional[datetime] = None) -> bool:
+    """A range of three or more years that ended before this year."""
+    y = _now(now).year
+    for m in _RANGE.finditer(text or ""):
+        a, b = int(m.group(1)), m.group(2)
+        b = int(b) if len(b) == 4 else int(str(a)[:2] + b)
+        if a < b and b - a >= 3 and b < y:
+            return True
+    return False
+
+
+# One page is one source of evidence, however many numbers it carries: three
+# IBISWorld figures from the same industry page read as three facts and are
+# really one. And no organisation gets more than two of the six tiles.
+PER_PAGE, PER_SOURCE = 1, 2
+
 
 def collect(read: dict, months: int = 0, iso: str = "", now: Optional[datetime] = None,
             limit: int = 8, sources: Optional[list] = None) -> tuple:
@@ -551,6 +575,8 @@ def collect(read: dict, months: int = 0, iso: str = "", now: Optional[datetime] 
             # published; page_age is when the page last changed, so a page last
             # touched before the window cannot hold a figure from inside it.
             why = "older than the window"
+        elif is_history(f"{claim} {fig}", now):
+            why = "describes a multi-year past period"
         if why:
             dropped.append({"figure": fig[:24], "claim": claim[:140], "url": url, "why": why})
             continue
@@ -573,7 +599,22 @@ def collect(read: dict, months: int = 0, iso: str = "", now: Optional[datetime] 
             "negative": is_negative(fig),
         })
     items.sort(key=lambda x: _CHECK_RANK.get(x["check"], 2))
-    return items[:limit], dropped
+    # Spread: the best figure of each page, at most two per organisation.
+    kept, per_page, per_src = [], {}, {}
+    for it in items:
+        pg, sn = norm_url(it["url"]), it["source"]
+        if per_page.get(pg, 0) >= PER_PAGE:
+            dropped.append({"figure": it["figure"], "claim": it["claim"][:140], "url": it["url"],
+                            "why": "another figure from the same page"})
+            continue
+        if per_src.get(sn, 0) >= PER_SOURCE:
+            dropped.append({"figure": it["figure"], "claim": it["claim"][:140], "url": it["url"],
+                            "why": f"a third figure from {sn}"})
+            continue
+        per_page[pg] = per_page.get(pg, 0) + 1
+        per_src[sn] = per_src.get(sn, 0) + 1
+        kept.append(it)
+    return kept[:limit], dropped
 
 
 def confirm_on_pages(items: list, fetch: Callable[[str], str], budget: float = 25.0,
@@ -619,9 +660,11 @@ def confirm_on_pages(items: list, fetch: Callable[[str], str], budget: float = 2
 # THE SEARCH
 # ══════════════════════════════════════════════════════════════════════════════
 def numbers_prompt(brand: str, category: str, product: str, market: str, months: int,
-                   competitors: str = "", now: Optional[datetime] = None) -> str:
+                   competitors: str = "", now: Optional[datetime] = None, focus: str = "") -> str:
     now = _now(now)
     subject = " ".join(dict.fromkeys(f"{category} {product}".split())).strip() or brand
+    if focus and focus.strip().lower() not in subject.lower():
+        subject += f" (specifically {focus.strip()})"
     where = market if market and market != "Worldwide" else "the world"
     c = cutoff(months, now)
     since = c.strftime("%d %B %Y").lstrip("0") if c else ""
@@ -635,13 +678,18 @@ def numbers_prompt(brand: str, category: str, product: str, market: str, months:
 
 Find hard numbers a strategist could put on a slide about {subject} in {where}{when}.
 
-Look for: market size, growth or decline, sales, prices, how many people do or believe something, adoption, spending. About the category and the people who buy it first; then {who} when there are figures.
+Aim for a MIX, one search per angle:
+- the market for the product itself: size, sales, growth or decline (the product, not a neighbouring industry such as the shops that sell it);
+- the people: how many do, buy, believe or worry about something (surveys);
+- {who}: share, sales, reach, sentiment.
 
 Your web search only reaches research houses and official statistics offices. Search 3 or 4 times, each from a different angle.
 
 Rules:
 - Every figure must come from a page your searches returned. Never from memory.
-{rule_date}- Copy the figure exactly as the page writes it. Give changes a sign: "+27%", "-12%".
+{rule_date}- The most recent period available. An average over several past years (e.g. "CAGR 2020-2025") is history: skip it. Forecasts are fine if labelled.
+- At most ONE figure per page and TWO per organisation.
+- Copy the figure exactly as the page writes it. Give changes a sign: "+27%", "-12%".
 - National figures for {where} first; a global figure is fine if the claim says it is global.
 - Up to 8 figures, strongest first. Fewer is fine. None is fine: say nothing rather than stretch.
 
@@ -689,7 +737,7 @@ def _call(client, model: str, prompt: str, tools: list, max_tokens: int = 3000,
 def search_numbers(client, model: str, *, brand: str, category: str, product: str = "",
                    market: str = "", iso: str = "", months: int = DEFAULT_WINDOW,
                    competitors: str = "", fallback_model: str = "", max_uses: int = 4,
-                   now: Optional[datetime] = None, limit: int = 8) -> dict:
+                   now: Optional[datetime] = None, limit: int = 8, focus: str = "") -> dict:
     """Search the trusted sources for figures. Never raises.
 
     Returns {"items", "dropped", "queries", "domains", "searches", "error",
@@ -704,7 +752,7 @@ def search_numbers(client, model: str, *, brand: str, category: str, product: st
     if not doms:
         out["error"] = "the trusted list is empty"
         return out
-    prompt = numbers_prompt(brand, category, product, market, months, competitors, now)
+    prompt = numbers_prompt(brand, category, product, market, months, competitors, now, focus)
     tool = {"type": "web_search_20250305", "name": "web_search", "max_uses": int(max_uses),
             "allowed_domains": doms}
     if iso and len(iso) == 2:

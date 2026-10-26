@@ -4995,13 +4995,21 @@ def _sv_gather_numbers(brand: str, category: str, product: str, market: str,
         except TypeError:
             client = anthropic.Anthropic(api_key=key)
         _mk = MARKETS.get(market, MARKETS[DEFAULT_MARKET])
-        out = _lhsrc.search_numbers(client, CLAUDE_MODEL_FAST, fallback_model=CLAUDE_MODEL,
-                                  brand=brand or "", category=category or "",
-                                  product=product or "", market=market or "",
-                                  iso=_mk.get("trends", ""), months=int(months or 0),
-                                  competitors=competitors or "", focus=focus or "")
+        _kw = dict(fallback_model=CLAUDE_MODEL, brand=brand or "", category=category or "",
+                   product=product or "", market=market or "", iso=_mk.get("trends", ""),
+                   months=int(months or 0), competitors=competitors or "")
+        # app.py and sources.py are uploaded by hand, one at a time. A sources.py
+        # older than this app has no `focus` — the search then runs without it
+        # instead of failing with a bare "TypeError" (Puma brief, Oct 23).
+        import inspect as _insp
+        if "focus" in _insp.signature(_lhsrc.search_numbers).parameters:
+            _kw["focus"] = focus or ""
+        out = _lhsrc.search_numbers(client, CLAUDE_MODEL_FAST, **_kw)
+        if focus and "focus" not in _kw:
+            out["note"] = "sources.py on the server is older than app.py — upload the new one"
     except Exception as exc:
-        return {"items": [], "error": f"the search failed ({type(exc).__name__})",
+        print(f"[numbers] failed: {type(exc).__name__}: {str(exc)[:200]}")
+        return {"items": [], "error": f"the search failed ({type(exc).__name__}: {str(exc)[:120]})",
                 "secs": round(_t.monotonic() - t0, 1)}
     if out.get("items"):
         try:
