@@ -691,6 +691,7 @@ Rules:
 - At most ONE figure per page and TWO per organisation.
 - Copy the figure exactly as the page writes it. Give changes a sign: "+27%", "-12%".
 - National figures for {where} first; a global figure is fine if the claim says it is global.
+- Niche products rarely have their own figures. If nothing exists for {subject} itself, use the closest wider market (for "mineral sparkling water": sparkling water, then bottled water) and say which in the claim — a figure about the wider market, labelled as such, beats no figure.
 - Up to 8 figures, strongest first. Fewer is fine. None is fine: say nothing rather than stretch.
 
 When you have finished searching, write each figure as two lines and nothing else:

@@ -8228,6 +8228,15 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                             f'{e(category)}' + (f' in the last {e(_wl)}' if _wl else '')
                             + ' that we could find again on its page.'
                             + (' A longer window may find some.' if _win and _win < 24 else ''))
+                # What came back and why it was set aside — so "nothing" is
+                # never a mystery (Rambler, Oct 26).
+                _drp = _nb.get("dropped") or []
+                if _drp and not _nb.get("error"):
+                    from collections import Counter as _Ctr
+                    _rs = _Ctr(d.get("why", "") for d in _drp).most_common(4)
+                    _why += (f' {len(_drp)} figure{"s" if len(_drp) != 1 else ""} came back and '
+                             f'{"were" if len(_drp) != 1 else "was"} set aside: '
+                             + "; ".join(f"{n} {e(w)}" for w, n in _rs) + '.')
                 H.append(f'<div class="lead">{_why}</div>'); h += 90
             if _unsure and _good and mode == "screen":
                 _n = len(_unsure)
@@ -8514,6 +8523,67 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             H.append('<div class="qempty">Nothing from this network in this scan.</div>')
         H.append('</section>'); h += 1040
 
+    # ── 09 · The Tideline ────────────────────────────────────────────────────
+    # The only section that is not about this scan. Everything above answers
+    # "what is happening"; this answers the question a single brief structurally
+    # cannot — WHICH OF THESE IS REAL. One appearance is a post. Five weeks of
+    # appearances is a shift. It reads without instructions, which is the whole
+    # design brief: a long bar is a long story.
+    _tl = res.get("_tideline") or {}
+    _tl_days, _tl_runs = _tl.get("days") or [], _tl.get("runs") or []
+    if "09" in which and mode == "screen" and _tl.get("first"):
+        _m9 = res.get("_meta") or {}
+        _what = " · ".join(x for x in (_m9.get("category", ""), _m9.get("product", "")) if x)
+        H.append(open_sec("09") + head("09", "The Tideline", "Which currents are actually holding"))
+        H.append('<div class="lead">The Tideline starts on the second day. This is the first '
+                 'day this brand has been searched on this subject' + (f' ({e(_what)})' if _what else '')
+                 + ' — run it again on another day (a close wording, like “sparkling water” for '
+                 '“mineral sparkling water”, counts as the same subject) and every current gets '
+                 'its time axis.</div>')
+        H.append('</section>'); h += 260
+    if "09" in which and len(_tl_days) >= 2 and _tl_runs:
+        H.append(open_sec("09") + head("09", "The Tideline",
+                                       "Which currents are actually holding"))
+        H.append('<div class="lead">Every current this search has produced, on a '
+                 'time axis. A filled dot is a scan where it appeared. The bar '
+                 'runs from first sighting to last — so persistence, not '
+                 'loudness, is what you are looking at.</div>')
+        _n = len(_tl_days)
+        _cols = f'grid-template-columns:repeat({_n},1fr)'
+        H.append('<div class="tlwrap"><div class="tl">')
+        H.append(f'<div class="tlhead"><div></div><div class="tldays" style="{_cols}">'
+                 + "".join(f'<div class="tlday">{e(d)}</div>' for d in _tl_days)
+                 + '</div></div>')
+        for r in _tl_runs:
+            _cells = r.get("cells") or []
+            _f, _l = int(r.get("first", 0)), int(r.get("last", 0))
+            # The rule underneath the dots, drawn as one cell-wide segment per
+            # column: solid inside the run, invisible outside it. Simpler than
+            # positioning an absolute bar and it cannot drift out of alignment
+            # with the dots, because it sits on the same grid.
+            seg = "".join(
+                ('<u></u>' if _f <= i <= _l else '<s></s>') for i in range(_n))
+            dots = "".join(
+                f'<span class="tldot{"" if on else " off"}"'
+                f' style="grid-column:{i+1}"></span>'
+                for i, on in enumerate(_cells))
+            _age = ("" if not r.get("live")
+                    else f'<i>{e("since " + str(r.get("span", "")))}</i>')
+            _stop = "" if r.get("live") else '<i>stopped</i>'
+            H.append(f'<div class="tlrow"><div class="tlname">{e(r.get("title",""))}'
+                     f'{_age}{_stop}</div>'
+                     f'<div class="tltrack" style="{_cols}">{seg}{dots}</div></div>')
+        H.append('</div></div>')
+        _live = sum(1 for r in _tl_runs if r.get("live"))
+        _rel = _tl.get("related") or []
+        H.append(f'<div class="tlfoot">{_live} of {len(_tl_runs)} currents are still '
+                 f'running. The rest appeared, held for a while and stopped — which is '
+                 f'often the more useful signal: it says a story you were briefing '
+                 f'against has ended.'
+                 + (f'<br>Includes this brand\'s related searches: {e(" · ".join(_rel))}.'
+                    if len(_rel) > 1 else '') + '</div>')
+        H.append('</section>'); h += 260 + len(_tl_runs) * 46
+
     if ("02T" in which and mode == "screen"
             and not (res.get("trade_summary") or res.get("trade_moves"))
             and not trade_sigs):
@@ -8527,6 +8597,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                  'months, or collection failed \u2014 the Trade section diagnostic '
                  'below the brief says which.</div>')
         H.append('</section>'); h += 320
+
     if "02T" in which and (res.get("trade_summary") or res.get("trade_moves")):
         # Trade press. Deliberately placed right after Consumer Insight: the two
         # are meant to be read against each other, and trade_vs_street below is
@@ -8741,66 +8812,6 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                      f'<div class="mbody">{e(p.get("the_move",""))}</div></div>')
         H.append('</div></section>'); h += 1000
 
-    # ── 09 · The Tideline ────────────────────────────────────────────────────
-    # The only section that is not about this scan. Everything above answers
-    # "what is happening"; this answers the question a single brief structurally
-    # cannot — WHICH OF THESE IS REAL. One appearance is a post. Five weeks of
-    # appearances is a shift. It reads without instructions, which is the whole
-    # design brief: a long bar is a long story.
-    _tl = res.get("_tideline") or {}
-    _tl_days, _tl_runs = _tl.get("days") or [], _tl.get("runs") or []
-    if "09" in which and mode == "screen" and _tl.get("first"):
-        _m9 = res.get("_meta") or {}
-        _what = " · ".join(x for x in (_m9.get("category", ""), _m9.get("product", "")) if x)
-        H.append(open_sec("09") + head("09", "The Tideline", "Which currents are actually holding"))
-        H.append('<div class="lead">The Tideline starts on the second day. This is the first '
-                 'day this brand has been searched on this subject' + (f' ({e(_what)})' if _what else '')
-                 + ' — run it again on another day (a close wording, like “sparkling water” for '
-                 '“mineral sparkling water”, counts as the same subject) and every current gets '
-                 'its time axis.</div>')
-        H.append('</section>'); h += 260
-    if "09" in which and len(_tl_days) >= 2 and _tl_runs:
-        H.append(open_sec("09") + head("09", "The Tideline",
-                                       "Which currents are actually holding"))
-        H.append('<div class="lead">Every current this search has produced, on a '
-                 'time axis. A filled dot is a scan where it appeared. The bar '
-                 'runs from first sighting to last — so persistence, not '
-                 'loudness, is what you are looking at.</div>')
-        _n = len(_tl_days)
-        _cols = f'grid-template-columns:repeat({_n},1fr)'
-        H.append('<div class="tlwrap"><div class="tl">')
-        H.append(f'<div class="tlhead"><div></div><div class="tldays" style="{_cols}">'
-                 + "".join(f'<div class="tlday">{e(d)}</div>' for d in _tl_days)
-                 + '</div></div>')
-        for r in _tl_runs:
-            _cells = r.get("cells") or []
-            _f, _l = int(r.get("first", 0)), int(r.get("last", 0))
-            # The rule underneath the dots, drawn as one cell-wide segment per
-            # column: solid inside the run, invisible outside it. Simpler than
-            # positioning an absolute bar and it cannot drift out of alignment
-            # with the dots, because it sits on the same grid.
-            seg = "".join(
-                ('<u></u>' if _f <= i <= _l else '<s></s>') for i in range(_n))
-            dots = "".join(
-                f'<span class="tldot{"" if on else " off"}"'
-                f' style="grid-column:{i+1}"></span>'
-                for i, on in enumerate(_cells))
-            _age = ("" if not r.get("live")
-                    else f'<i>{e("since " + str(r.get("span", "")))}</i>')
-            _stop = "" if r.get("live") else '<i>stopped</i>'
-            H.append(f'<div class="tlrow"><div class="tlname">{e(r.get("title",""))}'
-                     f'{_age}{_stop}</div>'
-                     f'<div class="tltrack" style="{_cols}">{seg}{dots}</div></div>')
-        H.append('</div></div>')
-        _live = sum(1 for r in _tl_runs if r.get("live"))
-        _rel = _tl.get("related") or []
-        H.append(f'<div class="tlfoot">{_live} of {len(_tl_runs)} currents are still '
-                 f'running. The rest appeared, held for a while and stopped — which is '
-                 f'often the more useful signal: it says a story you were briefing '
-                 f'against has ended.'
-                 + (f'<br>Includes this brand\'s related searches: {e(" · ".join(_rel))}.'
-                    if len(_rel) > 1 else '') + '</div>')
-        H.append('</section>'); h += 260 + len(_tl_runs) * 46
 
     # Auto-fit: components.v1.html needs a fixed height, and any estimate is
     # eventually wrong — long copy got clipped in 05 and 08. Streamlit renders
@@ -9406,6 +9417,36 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
                          f'<div class="qmeta">{e(q.get("context",""))}<br>{e(_eng)}</div></div>')
         parts.append('</div>')
 
+    # ── 09 · The Tideline ────────────────────────────────────────────────────
+    # A table on paper rather than the grid of dots the screen draws. Same data,
+    # a form that survives printing: filled and hollow marks per column read as
+    # clearly in black and white as the bar does on screen.
+    _tl = res.get("_tideline") or {}
+    _tld, _tlr = _tl.get("days") or [], _tl.get("runs") or []
+    if len(_tld) >= 2 and _tlr:
+        parts.append(_sec("09", "The Tideline", "Which currents are actually holding"))
+        parts.append('<div class="lead">Every current this search has produced, on a '
+                     'time axis. A filled mark is a scan where it appeared — so what '
+                     'you are reading is persistence, not loudness.</div>')
+        parts.append('<table><tr><th>Current</th>'
+                     + "".join(f'<th style="text-align:center;">{e(d)}</th>' for d in _tld)
+                     + '</tr>')
+        for r in _tlr:
+            _live = r.get("live")
+            _tag = (f'<span style="color:{GOLD};font-weight:700;"> · since '
+                    f'{e(str(r.get("span","")))}</span>' if _live
+                    else f'<span style="color:{FAINT};"> · stopped</span>')
+            cells = "".join(
+                f'<td style="text-align:center;color:'
+                + (f'{GOLD};font-weight:700;">●' if on else f'{FAINT};">·')
+                + '</td>' for on in (r.get("cells") or []))
+            parts.append(f'<tr><td>{e(r.get("title",""))}{_tag}</td>{cells}</tr>')
+        parts.append('</table>')
+        _lv = sum(1 for r in _tlr if r.get("live"))
+        parts.append(f'<div class="cbody" style="margin-top:14px;">{_lv} of {len(_tlr)} '
+                     f'currents are still running. The rest appeared, held for a while '
+                     f'and stopped — often the more useful signal.</div>')
+
     # ── 02T · The Trade Current ──────────────────────────────────────────────
     # Absent from the export until now, which is the section a client is most
     # likely to want on paper: it is the one with named outlets and links.
@@ -9602,35 +9643,6 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
                          f'<div class="sublbl">The move</div><div class="cbody">{e(p.get("the_move",""))}</div></div>')
         parts.append('</div>')
 
-    # ── 09 · The Tideline ────────────────────────────────────────────────────
-    # A table on paper rather than the grid of dots the screen draws. Same data,
-    # a form that survives printing: filled and hollow marks per column read as
-    # clearly in black and white as the bar does on screen.
-    _tl = res.get("_tideline") or {}
-    _tld, _tlr = _tl.get("days") or [], _tl.get("runs") or []
-    if len(_tld) >= 2 and _tlr:
-        parts.append(_sec("09", "The Tideline", "Which currents are actually holding"))
-        parts.append('<div class="lead">Every current this search has produced, on a '
-                     'time axis. A filled mark is a scan where it appeared — so what '
-                     'you are reading is persistence, not loudness.</div>')
-        parts.append('<table><tr><th>Current</th>'
-                     + "".join(f'<th style="text-align:center;">{e(d)}</th>' for d in _tld)
-                     + '</tr>')
-        for r in _tlr:
-            _live = r.get("live")
-            _tag = (f'<span style="color:{GOLD};font-weight:700;"> · since '
-                    f'{e(str(r.get("span","")))}</span>' if _live
-                    else f'<span style="color:{FAINT};"> · stopped</span>')
-            cells = "".join(
-                f'<td style="text-align:center;color:'
-                + (f'{GOLD};font-weight:700;">●' if on else f'{FAINT};">·')
-                + '</td>' for on in (r.get("cells") or []))
-            parts.append(f'<tr><td>{e(r.get("title",""))}{_tag}</td>{cells}</tr>')
-        parts.append('</table>')
-        _lv = sum(1 for r in _tlr if r.get("live"))
-        parts.append(f'<div class="cbody" style="margin-top:14px;">{_lv} of {len(_tlr)} '
-                     f'currents are still running. The rest appeared, held for a while '
-                     f'and stopped — often the more useful signal.</div>')
 
     parts.append('</div></body></html>')
     return "".join(parts)
@@ -11051,7 +11063,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _an2.button("Use this question", key="sv_asknext", on_click=_sv_set_q,
                         args=(_qn,), use_container_width=True)
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
-                                     ("00Q", "01", "01N", "02", "02T", "02N", "03", "04", "05", "06"),
+                                     ("00Q", "01", "01N", "02", "09", "02T", "02N", "03", "04", "05", "06"),
                                      "screen",
                                      trade_sigs=_res.get("_trade_sigs") or [],
                                      trend_ages=_ages, faded=_faded,
@@ -11282,7 +11294,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
     # ── Section 08 — rendered as an HTML component (blue block) ───────────
     if _res:
         # 08 and 09 together: the provocations, then the long view behind them.
-        _html_b, _h_b = _sv_sections(_res, _sigs, _disp_cat, ("08", "09"), "screen")
+        _html_b, _h_b = _sv_sections(_res, _sigs, _disp_cat, ("08",), "screen")
         with st.container(key="svfullB"):
             _sv_embed(_html_b, _h_b)
 
