@@ -6244,7 +6244,8 @@ _SV_SELLING = re.compile(
     # WhatsApp 07… We deliver countrywide" and a Myntra ad at "₹799!" as voices.
     r"|call\s*(?:or|/|&)\s*(?:text|whats\s?app)|whats\s?app\s*(?:me|us|\+?\d)"
     r"|we\s*deliver|delivery\s*available|cash\s*on\s*delivery|dm\s*for\s*(?:price|orders?)"
-    r"|pre-?order\s*now)\b"
+    r"|pre-?order\s*now|place\s*(?:your\s*)?orders?|pack\s*of\s*\d+|\d+(?:\.\d+)?\s*fl\.?\s*oz"
+    r"|call\s*\+?\(?\d[\d\s().-]{6,}\d)\b"
     r"|[$£€₹]\s?\d{3,}|\bR\$\s?\d{2,}"
     # a run of shoe or clothing sizes: 36//37//38//39, 7/8/9/10
     r"|\b\d{1,2}(?:\s*/{1,2}\s*\d{1,2}){3,}\b")
@@ -6286,6 +6287,13 @@ def _sv_reddit_thin(sig: dict, clean: str) -> bool:
         body = body[len(title):]
     body = re.sub(r"(?i)click here to view the full post", " ", body)
     return len(re.findall(r"[A-Za-z\u00c0-\u024f']{2,}", body)) < 12
+
+
+def _sv_stat_text(stat: str) -> str:
+    """The stat line as written for a reader: the model sometimes echoes the
+    prompt's own label ("qualitative: YouTube touts…", Oct 26)."""
+    return re.sub(r"(?i)^\s*(?:qualitative|quantitative|momentum)\s*(?:phrase)?\s*[:\-\u2014]\s*", "",
+                  str(stat or "")).strip()
 
 
 def _sv_is_job(txt: str) -> bool:
@@ -8386,7 +8394,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             _flink = (f' <a class="statlink" href="{e(_f["url"])}" target="_blank" '
                       f'title="{e(_f.get("source", ""))}'
                       f'{(" · " + e(_f["date"])) if _f.get("date") else ""}">↗</a>') if _f else ""
-            st_ = (f'<div class="hair"></div><div class="stat">{e(t.get("stat",""))}{_flink}</div>'
+            st_ = (f'<div class="hair"></div><div class="stat">{e(_sv_stat_text(t.get("stat","")))}{_flink}</div>'
                    if t.get("stat") else "")
             dd = f'<details><summary>Dig deeper</summary>{links}</details>' if links else ""
             # The age rides on the existing "Current" label rather than adding a
@@ -8579,6 +8587,8 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         # Which of the strong terms are brand names — they no longer carry a
         # post on their own. See _sv_brand_terms for why.
         _brands = _sv_brand_terms(_mt, _terms)
+        _own = set(_sv_terms(str(_mt.get("brand", "")))) & set(_terms)
+        _rivals = _brands - _own
         cands: dict = {}
         # WHICH GATE IS DOING THE KILLING.
         # A scan collected 8 TikToks and 12 Instagram posts and showed 1 and 0.
@@ -8644,9 +8654,21 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             else:
                 _rest = [c for c in lst if c not in _strong]
                 lst = _strong + _rest[:KEEP_MIN - len(_strong)]
+            _per_rival: dict = {}
             for i2, sg, _clean in lst:
                 if len(pools.get(k, [])) >= PER_NET:
                     break
+                # ONE RIVAL NEVER FILLS A NETWORK. The competitor searches made
+                # X six-for-six Topo Chico (Oct 26) — a deck about one rival is
+                # not "what people are saying" about the category. Three posts
+                # whose only brand is the same competitor, then it moves on.
+                _rv = frozenset(_sv_term_hits(sorted(_rivals), _clean)) if _rivals else frozenset()
+                if _rv and not (_sv_term_hits(sorted(_own), _clean) if _own else set()):
+                    if _per_rival.get(_rv, 0) >= 3:
+                        _rej.setdefault(k, {}).setdefault("the same rival, a fourth time", 0)
+                        _rej[k]["the same rival, a fourth time"] += 1
+                        continue
+                    _per_rival[_rv] = _per_rival.get(_rv, 0) + 1
                 _m = sg.get("meta") or {}
                 pools.setdefault(k, []).append(
                     {"sig": sg, "net": SRC.get(k, k.replace("_", " ").title()),
@@ -9540,7 +9562,7 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
         for t in tr[:6]:
             _f = _nfig(t.get("figure_index"))
             _cite = (f' <a href="{e(_f["url"])}" style="color:{GOLD};">↗</a>' if _f else "")
-            _st = f'<div class="stat">{e(t.get("stat",""))}{_cite}</div>' if t.get("stat") else ""
+            _st = f'<div class="stat">{e(_sv_stat_text(t.get("stat","")))}{_cite}</div>' if t.get("stat") else ""
             parts.append(f'<div class="card"><div class="clabel">{"Your current" if t.get("_custom") else "Current"}</div>'
                          f'<div class="ctitle">{e(t.get("title",""))}</div>'
                          f'<div class="cbody">{e(t.get("summary",""))}</div>{_st}</div>')
