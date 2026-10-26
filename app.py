@@ -5546,9 +5546,23 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             tally["older than the window"] = _old
     # MUST MENTION, on the way out: a signal that does not carry the focus is
     # not about this brief, however popular it is.
+    # …EXCEPT THE BRAND WITH ITS OWN PRODUCT. "Puma" + "sneakers" is about the
+    # brief even when the post never types "basketball"; requiring the focus
+    # word there left a Puma basketball brief with ten signals and no Puma.
+    _own = set(_sv_terms(brand or ""))
+    _prodw = set(_sv_expand(_sv_terms(product or "")))
+
+    def _focus_ok(txt: str) -> bool:
+        if _lhref.focus_hit(txt, _fitems):
+            return True
+        if _own and _prodw:
+            words = set(re.findall(r"[a-z0-9]+", txt.lower()))
+            return bool(_own & words) and bool(_prodw & {w.rstrip("s") for w in words} | (_prodw & words))
+        return False
+
     if _fitems:
         _keep = [sg for sg in out
-                 if _lhref.focus_hit(f"{sg.get('title', '')} {sg.get('content', '')}", _fitems)]
+                 if _focus_ok(f"{sg.get('title', '')} {sg.get('content', '')}")]
         if len(_keep) < len(out):
             tally["without the focus words"] = len(out) - len(_keep)
         out = _keep
@@ -5572,8 +5586,7 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             if _lhsrc and months and _lhsrc.too_old(s.get("timestamp"), months):
                 old += 1
                 continue
-            if _fitems and not _lhref.focus_hit(
-                    f"{s.get('title', '')} {s.get('content', '')}", _fitems):
+            if _fitems and not _focus_ok(f"{s.get('title', '')} {s.get('content', '')}"):
                 skipped += 1
                 continue
             out.append({"title": s.get("title", ""), "content": s.get("content", ""),
@@ -6328,6 +6341,39 @@ def _sv_terms(search: str) -> list:
     return list(dict.fromkeys(out))
 
 
+# Words people use for the same product. A post saying "the sneakers NBA
+# players wear" is about basketball shoes even though it never says "shoes".
+_SV_SYN = {
+    "shoes": ("sneakers", "kicks", "trainers", "shoe", "sneaker"),
+    "shoe": ("sneakers", "kicks", "trainers", "shoes", "sneaker"),
+    "sneakers": ("shoes", "kicks", "trainers", "sneaker", "shoe"),
+    "footwear": ("shoes", "sneakers", "kicks", "trainers"),
+    "trainers": ("sneakers", "shoes", "kicks"),
+    "beer": ("lager", "brew", "beers"), "lager": ("beer",),
+    "soda": ("pop", "soft drink"), "seltzer": ("sparkling", "fizzy"),
+}
+
+
+def _sv_expand(terms: list) -> list:
+    out = list(terms)
+    for t in terms:
+        for w in _SV_SYN.get(t, ()):
+            for x in _sv_terms(w) or [w]:
+                if x not in out:
+                    out.append(x)
+    return out
+
+
+# NOT FOR A CLIENT'S SCREEN. An NBA gossip thread made it into a Puma brief
+# (Oct 26) because it said "basketball players". Explicit language is never a
+# voice the brief quotes, whoever picked it.
+_SV_EXPLICIT = re.compile(r"(?i)\b(fuck\w*|porn\w*|nsfw|nudes?|onlyfans|sex\s*tape|hook-?up)\b")
+
+
+def _sv_is_explicit(txt: str) -> bool:
+    return bool(_SV_EXPLICIT.search(txt or ""))
+
+
 def _sv_tags(sig: dict) -> list:
     """The hashtags on a post, lowercased."""
     raw = f"{sig.get('title','')} {sig.get('content','')}"
@@ -6426,9 +6472,16 @@ def _sv_strong_terms(terms: list, meta: dict) -> set:
             if not (w.endswith("ing") or w.endswith("al") or w.endswith("ed")
                     or w.endswith("free") or w.endswith("less")):
                 strong.add(w)
+        for w in _sv_expand([prod[-1]]):      # "sneakers" carries "shoes"
+            strong.add(w)
     for n in (str(meta.get("brand", "")) + "," + str(meta.get("competitors", ""))).split(","):
         for w in _sv_terms(n):
             strong.add(w)
+    # Must mention is on every signal already, so it proves nothing on its own:
+    # with "basketball" as the focus, "basketball players" gossip is not about
+    # basketball SHOES. Focus words have to bring a friend.
+    if meta.get("focus"):
+        strong -= set(_sv_terms(str(meta.get("focus"))))
     return strong & set(terms)
 
 
@@ -8355,7 +8408,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             _s_ = sig(_t.get("i"))
             if _s_:
                 _tx_ = _sv_dehash(_sv_body(_s_))
-                if _sv_is_listing(_tx_) or _sv_is_job(_tx_):
+                if _sv_is_listing(_tx_) or _sv_is_job(_tx_) or _sv_is_explicit(_tx_):
                     continue
                 _ev.append((_sv_weight(_s_.get("meta") or {}), _t.get("lean", "mixed"), _s_))
         _ev.sort(key=lambda x: -x[0])
@@ -8511,8 +8564,8 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         PER_NET, ALL_SLOTS = 6, 6
 
         _mt = (res or {}).get("_meta", {}) or {}
-        _terms = _sv_terms(" ".join(str(_mt.get(k, "")) for k in
-                                    ("category", "product", "brand", "competitors")))
+        _terms = _sv_expand(_sv_terms(" ".join(str(_mt.get(k, "")) for k in
+                                    ("category", "product", "brand", "competitors"))))
         # Resolved BEFORE the curated loop, because the model's picks now have
         # to clear the language gate too. See the comment there.
         _lang = MARKETS.get(str(_mt.get("market", "")), {}).get("lang", "")
@@ -8557,7 +8610,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 continue
             # Nor is an advert or a job ad ever a voice, whoever picked it.
             _ctext = _sv_dehash(_sv_body(s_))
-            if _sv_is_listing(_ctext) or _sv_is_job(_ctext):
+            if _sv_is_listing(_ctext) or _sv_is_job(_ctext) or _sv_is_explicit(_ctext):
                 _dropped_curated += 1
                 continue
             k = str(s_.get("source", "") or "").lower() or "other"
@@ -8621,6 +8674,9 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 continue
             if _sv_is_job(_clean):
                 _no(k, "a job ad, not a voice")
+                continue
+            if _sv_is_explicit(_clean):
+                _no(k, "explicit, not for the brief")
                 continue
             if k == "reddit" and _sv_reddit_thin(sg, _clean):
                 _no(k, "a title with no post behind it")
@@ -11093,7 +11149,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                         except Exception:
                             continue
                         _txq = _sv_dehash(_sv_body(_sgq))
-                        if not (_sv_is_listing(_txq) or _sv_is_job(_txq)):
+                        if not (_sv_is_listing(_txq) or _sv_is_job(_txq) or _sv_is_explicit(_txq)):
                             _tq_ok.append(_t)
                     _qstats = _lhref.question_stats(
                         _signals[:60], _tq_ok,
