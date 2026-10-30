@@ -199,6 +199,10 @@ body.tap .pl.cur{ outline:2px solid var(--blue); outline-offset:1px; }
 .ln .spk.unk{ color:var(--meta); text-decoration:underline; text-decoration-style:dotted; }
 .ln .spk.you, .ln .spk.none{ color:var(--meta); }
 .ln .spk.none{ cursor:default; }
+.ln .spk.none[data-n]{ cursor:pointer; text-decoration:underline; text-decoration-style:dotted; }
+.ln .spk.none[data-n]:hover{ color:var(--blue); }
+.pp .row4{ display:flex; flex-wrap:wrap; gap:6px; margin-top:auto; padding-top:calc(var(--u) * .6); }
+.pp.orphan{ border-style:dashed; }
 .ln.introl .x{ font-style:italic; color:var(--meta); }
 .foot .tapk{ display:none; } body.tap .foot .tapk{ display:inline; }
 /* naming a voice (in the panel) */
@@ -508,6 +512,33 @@ body.room-mode .foot .tip{ color:var(--meta); }
 .op-wcard .ins{ margin-top:calc(var(--u) * 1); padding-top:calc(var(--u) * .8); border-top:1px solid var(--hair); font-size:max(12px, calc(var(--u) * 1.25)); line-height:1.35; }
 .op-wcard .ins b{ display:block; font-size:var(--tiny); font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--blue); margin-bottom:calc(var(--u) * .25); }
 .op-welcome{ justify-content:center; }
+/* the currents, without a chart: the brief's own cards */
+.op-curs{ display:grid; gap:calc(var(--u) * 1.2); margin-top:calc(var(--u) * 2); flex:1; min-height:0; }
+.op-ccard{ border:1.5px solid var(--ink); background:#fff; padding:calc(var(--u) * 1.5); display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
+.op-ccard .ag{ display:flex; justify-content:space-between; align-items:center; gap:calc(var(--u) * 1); font-size:var(--tiny); font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--blue); }
+.op-heat{ display:flex; gap:calc(var(--u) * .3); flex:none; }
+.op-heat i{ width:max(8px, calc(var(--u) * .7)); height:max(8px, calc(var(--u) * .7)); border-radius:50%; background:var(--track); }
+.op-heat i.on{ background:var(--blue); }
+.op-ccard .t2{ font-size:calc(var(--u) * 2.1); line-height:1.08; font-weight:700; letter-spacing:-.015em; margin-top:calc(var(--u) * 1); }
+.op-ccard .s2{ font-size:max(12px, calc(var(--u) * 1.05)); line-height:1.42; color:var(--body); margin-top:auto; padding-top:calc(var(--u) * 1);
+  display:-webkit-box; -webkit-line-clamp:6; -webkit-box-orient:vertical; overflow:hidden; }
+.op-ccard .seen{ font-size:var(--tiny); font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--meta); margin-top:calc(var(--u) * .8); }
+/* tensions: white cards on blue */
+.op-tens{ display:grid; gap:calc(var(--u) * 1.2); margin-top:calc(var(--u) * 2.2); flex:1; min-height:0; }
+.op-tcard{ background:#fff; color:var(--ink); padding:calc(var(--u) * 1.5); min-width:0; min-height:0; overflow:hidden; display:flex; flex-direction:column; }
+.op-tcard .t2{ font-size:calc(var(--u) * 2.1); line-height:1.08; font-weight:700; letter-spacing:-.015em; }
+.op-tcard .sides{ font-size:max(12px, calc(var(--u) * 1.15)); line-height:1.4; color:var(--body); margin-top:calc(var(--u) * 1); }
+.op-tcard .opn{ margin-top:auto; padding-top:calc(var(--u) * .8); border-top:1px solid var(--hair); font-size:max(12px, calc(var(--u) * 1.15)); line-height:1.35; }
+.op-tcard .opn b{ display:block; font-size:var(--tiny); font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--blue); margin-bottom:calc(var(--u) * .25); }
+/* one provocation, as big as the screen allows */
+.op-prov{ justify-content:center; }
+.op-pq{ font-size:calc(var(--u) * 5); line-height:1.04; font-weight:700; letter-spacing:-.03em; color:var(--blue); margin-top:calc(var(--u) * 1.2); max-width:17em;
+  display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+.op-pn{ margin-top:calc(var(--u) * 2.2); font-size:var(--tiny); font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--meta); }
+/* what they came to explore, when no problems were written down */
+.op-objonly{ justify-content:center; }
+.op-objq{ font-size:calc(var(--u) * 4); line-height:1.08; font-weight:700; letter-spacing:-.025em; color:var(--ink); margin-top:calc(var(--u) * 1.2); max-width:20em;
+  display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden; }
 .op-welcome .op-h1{ font-size:calc(var(--u) * 6); max-width:14em; }
 .op-foot{ display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:calc(var(--u) * 2.4); row-gap:calc(var(--u) * .55);
   padding:calc(var(--u) * .9) var(--px) calc(var(--u) * .8); border-top:1.5px solid var(--ink); align-items:center; }
@@ -765,6 +796,11 @@ body.room-mode .foot .tip{ color:var(--meta); }
           <div class="op-chart" id="op-fade-chart"><svg></svg><div class="labels"></div></div></div>
       </div>
     </section>
+    <section class="op-scr op-currents" data-id="cur" aria-label="The currents">
+      <div class="op-lbl">The currents</div>
+      <h1 class="op-h1" id="op-cur-h"></h1>
+      <div class="op-curs" id="op-curs"></div>
+    </section>
     <section class="op-scr op-blue op-voice" data-id="voice" aria-label="What people are saying">
       <div class="op-lbl">What people are saying</div>
       <blockquote class="op-bq" id="op-vq"></blockquote>
@@ -775,6 +811,20 @@ body.room-mode .foot .tip{ color:var(--meta); }
       <h1 class="op-h1" id="op-table-h"></h1>
       <div class="op-qs" id="op-qs"></div>
       <div class="op-obj" id="op-objw"><span class="op-lbl">What they came to explore</span><p id="op-obj"></p></div>
+    </section>
+    <section class="op-scr op-objonly" data-id="obj" aria-label="What they came to explore">
+      <div class="op-lbl">What they came to explore</div>
+      <p class="op-objq" id="op-objq"></p>
+    </section>
+    <section class="op-scr op-blue op-tension" data-id="ten" aria-label="Tensions">
+      <div class="op-lbl">Tensions</div>
+      <h1 class="op-h1">The contradictions people are living inside</h1>
+      <div class="op-tens" id="op-tens"></div>
+    </section>
+    <section class="op-scr op-prov" data-id="prov" aria-label="A provocation">
+      <div class="op-lbl">A provocation</div>
+      <p class="op-pq" id="op-pq"></p>
+      <div class="op-pn" id="op-pn"></div>
     </section>
     <section class="op-scr op-blue op-off" data-id="off" aria-label="Off the table">
       <div class="op-lbl">Off the table</div>
@@ -968,7 +1018,8 @@ body.room-mode .foot .tip{ color:var(--meta); }
              change: change, riser: riser, peaks: peaks, faller: faller, order: order, scans: scans, spike: sp, titles: c.titles || [] };
   }
   function colorOf(k) { return RANK_C[CH.order.indexOf(k)] || "#999999"; }
-  function titleOf(k) { return CH.titles[k] || (S.currents[k] || {}).t || ("Current " + (k + 1)); }
+  function curOf(k) { var m = CH && CH.c.cur_idx; return S.currents[m ? m[k] : k] || {}; }
+  function titleOf(k) { return CH.titles[k] || curOf(k).t || ("Current " + (k + 1)); }
   function tookLead() { return CH.took !== null && CH.took >= CH.N - 45; }
   function delta30(k) {
     var d = Math.round(CH.shares[CH.N - 1][k] - CH.shares[CH.ago][k]);
@@ -1110,6 +1161,7 @@ body.room-mode .foot .tip{ color:var(--meta); }
       return '<div class="ln' + (l.note ? " note" : "") + (l.unread ? " unread" : "") + (l.intro ? " introl" : "") + (isNew ? " new" : "") + '"><span class="tt">' + esc(l.t) + '</span><span class="x">' + whoHTML(l) + cliched(l.x) + "</span></div>"; }).join("")
       || '<div class="empty" style="padding-bottom:6px">Nothing yet. Start the microphone above, or type what was said — on a video call, paste the other side from the captions.</div>';
     list.querySelectorAll(".spk[data-id]").forEach(function (w) { w.onclick = function () { openNamePanel(w.dataset.id); }; });
+    list.querySelectorAll(".spk.none[data-n]").forEach(function (w) { w.onclick = function () { openAssignPanel(+w.dataset.n); }; });
     $("room-meta").textContent = Number(S.words).toLocaleString("en-US") + " words · " + S.n_lines + " lines";
   }
 
@@ -1135,10 +1187,12 @@ body.room-mode .foot .tip{ color:var(--meta); }
   }
   function pById(id) { var ps = people(); for (var i = 0; i < ps.length; i++) if (ps[i].id === id) return ps[i]; return null; }
   function curTap() { var t = pendingOf("tap"); return t ? t.who : (S.tap_who || ""); }
+  function assignedOf(n) { var w = null; outbox.forEach(function (m) { if (m.type === "assign" && m.n === n) w = m.who || ""; }); return w; }
+  function lineWho(l) { var a = assignedOf(l.n); return a !== null ? a : (l.w || ""); }
   function whoHTML(l) {
     if (l.note) return "";
-    var p = l.w ? pById(l.w) : null;
-    if (!p) return tapMode() ? '<span class="spk none">—</span>' : "";
+    var w = lineWho(l), p = w ? pById(w) : null;
+    if (!p) return tapMode() ? '<span class="spk none"' + (typeof l.n === "number" ? ' data-n="' + l.n + '" title="Who said this? Click to say"' : "") + ">—</span>" : "";
     var cls = !p.name && !p.you ? " unk" : p.you ? " you" : "";
     return '<span class="spk' + cls + '" data-id="' + esc(p.id) + '" title="' + esc(p.name ? p.name + (p.role ? " · " + p.role : "") : "Click to name this voice") + '">' + esc(p.short) + "</span>";
   }
@@ -1161,6 +1215,25 @@ body.room-mode .foot .tip{ color:var(--meta); }
     });
   }
   function tapWho(id) { push("tap", { who: id || "", at: Date.now() }); rPlayers(); }
+  // A LINE NOBODY WAS SELECTED FOR gets an owner by hand — on the board or in
+  // the round of introductions — and keeps it (Python: assign).
+  function assignChips(n) {
+    return people().map(function (p) { return '<button class="mini" data-to="' + esc(p.id) + '">' + esc(p.label) + "</button>"; }).join("")
+      + '<button class="mini solid" data-new="1">＋ New person</button>';
+  }
+  function wireAssign(box, n, after) {
+    box.querySelectorAll("[data-to]").forEach(function (b) { b.onclick = function () { push("assign", { n: n, who: b.dataset.to }); after(); }; });
+    box.querySelectorAll("[data-new]").forEach(function (b) { b.onclick = function () { push("person_add", { assign_n: n }); after(); }; });
+  }
+  function openAssignPanel(n) {
+    var l = (S.lines || []).filter(function (x) { return x.n === n; })[0]; if (!l) return;
+    L.panel = "name:assign";
+    $("p-lbl").textContent = "Who said this?"; $("p-title").textContent = "Put a name on a line";
+    $("p-body").innerHTML = '<div class="ln"><span class="tt">' + esc(l.t) + '</span><span class="x">' + esc(l.x) + "</span></div>"
+      + '<div class="twins"><b>Said by</b>' + assignChips(n) + "</div>";
+    $("scrim").classList.add("on");
+    wireAssign($("p-body"), n, function () { closePanel(); afterPeople(); });
+  }
   function afterPeople() { rPlayers(); rRoom(); renderIntro(); }
   function openNamePanel(id) {
     var p = pById(id); if (!p || !S) return;
@@ -1230,6 +1303,10 @@ body.room-mode .foot .tip{ color:var(--meta); }
         + '<form data-id="' + esc(p.id) + '"><input name="n" placeholder="Name" value="' + esc(p.name) + '" aria-label="Name" autocomplete="off">'
         + '<input name="r" placeholder="Role (optional)" value="' + esc(p.role) + '" aria-label="Role" autocomplete="off"><div class="row3"><button class="btnp" type="submit">Save</button></div></form></div>';
     });
+    if (tap) (S.lines || []).filter(function (l) { return l.intro && !l.note && !lineWho(l); }).slice(-2).forEach(function (l) {
+      cards.push('<div class="pp needs orphan" data-n="' + l.n + '"><div class="vk"><span>Nobody was selected</span><span>Who said it?</span></div>'
+        + '<div class="hq">“' + esc(l.x) + '”</div><div class="row4">' + assignChips(l.n) + "</div></div>");
+    });
     for (var k = 0; k < adds; k++) cards.push('<div class="pp listen"><div class="vk"><span>New voice</span><b><i></i>Speak now</b></div><div class="nm2">…</div></div>');
     if (tap) cards.push('<button class="pp slot add" id="in-next" type="button"><div class="vk"><span>Before each person</span><span>N</span></div><div class="nm2">＋ Next person</div></button>');
     else if (ps.length < 12) cards.push('<div class="pp slot"><div class="vk"><span>Next voice</span></div><div class="nm2">Joins when they speak.</div></div>');
@@ -1245,6 +1322,7 @@ body.room-mode .foot .tip{ color:var(--meta); }
     grid.querySelectorAll("[data-edit]").forEach(function (b) { b.onclick = function () { IN.edit[b.dataset.edit] = 1; renderIntro(); }; });
     grid.querySelectorAll("[data-you]").forEach(function (b) { b.onclick = function () { push("you", { id: b.dataset.you }); afterPeople(); }; });
     if ($("in-next")) $("in-next").onclick = nextPerson;
+    grid.querySelectorAll(".orphan").forEach(function (c) { wireAssign(c, +c.dataset.n, afterPeople); });
   }
   $("in-go").onclick = closeIntro;
   $("in-skip").onclick = closeIntro;
@@ -1315,10 +1393,82 @@ body.room-mode .foot .tip{ color:var(--meta); }
   function noBrief(what) { return '<div class="empty">' + what + " come from the latest brief for " + esc(S.client.name) + ". Run one before the session and they fill this tile.</div>"; }
   function curNote() {
     var st = (S.chart || {}).status;
-    if (st === "loading") return '<div class="cnote">Reading three months of news for the race<span class="run"></span></div>';
+    if (st === "loading") return '<div class="cnote">' + esc(bfNote() || "Reading three months of news for the race — a few minutes") + '<span class="run"></span></div>';
     if (st === "quiet") return '<div class="cnote">Too little news on these currents to draw a race — they live on social here.</div>';
-    if (st === "failed") return '<div class="cnote">The news race is unavailable right now — GDELT did not answer. It asks again in a few minutes.</div>';
+    if (st === "failed") return '<div class="cnote">' + esc(bfNote() || raceFail()) + (BF.busy ? '<span class="run"></span>' : "") + "</div>";
     return "";
+  }
+  // ── The race, asked for from this browser too ────────────────────────────
+  // GDELT answers about two heavy questions every few minutes per address, and
+  // a race needs three lines. This browser is another address. So while the
+  // server asks from the first line on, the panel asks for the MISSING lines
+  // from the last one backwards — they meet in the middle — and hands each line
+  // to Python the moment it lands (Python checks every point, keeps it, and
+  // draws the race when the last line is in). Patient with refusals; at most
+  // three rounds per race, three minutes apart.
+  var BF = { key: "", busy: false, rounds: 0, nextAt: 0, line: 0 };
+  var BF_GAP = 8000, BF_WAITS = [20000, 45000], BF_PAUSE = 180000;
+  function bfWait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function bfLine(c, q, attempt) {
+    var url = c.gdelt + "?query=" + encodeURIComponent(q + (c.country ? " sourcecountry:" + c.country : ""))
+      + "&mode=timelinevolraw&format=json&timespan=3m&timelinesmooth=7";
+    var ctl = window.AbortController ? new AbortController() : null;
+    var timer = ctl ? setTimeout(function () { ctl.abort(); }, 90000) : 0;
+    return fetch(url, ctl ? { signal: ctl.signal } : {}).then(function (r) { return r.text(); }).then(function (t) {
+      clearTimeout(timer);
+      var d = JSON.parse(t), tl = (d.timeline || [])[0];        // a refusal is plain text: it throws, and waits below
+      if (!tl && !d.query_details) throw new Error("no timeline");
+      return tl ? (tl.data || []).map(function (p) { return [String(p.date || ""), +p.value || 0]; }) : [];
+    }).catch(function (e) {
+      clearTimeout(timer);
+      if (attempt >= BF_WAITS.length) throw e;
+      return bfWait(BF_WAITS[attempt]).then(function () { return bfLine(c, q, attempt + 1); });
+    });
+  }
+  function stillNeeded(key, i) { var c = (S && S.chart) || {}; return c.key === key && (c.need || []).indexOf(i) >= 0; }
+  function raceFromBrowser() {
+    var c = (S && S.chart) || {};
+    if (c.bf) { BF_GAP = c.bf.gap; BF_WAITS = c.bf.waits; BF_PAUSE = c.bf.slow; }      // the test bench's pace
+    var need = (c.need || []).slice();
+    if (!need.length || BF.busy || !c.key || !c.gdelt || !(c.queries || []).length || !window.fetch) return;
+    if (BF.key !== c.key) { BF.key = c.key; BF.rounds = 0; BF.nextAt = 0; }
+    if (BF.rounds >= 3 || Date.now() < BF.nextAt) return;
+    BF.busy = true; BF.rounds += 1;
+    var key = c.key, chain = Promise.resolve(), asked = 0;
+    need.reverse().forEach(function (i) {
+      chain = chain.then(function () {
+        if (!stillNeeded(key, i)) return null;                   // the server brought it meanwhile
+        return (asked++ ? bfWait(BF_GAP) : Promise.resolve()).then(function () {
+          if (!stillNeeded(key, i)) return null;
+          BF.line = i + 1; rCur(); if (OP.on) opBuild(false);
+          var cc = S.chart || {}, q = (cc.queries || [])[i];
+          if (!q) return null;
+          return bfLine(cc, q, 0).then(function (pts) {
+            push("chart_raw", { key: key, i: i, line: pts, scope: cc.country || "global" });
+          }, function () { /* this one stays missing: on to the next */ });
+        });
+      });
+    });
+    chain.then(function () { BF.busy = false; BF.line = 0; BF.nextAt = Date.now() + BF_PAUSE; rCur(); if (OP.on) opBuild(false); });
+    rCur(); if (OP.on) opBuild(false);
+  }
+  function bfNote() {
+    if (!BF.busy) return "";
+    var c = S.chart || {}, n = (c.queries || []).length;
+    return "Reading the news race — this browser is helping GDELT along" + (BF.line && n ? " (line " + BF.line + " of " + n + ")" : "") + "; a few minutes.";
+  }
+  function partialNote() {
+    var c = S.chart || {};
+    return c.partial && (c.missing || []).length ? " · GDELT has not returned “" + c.missing.join("”, “") + "” yet — the race shows the other " + (WORDS[(c.titles || []).length] || (c.titles || []).length).toLowerCase() + ", and asks again" : "";
+  }
+  function staleNote() {
+    var c = S.chart || {};
+    return c.stale && c.asof ? " · as of " + c.asof + " — GDELT is not answering today; a fresh read is on its way" : "";
+  }
+  function raceFail() {
+    var c = S.chart || {};
+    return "The news race is unavailable right now — " + (c.reason || "GDELT did not answer") + ". It asks again in "
+      + (c.retry_min ? "about " + c.retry_min + " minutes" : "a few minutes") + ".";
   }
   function curViews() { return CH ? ["race", CH.riser >= 0 ? "rise" : null, CH.faller >= 0 ? "fade" : null].filter(Boolean) : []; }
   function rCur() {
@@ -1422,10 +1572,11 @@ body.room-mode .foot .tip{ color:var(--meta); }
     if (changed("hud", [S.client, S.phase, S.phases, S.stats, pend(["phase"])])) rHud();
     if (changed("table", [S.table, S.queue, pend(["table", "next"])])) rTable();
     document.body.classList.toggle("tap", tapMode());
-    var who = pend(["name", "merge", "person_del", "you"]), ppl = (S.people || []).map(function (p) { return [p.id, p.short, p.name, p.you]; });
+    var who = pend(["name", "merge", "person_del", "you", "assign"]), ppl = (S.people || []).map(function (p) { return [p.id, p.short, p.name, p.you]; });
     if (changed("room", [S.lines, S.n_lines, S.words, S.cliches.map(function (c) { return c.w; }), ppl, S.voice_mode, who])) rRoom();
     if (changed("players", [S.people, S.now_who, S.tap_who, S.voice_mode, who, pend(["tap"])])) rPlayers();
-    if (changed("intro", [S.people, S.voice_mode, S.client, who, pend(["person_add", "intro"])])) renderIntro();
+    if (changed("intro", [S.people, S.voice_mode, S.client, who, pend(["person_add", "intro"]),
+                          (S.lines || []).filter(function (l) { return l.intro; }).map(function (l) { return [l.n, l.w]; })])) renderIntro();
     if (!IN.init) { IN.init = true; if (S.intro && S.intro.on && wentLive()) showIntro(); }
     if (changed("ear", [S.readings, S.reading_now, S.ear_note, S.ear_err, S.quiet_at, S.auto, S.scan_paused, S.scans.map(function (x) { return x.w; }), pend(["auto"])])) rEar();
     if (changed("quest", [S.quest, pend(["quest"])])) rQuest();
@@ -1433,7 +1584,9 @@ body.room-mode .foot .tip{ color:var(--meta); }
     var cs = S.chart || {}, chartNew = changed("chart", [cs.status, cs.fetched_at, cs.dates ? cs.dates[cs.dates.length - 1] : "", cs.titles]);
     if (chartNew) CH = chartModel(cs);
     if (changed("cur", [S.currents, S.brief_label]) || chartNew) rCur();
-    if (changed("op", [S.client, S.objective, S.quest.map(function (q) { return q.t; }), S.voices, S.cliches.map(function (c) { return [c.w, c.why, c.ins]; }), S.currents.map(function (c) { return [c.t, c.s]; })]) || chartNew) opBuild(chartNew);
+    if (changed("op", [S.client, S.objective, S.quest.map(function (q) { return q.t; }), S.voices, S.cliches.map(function (c) { return [c.w, c.why, c.ins]; }), S.currents.map(function (c) { return [c.t, c.s, c.age, c.heat]; }),
+                      S.tensions, S.starters.map(function (p) { return p.q; }), (S.chart || {}).status, (S.chart || {}).reason]) || chartNew) opBuild(chartNew);
+    raceFromBrowser();
     if (changed("ten", [S.tensions])) rTen();
     if (changed("prov", [S.starters])) rProv();
     if (changed("off", [S.cliches])) rOff();
@@ -1477,13 +1630,13 @@ body.room-mode .foot .tip{ color:var(--meta); }
     return '<p class="psub">Share of news coverage among today’s currents · ' + esc(scopeLbl()) + ' · last 90 days · ○ a Lighthouse scan saw it</p>'
       + '<div class="pchart" id="pchart"><svg></svg><div class="labels"></div></div>'
       + '<div class="pcards">' + CH.order.map(function (k) {
-          var c = S.currents[k] || {}, d = delta30(k);
+          var c = curOf(k), d = delta30(k);
           var extra = k === CH.riser ? " · coverage +" + Math.round(CH.change[k] * 100) + "% in 30 days" : k === CH.faller ? " · " + MINUS + Math.round(-CH.peaks[k].drop * 100) + "% since its peak" : "";
           return '<div class="pcard" style="border-top-color:' + colorOf(k) + '"><div class="ag"><span>' + esc(c.age || "") + '</span><span class="heat" title="In the last 6 scans">' + (c.heat || []).map(function (h) { return '<i class="' + (h ? "on" : "") + '"></i>'; }).join("") + "</span></div>"
             + "<h4>" + esc(titleOf(k)) + "</h4><p>" + esc(c.s || "") + "</p>"
             + '<div class="nums"><span style="color:' + colorOf(k) + '">' + Math.round(CH.shares[CH.N - 1][k]) + '% of the race</span> · <span class="d ' + d.cls + '">' + d.long + "</span>" + extra + "</div></div>"; }).join("") + "</div>"
       + sp
-      + '<p class="pnote">News attention: GDELT, articles a day that match each current, 7-day average' + (CH.c.queries && CH.c.queries.length ? " — searched as " + CH.c.queries.map(esc).join(" · ") : "")
+      + '<p class="pnote">News attention: GDELT, articles a day that match each current, 7-day average' + esc(staleNote() + partialNote()) + (CH.c.queries && CH.c.queries.length ? " — searched as " + CH.c.queries.map(esc).join(" · ") : "")
       + ". The dots are the days our own scans found each current." + (S.brief_url ? ' <a href="' + esc(S.brief_url) + '" target="_blank" rel="noopener">Open the brief ↗</a>' : "") + "</p>";
   }
   function drawPanelChart(animate) {
@@ -1499,8 +1652,9 @@ body.room-mode .foot .tip{ color:var(--meta); }
   function closePanel() { L.panel = ""; $("scrim").classList.remove("on"); }
 
   // ── The opening — the loop on the room's TV before going live, and in breaks ──
-  var OP = { screens: [], cur: -1, t0: 0, paused: false, pausedAt: 0, hiddenAt: 0, dur: 12000, on: false, qi: -1, raf: 0, idleT: 0, built: "" };
-  var OP_NAMES = { race: "The race", rise: "Rising", fade: "Fading", voice: "Voices", table: "On the table", off: "Off the table", welcome: "The session" };
+  var OP = { screens: [], cur: -1, t0: 0, paused: false, pausedAt: 0, hiddenAt: 0, dur: 12000, on: false, qi: -1, pi: -1, raf: 0, idleT: 0, built: "" };
+  var OP_NAMES = { race: "The race", rise: "Rising", fade: "Fading", cur: "The currents", voice: "Voices", table: "On the table", obj: "Their question",
+                   ten: "Tensions", prov: "Provocation", off: "Off the table", welcome: "The session" };
   var WORDS = ["No", "One", "Two", "Three", "Four", "Five"];
   function unitPx() { return Math.min(window.innerWidth / 100, window.innerHeight * 1.7778 / 100); }
   function opFact(v, label, cls) { return "<div><b" + (cls ? ' class="' + cls + '"' : "") + ">" + esc(v) + "</b><span>" + esc(label) + "</span></div>"; }
@@ -1518,7 +1672,7 @@ body.room-mode .foot .tip{ color:var(--meta); }
       if (r >= 0) {
         $("op-rise-h").textContent = titleOf(r);
         $("op-rise-n").textContent = "+" + Math.round(CH.change[r] * 100) + "%";
-        $("op-rise-sum").textContent = (S.currents[r] || {}).s || "";
+        $("op-rise-sum").textContent = curOf(r).s || "";
         $("op-rise-seen").textContent = CH.scans.length ? "○ In " + seenIn(r) + " of our last " + CH.scans.length + " scans" : "";
         $("op-rise-facts").innerHTML = opFact(Math.round(CH.V[r][N - 1]), "a day now") + opFact(Math.round(CH.V[r][CH.ago]), "a day, 30 days ago") + opFact(Math.round(CH.shares[N - 1][r]) + "%", "of the race");
         screens.push("rise");
@@ -1528,11 +1682,25 @@ body.room-mode .foot .tip{ color:var(--meta); }
         $("op-fade-h").textContent = titleOf(f);
         $("op-fade-n").textContent = MINUS + Math.round(-pk.drop * 100) + "%";
         $("op-fade-cap").textContent = "news coverage since its peak on " + dayLbl(CH.dates[pk.i]);
-        $("op-fade-sum").textContent = (S.currents[f] || {}).s || "";
+        $("op-fade-sum").textContent = curOf(f).s || "";
         $("op-fade-seen").textContent = !lastScan ? "" : lastScan.seen.indexOf(f) >= 0 ? "News is moving on — our last scan still found it" : "Gone from our last scan as well";
         $("op-fade-facts").innerHTML = opFact(Math.round(pk.v), "a day at the peak") + opFact(Math.round(CH.V[f][N - 1]), "a day now", "neg") + opFact(Math.round(CH.shares[N - 1][f]) + "%", "of the race" + (dp < 0 ? " · " + MINUS + (-dp) + " pts" : ""));
         screens.push("fade");
       }
+    } else if (S.currents.length) {
+      // NO RACE (no news lines yet, or GDELT failed): the currents still open
+      // the loop — straight from the brief, with how often our scans saw them.
+      var cs = S.currents.slice(0, 3);
+      $("op-cur-h").textContent = (WORDS[cs.length] || cs.length) + " current" + (cs.length === 1 ? "" : "s") + " from the latest brief";
+      $("op-curs").style.gridTemplateColumns = "repeat(" + cs.length + ", minmax(0, 1fr))";
+      $("op-curs").innerHTML = cs.map(function (c) {
+        var hs = c.heat || [], on = hs.filter(Boolean).length;
+        return '<div class="op-ccard"><div class="ag"><span>' + esc(c.age || "") + '</span><span class="op-heat">'
+          + hs.map(function (h) { return '<i class="' + (h ? "on" : "") + '"></i>'; }).join("") + "</span></div>"
+          + '<div class="t2">' + esc(c.t) + "</div>" + (c.s ? '<div class="s2">' + esc(c.s) + "</div>" : "")
+          + (hs.length ? '<div class="seen">In ' + on + " of the last " + hs.length + " scans</div>" : "") + "</div>";
+      }).join("");
+      screens.push("cur");
     }
     if (S.voices.length) screens.push("voice");
     var qs = S.quest.slice(0, 5);
@@ -1542,7 +1710,20 @@ body.room-mode .foot .tip{ color:var(--meta); }
       $("op-qs").innerHTML = qs.map(function (q, k) { return '<div class="op-qcard"><div class="n">0' + (k + 1) + '</div><div class="t2">' + esc(q.t) + "</div></div>"; }).join("");
       $("op-obj").textContent = S.objective || ""; $("op-objw").hidden = !S.objective;
       screens.push("table");
+    } else if (S.objective) {
+      $("op-objq").textContent = S.objective;
+      screens.push("obj");
     }
+    var ts = S.tensions.slice(0, 3);
+    if (ts.length) {
+      $("op-tens").style.gridTemplateColumns = "repeat(" + ts.length + ", minmax(0, 1fr))";
+      $("op-tens").innerHTML = ts.map(function (t) {
+        return '<div class="op-tcard"><div class="t2">' + esc(t.t) + "</div>" + (t.a || t.b ? '<div class="sides">' + esc(t.a) + " ↔ " + esc(t.b) + "</div>" : "")
+          + (t.o ? '<div class="opn"><b>Opening</b>' + esc(t.o) + "</div>" : "") + "</div>";
+      }).join("");
+      screens.push("ten");
+    }
+    if (S.starters.length) screens.push("prov");
     var cl = S.cliches.slice(0, 3);
     if (cl.length) {
       $("op-words").style.gridTemplateColumns = "repeat(" + cl.length + ", minmax(0, 1fr))";
@@ -1555,9 +1736,9 @@ body.room-mode .foot .tip{ color:var(--meta); }
       screens.push("welcome");
     }
     var st = (S.chart || {}).status;
-    $("op-src").textContent = CH ? "News attention: share of coverage among today’s currents — GDELT, 90 days, 7-day average · ○ a Lighthouse scan saw this current"
-      : st === "loading" ? "Reading three months of news for the race — it joins the loop when it lands."
-      : st === "quiet" ? "Too little news on these currents to draw a race." : st === "failed" ? "The news race is unavailable right now." : "";
+    $("op-src").textContent = CH ? "News attention: share of coverage among today’s currents — GDELT, 90 days, 7-day average · ○ a Lighthouse scan saw this current" + staleNote() + partialNote()
+      : st === "loading" ? (bfNote() || "Reading three months of news for the race — GDELT is slow, this can take a few minutes; it joins the loop when it lands.")
+      : st === "quiet" ? "Too little news on these currents to draw a race." : st === "failed" ? (bfNote() || raceFail()) : "";
     var key = screens.join(",");
     if (key !== OP.built) {
       OP.built = key; OP.screens = screens;
@@ -1574,6 +1755,12 @@ body.room-mode .foot .tip{ color:var(--meta); }
     OP.qi = (OP.qi + 1) % vs.length; var q = vs[OP.qi];
     $("op-vq").textContent = "“" + q.q + "”"; $("op-vnet").textContent = q.n || ""; $("op-vhd").textContent = q.h || "";
     $("op-veng").textContent = q.e || ""; $("op-veng").hidden = !q.e;
+  }
+  function opProv() {
+    var ps = S.starters; if (!ps.length) return;
+    OP.pi = (OP.pi + 1) % ps.length; var p = ps[OP.pi];
+    $("op-pq").textContent = p.q;
+    $("op-pn").textContent = "Starter " + String(OP.pi + 1).padStart(2, "0") + " of " + String(ps.length).padStart(2, "0");
   }
   var OP_DRAW = {
     race: function (animate) {
@@ -1613,6 +1800,7 @@ body.room-mode .foot .tip{ color:var(--meta); }
     document.querySelectorAll(".op-scr").forEach(function (x) { x.classList.toggle("on", x.dataset.id === id); });
     document.querySelectorAll(".op-seg").forEach(function (x, j) { x.classList.toggle("on", j === k); x.classList.toggle("done", j < k); x.querySelector("i").style.width = j < k ? "100%" : "0"; });
     if (id === "voice") opQuote();
+    if (id === "prov") opProv();
     if (OP_DRAW[id]) OP_DRAW[id](true);
   }
   function opSetPaused(p) {
@@ -1732,7 +1920,11 @@ body.room-mode .foot .tip{ color:var(--meta); }
   $("p-close").onclick = closePanel;
   $("scrim").onclick = function (e) { if (e.target === $("scrim")) closePanel(); };
   document.addEventListener("keydown", function (e) {
-    if (e.target.closest && e.target.closest("input,textarea")) { if (e.key === "Escape") e.target.blur(); return; }
+    if (e.target.closest && e.target.closest("input,textarea")) {
+      // Escape leaves the field — and closes the panel it sits in (one press, not two).
+      if (e.key === "Escape") { e.target.blur(); if (L.panel && e.target.closest("#scrim")) closePanel(); }
+      return;
+    }
     var k = (e.key || "").toLowerCase();
     if (IN.on) {
       if (k === "escape" || k === "enter") { e.preventDefault(); closeIntro(); }

@@ -66,6 +66,11 @@ SCAN_PAUSED = os.environ.get("SCAN_PAUSED", "1").strip().lower() not in ("0", "f
 # is shown it. To show them, no code change: add to the secrets
 #   SESSION_ROOM_LINKS = "1"
 SESSION_ROOM_LINKS = os.environ.get("SESSION_ROOM_LINKS", "0").strip().lower() in ("1", "true", "yes", "on")
+# ── Live session button ────────────────────────────────────────────────────────
+# The live session answers at ?view=live (team login required). Its button, in
+# the brief's masthead and the sidebar, is ON by default; to hide it, add to the
+# secrets   LIVE_SESSION_LINKS = "0"
+LIVE_SESSION_LINKS = os.environ.get("LIVE_SESSION_LINKS", "1").strip().lower() in ("1", "true", "yes", "on")
 # ── Public address ────────────────────────────────────────────────────────────
 # The app is served inside an iframe on atlantic-lighthouse.com. A relative link
 # in the Archive resolves against the IFRAME's URL, so "Open ↗" opened the raw
@@ -465,7 +470,14 @@ if IS_OVERVIEW:
 # hide the login form too. The room itself is drawn near the bottom of the file
 # (render_session_room), after everything it calls has been defined.
 IS_SESSION = st.query_params.get("view") == "session"
-if IS_SESSION:
+# ── The live session's three routes, decided first for the same reason ─────
+#   ?view=live          the team's page for a live session — behind the login
+#   ?view=intake&k=…    the client's ten questions, on a link of its own — NO login
+#   ?view=leave&k=…     the leave-behind after the session — no team login
+# All three are plain white pages without the app's chrome.
+_LV_ROUTE = str(st.query_params.get("view", "") or "")
+IS_LIVE, IS_INTAKE, IS_LEAVE = _LV_ROUTE == "live", _LV_ROUTE == "intake", _LV_ROUTE == "leave"
+if IS_SESSION or IS_LIVE or IS_INTAKE or IS_LEAVE:
     st.markdown("""
 <style>
   [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"],
@@ -1124,6 +1136,204 @@ def _overview_gate() -> bool:
     return False
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# The live session's public pages — answered BEFORE the team login
+# ══════════════════════════════════════════════════════════════════════════════
+#   ?view=intake&k=<token>   the client's ten questions (live_core, "The intake")
+#   ?view=leave&k=<token>    the leave-behind after the session
+# THE TOKEN IS THE ONLY KEY, so each route reads exactly ONE record, by an id
+# built from a token that passed live_core.valid_token, checks what kind of
+# record it is, and draws nothing but that record — no sidebar, no navigation,
+# nothing about any other client — then stops. A bad or closed link gets one
+# sentence and nothing else.
+try:
+    import live_core as _lc
+except Exception as _lc_exc:
+    _lc = None
+    print(f"[live] live_core.py unavailable — the live session is off: {_lc_exc}")
+
+_LV_TOPIC, _LV_INTAKE_TOPIC, _LV_LEAVE_TOPIC = "__live__", "__intake__", "__leave__"
+# Tests only: how often the room is read (live_core.READ_GAP, 25 s by default).
+if _lc is not None and os.environ.get("LH_LIVE_READ_GAP"):
+    try:
+        _lc.READ_GAP = float(os.environ["LH_LIVE_READ_GAP"])
+    except ValueError:
+        pass
+
+
+def _lv_component(name: str, folder: str):
+    """A no-build component from components/<folder>, or None (said in the log)
+    when the folder did not make it to the server."""
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "components", folder)
+    if not os.path.isfile(os.path.join(d, "index.html")):
+        print(f"[live] components/{folder}/ is missing on the server")
+        return None
+    try:
+        import streamlit.components.v1 as _lvc
+        return _lvc.declare_component(name, path=d)
+    except Exception as exc:
+        print(f"[live] {name} unavailable: {exc}")
+        return None
+
+
+_lv_intake_ui = _lv_component("lh_live_intake", "live_intake")
+
+
+def _lv_strip(d: dict) -> dict:
+    """A record as stored: the loader's own keys (_updated, _record…) and the
+    page's working keys (_saved_t…) are never written back."""
+    return {k: v for k, v in (d or {}).items() if not str(k).startswith("_")}
+
+
+# Defined up here, not with the brief's other styles: the public pages below
+# run before the rest of the file has been read, and need the fonts too.
+def _sv_font_css() -> str:
+    """Font loading for the brief.
+
+    Telegraf (Pangram Pangram) is NOT free for commercial use — it needs a
+    purchased Webfont licence. Drop the licensed .woff2 files into `fonts/` as
+    Telegraf-Regular.woff2 / Telegraf-Medium.woff2 / Telegraf-Bold.woff2 and
+    they're embedded automatically, no other change needed.
+
+    Until then we fall back to Space Grotesk — a free grotesque with the same
+    slightly technical character, close enough to hold the art direction.
+    """
+    import base64, glob, os as _os
+    faces, found = "", False
+    # Keys are lower-cased before lookup, so Pangram's "UltraBold" and a
+    # hand-typed "Ultrabold" both resolve. Getting this wrong silently drops
+    # the face and the browser fakes the weight instead.
+    weights = {"ultralight": 200, "thin": 200, "light": 300, "regular": 400,
+               "book": 400, "medium": 500, "semibold": 600, "demibold": 600,
+               "bold": 700, "ultrabold": 800, "extrabold": 800, "black": 900}
+    # woff2 first — if both formats are present the smaller one wins
+    fmt = {".woff2": ("font/woff2", "woff2"), ".woff": ("font/woff", "woff"),
+           ".otf": ("font/otf", "opentype"), ".ttf": ("font/ttf", "truetype")}
+    seen_weights = set()
+    for ext in (".woff2", ".woff", ".otf", ".ttf"):
+        for path in sorted(glob.glob("fonts/Telegraf-*" + ext)):
+            style = _os.path.basename(path).split("-", 1)[1].rsplit(".", 1)[0]
+            w = weights.get(style.strip().lower())
+            # Dedupe on the WEIGHT, not the filename: two files claiming 700
+            # would otherwise both be embedded and the second would win.
+            if not w or w in seen_weights:
+                continue
+            try:
+                b64 = base64.b64encode(open(path, "rb").read()).decode()
+            except Exception:
+                continue
+            mime, fmt_name = fmt[ext]
+            faces += (f"@font-face{{font-family:'Telegraf';font-style:normal;font-weight:{w};"
+                      f"font-display:swap;src:url(data:{mime};base64,{b64}) "
+                      f"format('{fmt_name}');}}\n")
+            seen_weights.add(w)
+            found = True
+    if found:
+        return faces
+    # Interim: free stand-in from Google Fonts
+    return ("@import url('https://fonts.googleapis.com/css2?"
+            "family=Space+Grotesk:wght@400;500;600;700&display=swap');\n")
+
+
+def _lv_public_css() -> str:
+    return ("<style>" + _sv_font_css_safe() + """
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"], .main { background:#ffffff !important; }
+.stApp [data-testid="stMain"] .block-container, .stApp .block-container {
+  max-width:100% !important; padding:0 !important; }
+.stApp [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] { gap:0 !important; }
+.lv-pub { font-family:'Telegraf','Space Grotesk','Helvetica Neue',Helvetica,Arial,sans-serif;
+  max-width:860px; margin:0 auto; padding:16vh 28px 0; color:#000; }
+.lv-pub .wm { font-size:20px; font-weight:700; letter-spacing:-.01em; margin-bottom:28px; }
+.lv-pub .wm i { font-style:normal; color:#0000ff; }
+.lv-pub h1 { font-size:40px; font-weight:700; letter-spacing:-.022em; line-height:1.08; margin:0 0 12px; }
+.lv-pub p { font-size:15px; line-height:1.55; color:#666; margin:0; }
+.lv-leave { padding:44px max(28px, calc((100% - 860px) / 2)) 30px; }
+[data-testid="stDownloadButton"] button { background:#0000ff !important; border:1.5px solid #0000ff !important;
+  border-radius:10.5px !important; min-height:46px !important; }
+[data-testid="stDownloadButton"] button p { color:#ffffff !important; -webkit-text-fill-color:#ffffff !important;
+  font-family:'Telegraf','Space Grotesk','Helvetica Neue',Helvetica,Arial,sans-serif !important;
+  font-weight:700 !important; font-size:14px !important; }
+.st-key-lv_pdf_box { padding:0 0 60px; }
+</style>""")
+
+
+def _sv_font_css_safe() -> str:
+    try:
+        return _sv_font_css()
+    except Exception:
+        return ""
+
+
+def _lv_public_note(title: str, text: str) -> None:
+    st.markdown(_lv_public_css() + f'<div class="lv-pub"><div class="wm">LIGHT<i>HOUSE</i></div>'
+                f'<h1>{e(title)}</h1><p>{e(text)}</p></div>', unsafe_allow_html=True)
+
+
+def _lv_public_record(kind: str, rid_for) -> tuple:
+    """(token, record) for the link in the address bar, or ("", None)."""
+    tok = str(st.query_params.get("k", "") or "")
+    if not (_lc and _lc.valid_token(tok)):
+        return "", None
+    try:
+        rec = _db.load_record(rid_for(tok))
+    except Exception as exc:
+        print(f"[live] public {kind} could not be read: {exc}")
+        rec = None
+    return (tok, rec) if isinstance(rec, dict) and rec.get("kind") == kind else ("", None)
+
+
+def _lv_public_intake() -> None:
+    """The client's ten questions. Saves each answer as it is given."""
+    tok, rec = _lv_public_record("intake", lambda t: _lc.intake_record_id(t))
+    if not rec:
+        _lv_public_note("This link is not active.", "Ask the Atlantic team for a new one.")
+        return
+    _lc.intake_defaults(rec)
+    if _lv_intake_ui is None:
+        _lv_public_note("This page is being updated.", "Please try again in a few minutes.")
+        return
+    st.markdown(_lv_public_css(), unsafe_allow_html=True)
+    key = f"lvi_{tok[:16]}"
+    val = st.session_state.get(key)
+    if isinstance(val, dict) and rec.get("status") == "open":
+        res = _lc.intake_apply(rec, val)
+        if res["changed"] or res["done"] or res["acked"]:
+            # Saved at once: this page has no other moment to save, and the
+            # team may be reading the answers as they come in.
+            _db.upsert_record(_lc.intake_record_id(tok), _LV_INTAKE_TOPIC, _lv_strip(rec),
+                              label=f"Intake · {rec.get('client_name', '')}")
+    _lv_intake_ui(**_lc.intake_public_args(rec), key=key, default=None)
+
+
+def _lv_public_leave() -> None:
+    """The leave-behind, as the room left it — and its PDF."""
+    tok, rec = _lv_public_record("leave", lambda t: _lc.leave_record_id(t))
+    if not rec:
+        _lv_public_note("This link is not active.", "Ask the Atlantic team for a new one.")
+        return
+    st.markdown(_lv_public_css(), unsafe_allow_html=True)
+    doc = rec.get("doc") or {}
+    st.markdown('<div class="lv-leave">' + _lc.leave_html(doc, standalone=False) + "</div>",
+                unsafe_allow_html=True)
+    _l, _m, _r = st.columns([1, 2, 1])
+    with _m, st.container(key="lv_pdf_box"):
+        st.download_button("⬇  Export as PDF", data=_lc.leave_html(doc, font_css=_sv_font_css_safe(),
+                                                                    print_on_open=True),
+                           file_name=f"lighthouse-{re.sub(r'[^a-z0-9]+', '-', str(doc.get('client', 'session')).lower()).strip('-') or 'session'}-leave-behind.html",
+                           mime="text/html", use_container_width=True, key="lv_leave_pdf",
+                           help="Downloads the leave-behind. Open it and choose Print → Save as PDF "
+                                "(the print dialog opens by itself).")
+
+
+if IS_INTAKE:
+    _lv_public_intake()
+    st.stop()
+if IS_LEAVE:
+    if _overview_gate():
+        _lv_public_leave()
+    st.stop()
+
+
 if "logged_in_user" not in st.session_state:
     # Public share link (?view=overview) skips the team login and runs as a
     # read-only guest. Every other route still requires a password.
@@ -1334,6 +1544,13 @@ with st.sidebar:
             f'border-radius:6px;background:#0000ff;color:#ffffff;text-decoration:none;'
             f'font-size:13px;font-weight:700;letter-spacing:.02em;">'
             f'◉ Session room ↗</a>', unsafe_allow_html=True)
+    if LIVE_SESSION_LINKS and _lc is not None and not IS_CLIENT and not st.session_state.get("_is_guest"):
+        st.markdown(
+            f'<a href="?view=live" target="_blank" rel="noopener" '
+            f'style="display:block;text-align:center;margin:8px 0 4px;padding:9px 0;'
+            f'border-radius:6px;background:#0000ff;color:#ffffff;text-decoration:none;'
+            f'font-size:13px;font-weight:700;letter-spacing:.02em;">'
+            f'◉ Live session ↗</a>', unsafe_allow_html=True)
 
     if IS_CLIENT:
         # Read-only client session — no editorial controls. Reasonable
@@ -6305,8 +6522,10 @@ def _sv_reddit_thin(sig: dict, clean: str) -> bool:
 def _sv_stat_text(stat: str) -> str:
     """The stat line as written for a reader: the model sometimes echoes the
     prompt's own label ("qualitative: YouTube touts…", Oct 26)."""
-    return re.sub(r"(?i)^\s*(?:qualitative|quantitative|momentum)\s*(?:phrase)?\s*[:\-\u2014]\s*", "",
-                  str(stat or "")).strip()
+    t = re.sub(r"(?i)^\s*(?:qualitative|quantitative|momentum)\s*(?:phrase)?\s*[:\-\u2014]\s*", "",
+               str(stat or "")).strip()
+    t = re.sub(r"(?i)^qualitative\s+", "", t)          # "qualitative shift across…"
+    return t[:1].upper() + t[1:] if t else t
 
 
 def _sv_is_job(txt: str) -> bool:
@@ -6775,6 +6994,103 @@ def _sv_save_brief(active: str, result: dict, signals: list) -> str:
     except Exception as _exc:
         print(f"[overview] save error: {_exc}")
     return ""
+
+
+def _sv_finish_result(result: dict, signals: list, *, brand: str, category: str, product: str,
+                      market: str, competitors: str, window: int, focus: str, question: str,
+                      qq: list, numbers: dict, trade_sigs: list, trade_outs: list,
+                      let_sigs: list, let_outs: list) -> dict:
+    """Everything a brief carries besides what the model wrote.
+
+    SHARED BY THE OVERVIEW'S SCAN AND THE LIVE SESSION'S DIG, so both file the
+    same kind of brief — one that reopens with its question, its numbers and
+    its outlets. No st.* in here: the dig calls it from a background thread."""
+    numbers = numbers or {}
+    trade_sigs, let_sigs = trade_sigs or [], let_sigs or []
+    # Competitors ride along so the relevance gate recognises them: a post
+    # about Budweiser IS on topic for a Heineken scan, even though it
+    # never says "beer".
+    result["_meta"] = {"brand": brand, "category": category,
+                       "product": product, "market": market,
+                       "competitors": competitors, "window": window,
+                       "focus": focus, "question": question}
+    # THE ANSWER'S NUMBERS, counted here from the posts the model
+    # pointed at — share, networks, lean, direction, strength. The model
+    # never produces a figure for this section.
+    if question and _lhref:
+        try:
+            _qa = result.get("question") if isinstance(result.get("question"), dict) else {}
+            # The same rule as the quote cards: an advert or a job ad is
+            # nobody's opinion, so it is not counted as an answer either.
+            _tq_ok = []
+            for _t in (_qa.get("touched") or []):
+                try:
+                    _sgq = signals[:60][int(_t.get("i"))]
+                except Exception:
+                    continue
+                _txq = _sv_dehash(_sv_body(_sgq))
+                if not (_sv_is_listing(_txq) or _sv_is_job(_txq) or _sv_is_explicit(_txq)):
+                    _tq_ok.append(_t)
+            _qstats = _lhref.question_stats(
+                signals[:60], _tq_ok,
+                label=lambda sg: _SV_SRC_LABEL.get(str(sg.get("source", "")),
+                                                   str(sg.get("source", "")).title()))
+            result["_question"] = {
+                "q": question, "queries": qq,
+                "answer": str(_qa.get("answer", "") or "")[:200],
+                "summary": str(_qa.get("summary", "") or "")[:400],
+                "for_means": str(_qa.get("for_means", "") or "")[:80],
+                "ask_next": str(_qa.get("ask_next", "") or "")[:200],
+                "from_searches": sum(1 for sg in signals if (sg.get("meta") or {}).get("q")),
+                "stats": _qstats}
+        except Exception as _qexc:
+            print(f"[refine] answer could not be counted: {type(_qexc).__name__}: {_qexc}")
+    # BY THE NUMBERS, stored whole — figures, what was thrown out and
+    # why, what was searched — so a reopened brief shows the same
+    # section and the diagnostic can answer "where did this come from".
+    # The F# indexes in trends[].figure_index point into this list.
+    result["_numbers"] = {
+        k: numbers.get(k) for k in
+        ("items", "dropped", "queries", "domains", "searches", "error", "skipped",
+         "pages", "secs", "at", "months", "model", "search_errors")
+        if numbers.get(k) not in (None, "", [], {})}
+    result["_numbers"].setdefault("items", [])
+    # EVERY PERCENTAGE HAS TO COME FROM SOMEWHERE. A stat line whose
+    # percentage no source states is removed; one anywhere else in the
+    # brief is listed in the diagnostic for a person to check.
+    if _lhsrc:
+        try:
+            _said = ([f"{s.get('title', '')} {s.get('content', '')}" for s in signals]
+                     + [f"{t.get('title', '')} {t.get('content', '')}" for t in trade_sigs]
+                     + [f"{l.get('title', '')} {l.get('content', '')}" for l in let_sigs])
+            _gone = _lhsrc.check_stats(result.get("trends") or [],
+                                       result["_numbers"]["items"], _said)
+            _loose = _lhsrc.audit_numbers(result, result["_numbers"]["items"], _said)
+            if _gone:
+                result["_numbers"]["stats_removed"] = _gone
+            if _loose:
+                result["_numbers"]["unsourced"] = _loose
+        except Exception as _cexc:
+            print(f"[numbers] percentage check failed: {type(_cexc).__name__}: {_cexc}")
+    # Verified outlets, from GDELT — not the model's list. Prefixed with
+    # "_" so the renderer can tell it apart from generated fields.
+    result["_trade_outlets"] = trade_outs
+    result["_trade_sigs"] = [
+        {"title": t["title"][:160], "url": t["url"], "outlet": t.get("outlet", "")}
+        for t in trade_sigs[:24]
+    ]
+    # Same treatment for the newsletters: only the publications whose
+    # feed actually answered, and a trimmed index so letters_moves'
+    # signal_index resolves to a real URL on screen, in the PDF and in
+    # the archive. The essay bodies are NOT stored — they are large and
+    # the brief only ever needs the link back.
+    result["_letters"] = let_outs
+    result["_letters_sigs"] = [
+        {"title": l["title"][:160], "url": l["url"],
+         "letter": l.get("letter", ""), "writer": l.get("writer", "")}
+        for l in let_sigs[:16]
+    ]
+    return result
 
 
 # Shared by the age labels and the Tideline, so both read continuity the same
@@ -9403,54 +9719,6 @@ def _sv_logo(network: str, on_blue: bool = True) -> str:
             f'{svg}</span>')
 
 
-def _sv_font_css() -> str:
-    """Font loading for the brief.
-
-    Telegraf (Pangram Pangram) is NOT free for commercial use — it needs a
-    purchased Webfont licence. Drop the licensed .woff2 files into `fonts/` as
-    Telegraf-Regular.woff2 / Telegraf-Medium.woff2 / Telegraf-Bold.woff2 and
-    they're embedded automatically, no other change needed.
-
-    Until then we fall back to Space Grotesk — a free grotesque with the same
-    slightly technical character, close enough to hold the art direction.
-    """
-    import base64, glob, os as _os
-    faces, found = "", False
-    # Keys are lower-cased before lookup, so Pangram's "UltraBold" and a
-    # hand-typed "Ultrabold" both resolve. Getting this wrong silently drops
-    # the face and the browser fakes the weight instead.
-    weights = {"ultralight": 200, "thin": 200, "light": 300, "regular": 400,
-               "book": 400, "medium": 500, "semibold": 600, "demibold": 600,
-               "bold": 700, "ultrabold": 800, "extrabold": 800, "black": 900}
-    # woff2 first — if both formats are present the smaller one wins
-    fmt = {".woff2": ("font/woff2", "woff2"), ".woff": ("font/woff", "woff"),
-           ".otf": ("font/otf", "opentype"), ".ttf": ("font/ttf", "truetype")}
-    seen_weights = set()
-    for ext in (".woff2", ".woff", ".otf", ".ttf"):
-        for path in sorted(glob.glob("fonts/Telegraf-*" + ext)):
-            style = _os.path.basename(path).split("-", 1)[1].rsplit(".", 1)[0]
-            w = weights.get(style.strip().lower())
-            # Dedupe on the WEIGHT, not the filename: two files claiming 700
-            # would otherwise both be embedded and the second would win.
-            if not w or w in seen_weights:
-                continue
-            try:
-                b64 = base64.b64encode(open(path, "rb").read()).decode()
-            except Exception:
-                continue
-            mime, fmt_name = fmt[ext]
-            faces += (f"@font-face{{font-family:'Telegraf';font-style:normal;font-weight:{w};"
-                      f"font-display:swap;src:url(data:{mime};base64,{b64}) "
-                      f"format('{fmt_name}');}}\n")
-            seen_weights.add(w)
-            found = True
-    if found:
-        return faces
-    # Interim: free stand-in from Google Fonts
-    return ("@import url('https://fonts.googleapis.com/css2?"
-            "family=Space+Grotesk:wght@400;500;600;700&display=swap');\n")
-
-
 def _sv_css(mode: str) -> str:
     """Theme the shared stylesheet. Print drops the blue blocks — a solid blue
     page is a wall of ink on paper."""
@@ -9973,10 +10241,17 @@ def _sv_room_link() -> str:
     ordinary prompt. Routed back through the public domain, the room would sit
     inside that iframe and depend on the site's page delegating the microphone.
     """
-    if not SESSION_ROOM_LINKS or st.query_params.get("report"):
+    if st.query_params.get("report"):
         return ""
-    return ('<a class="sv-mast-room" href="?view=session" target="_blank" '
-            'rel="noopener">◉ Session room ↗</a>')
+    out = []
+    if SESSION_ROOM_LINKS:
+        out.append('<a class="sv-mast-room" href="?view=session" target="_blank" '
+                   'rel="noopener">◉ Session room ↗</a>')
+    # The live session — same reasons: relative, its own tab, never on a report.
+    if LIVE_SESSION_LINKS and _lc is not None:
+        out.append('<a class="sv-mast-room" href="?view=live" target="_blank" '
+                   'rel="noopener">◉ Live session ↗</a>')
+    return " ".join(out)
 
 
 def _sv_header(num: str, label: str, question: str) -> str:
@@ -11127,89 +11402,16 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             _result["_incomplete"] = _missing
             _result["_truncated"] = bool(st.session_state.get("sv_truncated"))
         if _result:
-            # Competitors ride along so the relevance gate recognises them: a post
-            # about Budweiser IS on topic for a Heineken scan, even though it
-            # never says "beer".
-            _result["_meta"] = {"brand": _in_brand or _active, "category": _in_cat or _prof["category"],
-                                "product": _in_prod, "market": _in_market,
-                                "competitors": _prof_competitors, "window": _in_window,
-                                "focus": _in_focus, "question": _in_q}
-            # THE ANSWER'S NUMBERS, counted here from the posts the model
-            # pointed at — share, networks, lean, direction, strength. The model
-            # never produces a figure for this section.
-            if _in_q and _lhref:
-                try:
-                    _qa = _result.get("question") if isinstance(_result.get("question"), dict) else {}
-                    # The same rule as the quote cards: an advert or a job ad is
-                    # nobody's opinion, so it is not counted as an answer either.
-                    _tq_ok = []
-                    for _t in (_qa.get("touched") or []):
-                        try:
-                            _sgq = _signals[:60][int(_t.get("i"))]
-                        except Exception:
-                            continue
-                        _txq = _sv_dehash(_sv_body(_sgq))
-                        if not (_sv_is_listing(_txq) or _sv_is_job(_txq) or _sv_is_explicit(_txq)):
-                            _tq_ok.append(_t)
-                    _qstats = _lhref.question_stats(
-                        _signals[:60], _tq_ok,
-                        label=lambda sg: _SV_SRC_LABEL.get(str(sg.get("source", "")),
-                                                           str(sg.get("source", "")).title()))
-                    _result["_question"] = {
-                        "q": _in_q, "queries": _qq,
-                        "answer": str(_qa.get("answer", "") or "")[:200],
-                        "summary": str(_qa.get("summary", "") or "")[:400],
-                        "for_means": str(_qa.get("for_means", "") or "")[:80],
-                        "ask_next": str(_qa.get("ask_next", "") or "")[:200],
-                        "from_searches": sum(1 for sg in _signals if (sg.get("meta") or {}).get("q")),
-                        "stats": _qstats}
-                except Exception as _qexc:
-                    print(f"[refine] answer could not be counted: {type(_qexc).__name__}: {_qexc}")
-            # BY THE NUMBERS, stored whole — figures, what was thrown out and
-            # why, what was searched — so a reopened brief shows the same
-            # section and the diagnostic can answer "where did this come from".
-            # The F# indexes in trends[].figure_index point into this list.
-            _result["_numbers"] = {
-                k: _numbers.get(k) for k in
-                ("items", "dropped", "queries", "domains", "searches", "error", "skipped",
-                 "pages", "secs", "at", "months", "model", "search_errors")
-                if _numbers.get(k) not in (None, "", [], {})}
-            _result["_numbers"].setdefault("items", [])
-            # EVERY PERCENTAGE HAS TO COME FROM SOMEWHERE. A stat line whose
-            # percentage no source states is removed; one anywhere else in the
-            # brief is listed in the diagnostic for a person to check.
-            if _lhsrc:
-                try:
-                    _said = ([f"{s.get('title', '')} {s.get('content', '')}" for s in _signals]
-                             + [f"{t.get('title', '')} {t.get('content', '')}" for t in (_trade_sigs or [])]
-                             + [f"{l.get('title', '')} {l.get('content', '')}" for l in (_let_sigs or [])])
-                    _gone = _lhsrc.check_stats(_result.get("trends") or [],
-                                               _result["_numbers"]["items"], _said)
-                    _loose = _lhsrc.audit_numbers(_result, _result["_numbers"]["items"], _said)
-                    if _gone:
-                        _result["_numbers"]["stats_removed"] = _gone
-                    if _loose:
-                        _result["_numbers"]["unsourced"] = _loose
-                except Exception as _cexc:
-                    print(f"[numbers] percentage check failed: {type(_cexc).__name__}: {_cexc}")
-            # Verified outlets, from GDELT — not the model's list. Prefixed with
-            # "_" so the renderer can tell it apart from generated fields.
-            _result["_trade_outlets"] = _trade_outs
-            _result["_trade_sigs"] = [
-                {"title": t["title"][:160], "url": t["url"], "outlet": t.get("outlet", "")}
-                for t in _trade_sigs[:24]
-            ]
-            # Same treatment for the newsletters: only the publications whose
-            # feed actually answered, and a trimmed index so letters_moves'
-            # signal_index resolves to a real URL on screen, in the PDF and in
-            # the archive. The essay bodies are NOT stored — they are large and
-            # the brief only ever needs the link back.
-            _result["_letters"] = _let_outs
-            _result["_letters_sigs"] = [
-                {"title": l["title"][:160], "url": l["url"],
-                 "letter": l.get("letter", ""), "writer": l.get("writer", "")}
-                for l in _let_sigs[:16]
-            ]
+            # Everything the brief carries besides what the model wrote — its
+            # subject, the question's numbers, By the numbers, the checks on
+            # percentages, the outlets — in one place, shared with the live
+            # session's dig, so both file the same kind of brief.
+            _result = _sv_finish_result(
+                _result, _signals, brand=_in_brand or _active,
+                category=_in_cat or _prof["category"], product=_in_prod, market=_in_market,
+                competitors=_prof_competitors, window=_in_window, focus=_in_focus,
+                question=_in_q, qq=_qq, numbers=_numbers, trade_sigs=_trade_sigs,
+                trade_outs=_trade_outs, let_sigs=_let_sigs, let_outs=_let_outs)
             st.session_state["sv_result"]   = _result
             # Trade signals are appended so trade_moves' signal_index can resolve
             # to a real URL in the renderer and in the archive.
@@ -13665,6 +13867,1275 @@ def render_session_room() -> bool:
     return False
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# THE LIVE SESSION (?view=live) — the team's page
+# ══════════════════════════════════════════════════════════════════════════════
+# The meeting itself, run on one screen the team and the client both look at.
+# live_core.py holds the logic and is tested on its own; this is the page, in
+# two halves:
+#   PREPARE — before the meeting, for the team: the client's link and answers,
+#     what Lighthouse is pointed at, the dig of the four parts, and cutting
+#     what is weak. Plain Streamlit.
+#   THE SESSION SCREEN — what the room looks at: one component
+#     (components/live_session) with the microphone INSIDE it, so listening,
+#     deciding and asking happen on the same screen, one click each.
+# Model calls and the dig run in threads (session_core.JOBS) and only the
+# script thread writes the session — the session room's rule, for the same
+# reasons, written down where it applies.
+
+_LV_SAVE_EVERY = 6.0
+_LV_DIG_ETA = 300                 # seconds a dig usually takes, for the bar
+_lv_session_ui = _lv_component("lh_live_session", "live_session")
+_LV_PROGRESS: dict = _sc.shared("live_progress", dict) if _sc else {}
+_LV_ASK_POOL = 120                # posts Ask Lighthouse may choose from
+
+
+def _lv_now() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds")
+
+
+def _lv_today() -> str:
+    return datetime.utcnow().strftime("%d %B %Y").lstrip("0")
+
+
+def _lv_abs_url(params: str) -> str:
+    """A link to send to someone outside the team: the public domain when it
+    is set (PUBLIC_BASE_URL), otherwise the address this page was opened on."""
+    if PUBLIC_BASE_URL:
+        return f"{PUBLIC_BASE_URL}/?{params}"
+    try:
+        base = str(getattr(st.context, "url", "") or "")
+    except Exception:
+        base = ""
+    base = re.sub(r"/~/\+/?$", "/", base.split("?")[0].split("#")[0])
+    return f"{base.rstrip('/')}/?{params}" if base.startswith("http") else f"?{params}"
+
+
+def _lv_sid() -> str:
+    """This browser's own id — to tell when two screens drive one session."""
+    if "_lv_sid" not in st.session_state:
+        st.session_state["_lv_sid"] = uuid.uuid4().hex[:10]
+    return st.session_state["_lv_sid"]
+
+
+def _lv_save(sess: dict, force: bool = False) -> bool:
+    """Persist the session — at most every few seconds unless forced, like the
+    room's log: speech arrives every few seconds and the record grows with the
+    transcript. Decisions are always forced, so a reload never loses one."""
+    now = _rm_time.time()
+    if not force and now - float(sess.get("_saved_t") or 0) < _LV_SAVE_EVERY:
+        sess["_dirty"] = True
+        return False
+    sess["driver"] = {"sid": _lv_sid(), "user": st.session_state.get("logged_in_user", ""), "t": int(now)}
+    ok = _db.upsert_record(sess["id"], _LV_TOPIC, _lv_strip(sess),
+                           label=f"Live · {sess.get('client_name', '')} · "
+                                 f"{str(sess.get('created_at', ''))[:16]}")
+    sess["_saved_t"] = now
+    sess["_dirty"] = not ok
+    sess["_save_failed"] = not ok
+    return ok
+
+
+def _lv_load_intake(tok: str) -> Optional[dict]:
+    if not (_lc and _lc.valid_token(tok)):
+        return None
+    try:
+        rec = _db.load_record(_lc.intake_record_id(tok))
+    except Exception as exc:
+        print(f"[live] intake unavailable: {exc}")
+        return None
+    if not (isinstance(rec, dict) and rec.get("kind") == "intake"):
+        return None
+    return _lc.intake_defaults(_lv_strip(rec))
+
+
+def _lv_save_intake(tok: str, rec: dict) -> bool:
+    return _db.upsert_record(_lc.intake_record_id(tok), _LV_INTAKE_TOPIC, _lv_strip(rec),
+                             label=f"Intake · {rec.get('client_name', '')}")
+
+
+def _lv_answers(sess: dict, fresh: bool = False) -> list:
+    """The client's answers, read again at most once a minute on the session
+    screen (they rarely change once the meeting starts)."""
+    cache = st.session_state.get("lv_intake")
+    if fresh or not isinstance(cache, dict) or cache.get("_for") != sess["id"] \
+            or _rm_time.time() - float(cache.get("_t") or 0) > 60:
+        rec = _lv_load_intake(sess.get("intake_token", "")) or {}
+        cache = dict(rec, _for=sess["id"], _t=_rm_time.time())
+        st.session_state["lv_intake"] = cache
+    return list(_lc.intake_defaults(dict(cache))["answers"])
+
+
+def _lv_sessions_for(fid: str) -> list:
+    try:
+        recs = _db.load_records(_LV_TOPIC, limit=20, id_prefix=f"live:{fid}:")
+    except Exception as exc:
+        print(f"[live] sessions unavailable: {exc}")
+        recs = []
+    return [r for r in recs if r.get("kind") == "live" and r.get("client_id") == fid]
+
+
+def _lv_open(sid: str) -> Optional[dict]:
+    """The session in this browser, or loaded from the database."""
+    cur = st.session_state.get("lv_sess")
+    if isinstance(cur, dict) and cur.get("id") == sid:
+        return cur
+    try:
+        rec = _db.load_record(sid)
+    except Exception as exc:
+        print(f"[live] session unavailable: {exc}")
+        rec = None
+    if not (isinstance(rec, dict) and rec.get("kind") == "live"):
+        return None
+    drv = rec.get("driver") or {}
+    sess = _lc.live_defaults(_lv_strip(rec))
+    _sc.people_defaults(sess)
+    # ONE SCREEN DRIVES A SESSION. Two would each save their own copy over the
+    # other's; so when another browser saved it in the last minute, say who.
+    # A reload is a new browser session for Streamlit, so the same person coming
+    # back is told apart from someone else by name, not by session.
+    ago = _rm_time.time() - float(drv.get("t") or 0)
+    if drv.get("sid") and drv.get("sid") != _lv_sid() and ago < 60 \
+            and drv.get("user") != st.session_state.get("logged_in_user", ""):
+        sess["_other"] = {"user": drv.get("user", ""), "ago": int(ago)}
+    # Work "running" in a record whose job this server does not know was cut
+    # off by a restart: said, so nobody waits for it.
+    d = sess.get("dig") or {}
+    if d.get("status") == "running" and not _sc.JOBS.known(d.get("jid", "")):
+        d.update(status="failed", err="Interrupted — the server restarted while it was digging. Dig again.")
+    for s in sess["sections"]:
+        if s.get("status") == "digging" and not _sc.JOBS.known(s.get("jid", "")):
+            s["status"] = "done" if s.get("currents") else "todo"
+        for c in s.get("currents") or []:
+            if c.get("looking") and not _sc.JOBS.known(c.get("jid", "")):
+                c.pop("looking", None)
+    t = sess.get("terr") or {}
+    if t.get("status") == "running" and not _sc.JOBS.known(t.get("jid", "")):
+        t.update(status="done" if t.get("items") else "none", err="Interrupted — try again.")
+    for ch in (sess.get("chat") or {}).values():
+        for q in ch:
+            if q.get("status") == "running" and not _sc.JOBS.known(q.get("jid", "")):
+                q.update(status="none", note="Interrupted — ask again.")
+    st.session_state["lv_sess"] = sess
+    st.session_state.pop("lv_intake", None)
+    return sess
+
+
+def _lv_mode() -> str:
+    return "run" if st.query_params.get("mode") == "run" else "prep"
+
+
+def _lv_set_mode(m: str) -> None:
+    if m == "run":
+        st.query_params["mode"] = "run"
+    elif "mode" in st.query_params:
+        del st.query_params["mode"]
+
+
+# ── Work done in threads ─────────────────────────────────────────────────────
+# No st.* in here: everything arrives as arguments and leaves through JOBS.
+
+def _lv_ai(prompt: str, model: str, max_tokens: int, temperature: float = 0.3,
+           timeout: float = 90.0) -> dict:
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set")
+    import anthropic
+    cl = anthropic.Anthropic(api_key=key, timeout=timeout, max_retries=1)
+    r = cl.messages.create(
+        model=model, max_tokens=max_tokens, temperature=temperature,
+        system="You work inside Lighthouse, Atlantic New York's cultural-intelligence tool, during "
+               "a live client workshop. You answer only with the JSON object you are asked for.",
+        messages=[{"role": "user", "content": prompt}])
+    try:
+        return _extract_json(_msg_text(r)) or {}
+    except Exception:
+        return {}
+
+
+def _lv_job_error(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {str(exc)[:180]}"
+
+
+def _lv_label_worker(jid: str, prompt: str) -> None:
+    """Which current each line is about. The fast model, at temperature 0: the
+    job is to sort, and live_core does the counting."""
+    try:
+        _sc.JOBS.finish(jid, {"obj": _lv_ai(prompt, CLAUDE_MODEL_FAST, 1500, 0.0, 45.0)})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=_lv_job_error(exc))
+
+
+def _lv_ask_worker(jid: str, prompt: str, cand: list, back: bool) -> None:
+    try:
+        obj = _lv_ai(prompt, CLAUDE_MODEL, 900, 0.4, 60.0)
+        _sc.JOBS.finish(jid, {"res": _lc.parse_ask(obj, cand, back=back)})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=_lv_job_error(exc))
+
+
+def _lv_terr_worker(jid: str, prompt: str, sels: list) -> None:
+    try:
+        obj = _lv_ai(prompt, CLAUDE_MODEL, 2500, 0.7, 120.0)
+        _sc.JOBS.finish(jid, {"found": _lc.parse_terr(obj, sels)})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=_lv_job_error(exc))
+
+
+def _lv_redig_worker(jid: str, prompt: str, pool: list, trade: list, figs: list,
+                     only: int, avoid: list) -> None:
+    try:
+        obj = _lv_ai(prompt, CLAUDE_MODEL, 2500, 0.5, 120.0)
+        _sc.JOBS.finish(jid, {"parts": _lc.parse_dig(obj, pool, trade, figs, only=only, avoid=avoid)})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=_lv_job_error(exc))
+
+
+def _lv_clean_pool(sigs: list) -> list:
+    """An advert, a job ad or an explicit post is nobody's view of anything:
+    it never becomes the evidence for a current."""
+    out = []
+    for s in sigs or []:
+        try:
+            tx = _sv_dehash(_sv_body(s))
+            if _sv_is_listing(tx) or _sv_is_job(tx) or _sv_is_explicit(tx):
+                continue
+        except Exception:
+            pass
+        out.append(s)
+    return out
+
+
+def _lv_dig_worker(jid: str, p: dict, outlets: list, lets: list, archive: list) -> None:
+    """THE DIG: one full Lighthouse scan — the nine sources, the trade press,
+    the newsletters, By the numbers, the Refine question — then, side by side,
+    the four parts (one call, four lenses) and the brief behind them, filed in
+    the Archive like any other. Everything the Overview's scan does, in the
+    background, so the team can keep preparing while it runs."""
+    prog = _LV_PROGRESS.setdefault(jid, {"stage": "", "src": {}})
+
+    def _stage(x: str) -> None:
+        prog["stage"] = x
+
+    def _src(name, count, why=""):      # _sv_gather calls this from this thread
+        prog["src"][str(name)] = count
+
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        brand, cat, prod, mk = p["brand"], p["category"], p["product"], p["market"]
+        months, comps, focus, q = p["window"], p["competitors"], p["focus"], p["question"]
+        _stage("Turning the question into searches…")
+        qq = _sv_question_queries(q, brand, cat, prod, mk) if q else []
+        search = " ".join(dict.fromkeys(f"{cat} {prod}".split())).strip() or brand
+        search_f = (_lhref.with_focus(search, _lhref.focus_items(focus)) if (_lhref and focus) else search)
+        _stage("Asking nine sources…")
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_num = pool.submit(_sv_gather_numbers, brand, cat, prod, mk, months, comps, focus)
+            f_trade = pool.submit(_sv_gather_trade, search_f, cat, mk, prod, outlets, months)
+            f_let = pool.submit(_sv_gather_letters, search_f, cat, mk, prod, lets, months)
+            sigs, tally = _sv_gather(search, brand, mk, progress=_src, product=prod, brand=brand,
+                                     competitors=comps, archive=archive, months=months,
+                                     focus=focus, extra_queries=qq)
+            _stage("Reading the trade press and the newsletters…")
+            try:
+                trade_sigs, trade_outs, _td = f_trade.result(timeout=150)
+            except Exception as texc:
+                print(f"[live] trade: {texc}")
+                trade_sigs, trade_outs = [], []
+            try:
+                let_sigs, let_outs, _ld = f_let.result(timeout=60)
+            except Exception as lexc:
+                print(f"[live] newsletters: {lexc}")
+                let_sigs, let_outs = [], []
+            try:
+                numbers = f_num.result(timeout=90) or {}
+            except Exception as nexc:
+                numbers = {"items": [], "error": f"the figures did not arrive ({type(nexc).__name__})"}
+        if not sigs:
+            _sc.JOBS.finish(jid, error="No posts came back for that search — check the brand, "
+                                       "the category and the product, then dig again.")
+            return
+        figs = numbers.get("items") or []
+        pool_s = _lc.interleave(_lv_clean_pool(sigs), 160)
+        trade_all = list(trade_sigs or []) + list(let_sigs or [])
+        _stage("Writing the four parts — and the brief behind them…")
+        lens_prompt = _lc.dig_prompt(p, p.get("answers") or [], pool_s, trade_all[:40], figs, _lv_today())
+        comp_list = [c.strip() for c in comps.split(",") if c.strip()]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_brief = pool.submit(_sv_synthesize, sigs, cat or search, comp_list, brand,
+                                  trade=trade_sigs, letters=let_sigs, numbers=figs, months=months,
+                                  question=q, focus=focus)
+            f_lens = pool.submit(_lv_ai, lens_prompt, CLAUDE_MODEL, 4500, 0.5, 240.0)
+            lens = f_lens.result(timeout=300)
+            try:
+                res = f_brief.result(timeout=420) or {}
+            except Exception as bexc:
+                print(f"[live] the brief behind the dig was not written: {bexc}")
+                res = {}
+        parts = _lc.parse_dig(lens, pool_s, trade_all[:40], figs)
+        rid = ""
+        if res:
+            _stage("Filing the brief in the Archive…")
+            res = _sv_finish_result(res, sigs, brand=brand, category=cat, product=prod, market=mk,
+                                    competitors=comps, window=months, focus=focus, question=q,
+                                    qq=qq, numbers=numbers, trade_sigs=trade_sigs,
+                                    trade_outs=trade_outs, let_sigs=let_sigs, let_outs=let_outs)
+            res["_diag"] = {"tally": tally, "origin": f"live session · {p.get('session_id', '')}",
+                            "n_trade": len(trade_sigs or []), "n_letters": len(let_sigs or [])}
+            rid = _sv_save_brief(brand, res, sigs)
+        _sc.JOBS.finish(jid, {"parts": parts, "report_id": rid, "n": len(sigs),
+                              "n_trade": len(trade_all), "n_figs": len(figs)})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=_lv_job_error(exc))
+    finally:
+        prog["stage"] = "done"
+
+
+# ── Starting work (script thread) ────────────────────────────────────────────
+
+def _lv_start_dig(sess: dict, answers: list) -> str:
+    """Start the dig. Returns "" when it started, or why it did not."""
+    if SCAN_PAUSED:
+        return "Scanning is paused — " + SCAN_PAUSED_MSG
+    d = sess.get("dig") or {}
+    if d.get("status") == "running" and _sc.JOBS.known(d.get("jid", "")):
+        return "A dig is already running."
+    stp = sess.get("setup") or {}
+    brand = str(stp.get("brand") or "").strip()
+    cat, prod = str(stp.get("category") or "").strip(), str(stp.get("product") or "").strip()
+    if not brand or not (cat or prod):
+        return "Say what to dig into first — the brand, and a category or a product."
+    mk = stp.get("market") if stp.get("market") in MARKETS else DEFAULT_MARKET
+    try:
+        months = int(stp.get("window") or _SV_WINDOW_DEFAULT)
+    except (TypeError, ValueError):
+        months = _SV_WINDOW_DEFAULT
+    # The outlet lists come from cached loaders that only work on this thread.
+    with st.spinner("Getting the outlets ready…"):
+        try:
+            outlets = _sv_trade_outlets(cat or prod, mk, prod)
+        except Exception as exc:
+            print(f"[live] trade outlets: {exc}")
+            outlets = []
+        try:
+            lets = _sv_newsletters(cat or prod, mk, prod)
+        except Exception as exc:
+            print(f"[live] newsletters: {exc}")
+            lets = []
+        try:
+            archive = list(_load_signals_raw(limit=200))
+        except Exception:
+            archive = []
+    p = {"brand": brand, "category": cat, "product": prod, "market": mk, "window": months,
+         "competitors": str(stp.get("competitors") or ""), "focus": str(stp.get("focus") or ""),
+         "question": str(stp.get("question") or ""), "answers": answers, "session_id": sess["id"]}
+    jid = _sc.JOBS.start(sess["id"], "dig", kind="dig")
+    sess["dig"] = dict(d, status="running", jid=jid, started_at=_lv_now(), err="")
+    _rm_threading.Thread(target=_lv_dig_worker, args=(jid, p, outlets, lets, archive),
+                         daemon=True, name=f"lh-dig-{jid}").start()
+    _lv_save(sess, force=True)
+    return ""
+
+
+def _lv_brief_bits(sess: dict) -> tuple:
+    """(posts, trade, figures) of the brief behind this session — read once per
+    browser, kept in memory: Ask Lighthouse and Re-dig choose from them."""
+    rid = (sess.get("dig") or {}).get("report_id", "")
+    cache = st.session_state.setdefault("_lv_bits", {})
+    if rid and rid in cache:
+        return cache[rid]
+    sigs, trade, figs = [], [], []
+    if rid:
+        try:
+            one = _sv_load_brief_by_id(rid) or {}
+        except Exception as exc:
+            print(f"[live] brief {rid} unavailable: {exc}")
+            one = {}
+        sigs = one.get("signals") or []
+        res = one.get("result") or {}
+        trade = ([{"title": t.get("title", ""), "content": "", "source": t.get("outlet") or "Trade press",
+                   "url": t.get("url", "")} for t in res.get("_trade_sigs") or []] +
+                 [{"title": t.get("title", ""), "content": "", "source": t.get("letter") or "Newsletter",
+                   "url": t.get("url", "")} for t in res.get("_letters_sigs") or []])
+        figs = (res.get("_numbers") or {}).get("items") or []
+    if not sigs:
+        # No dig yet: what was saved for this brand before is the next best pool.
+        brand = str((sess.get("setup") or {}).get("brand") or sess.get("client_name") or "")
+        try:
+            sigs = [s for s in _load_signals_raw(limit=300) if brand and _signal_matches_client(s, brand)][:200]
+        except Exception:
+            sigs = []
+    out = (_lc.interleave(_lv_clean_pool(sigs), 160), trade[:40], figs)
+    if rid:
+        cache[rid] = out
+    return out
+
+
+def _lv_start_ask(sess: dict, sec: int, qid: str) -> None:
+    entry = next((q for q in (sess["chat"].get(str(sec)) or []) if q.get("id") == qid), None)
+    if not entry:
+        return
+    pool = _lv_brief_bits(sess)[0][:_LV_ASK_POOL]
+    if not pool:
+        entry.update(status="none", note="Nothing has been collected for this session yet — "
+                                         "dig the four parts first.")
+        return
+    prompt = _lc.ask_prompt(sess, sec, entry["q"], pool, _lv_today())
+    jid = _sc.JOBS.start(sess["id"], "ask", kind="ask", sec=sec, qid=qid)
+    entry["jid"] = jid
+    _rm_threading.Thread(target=_lv_ask_worker, args=(jid, prompt, pool, False),
+                         daemon=True, name=f"lh-ask-{jid}").start()
+
+
+def _lv_start_back(sess: dict, cid: str) -> None:
+    """The room added a current of its own: look for posts that back it."""
+    i, c = _lc.find_current(sess, cid)
+    pool = _lv_brief_bits(sess)[0][:_LV_ASK_POOL]
+    if not c or not pool:
+        return
+    prompt = _lc.ask_prompt(sess, i, "", pool, _lv_today(), back=c["t"])
+    jid = _sc.JOBS.start(sess["id"], "back", kind="back", cid=cid)
+    c["looking"], c["jid"] = True, jid
+    _rm_threading.Thread(target=_lv_ask_worker, args=(jid, prompt, pool, True),
+                         daemon=True, name=f"lh-back-{jid}").start()
+
+
+def _lv_people(sess: dict) -> tuple:
+    """(lines with keys, people by id, labels by id)."""
+    lines = _lc.keyed_lines(_sc.session_lines(sess))
+    people = {p["id"]: p for p in sess.get("people") or []}
+    labels = {pid: _sc.person_label(p) for pid, p in people.items()}
+    return lines, people, labels
+
+
+def _lv_start_terr(sess: dict) -> None:
+    sels = _lc.selects(sess)
+    if len(sels) < _lc.MIN_SELECTS:
+        sess["terr"].update(status="done" if sess["terr"].get("items") else "none",
+                            err=f"Keep at least {_lc.MIN_SELECTS} currents first.")
+        return
+    lines, people, labels = _lv_people(sess)
+    prompt = _lc.terr_prompt(sess, _lv_answers(sess, fresh=True), sels, _lv_today(), people, labels,
+                             {l["k"]: l for l in lines})
+    jid = _sc.JOBS.start(sess["id"], "terr", kind="terr")
+    sess["terr"]["jid"] = jid
+    _rm_threading.Thread(target=_lv_terr_worker, args=(jid, prompt, sels),
+                         daemon=True, name=f"lh-terr-{jid}").start()
+
+
+def _lv_start_redig(sess: dict, i: int) -> str:
+    rid = (sess.get("dig") or {}).get("report_id", "")
+    if not rid:
+        return "Dig the four parts first."
+    pool, trade, figs = _lv_brief_bits(sess)
+    if not pool:
+        return "The brief behind this session could not be read — dig the four parts again."
+    avoid = [c["t"] for s in sess["sections"] for c in s.get("currents") or []]
+    prompt = _lc.dig_prompt(sess.get("setup") or {}, _lv_answers(sess, fresh=True), pool, trade, figs,
+                            _lv_today(), only=i, avoid=avoid)
+    jid = _sc.JOBS.start(sess["id"], "redig", kind="redig", sec=i)
+    sess["sections"][i].update(status="digging", jid=jid)
+    _rm_threading.Thread(target=_lv_redig_worker, args=(jid, prompt, pool, trade, figs, i, avoid),
+                         daemon=True, name=f"lh-redig-{jid}").start()
+    return ""
+
+
+def _lv_label_tick(sess: dict) -> None:
+    """Start a reading of the room when it is time (live_core.label_batch)."""
+    if _sc.JOBS.running(sess["id"], "label"):
+        return
+    lines, people, labels = _lv_people(sess)
+    force = bool(sess.pop("_force_read", False))
+    b = _lc.label_batch(sess, lines, people, force=force, last_t=float(sess.get("_label_t") or 0))
+    if not b:
+        return
+    if b["sec"] < 0 or not b["todo"]:
+        sess["label_upto"] = max(int(sess.get("label_upto") or 0), b["upto"])
+        sess["_dirty"] = True
+        return
+    prompt, ids = _lc.label_prompt(sess, b, people, labels)
+    jid = _sc.JOBS.start(sess["id"], "reading", kind="label", sec=b["sec"], upto=b["upto"],
+                         ids=ids, keys=[l["k"] for l in b["todo"]])
+    sess["_label_t"] = _rm_time.time()
+    _rm_threading.Thread(target=_lv_label_worker, args=(jid, prompt),
+                         daemon=True, name=f"lh-label-{jid}").start()
+
+
+def _lv_collect(sess: dict) -> bool:
+    """Move finished work into the session. Script thread only."""
+    changed = False
+    cache = {}
+
+    def ppl():
+        if not cache:
+            cache["v"] = _lv_people(sess)
+        return cache["v"]
+    for j in _sc.JOBS.pop_finished(sess["id"]):
+        kind, ok, r = j.get("kind"), j["status"] == "done", j.get("result") or {}
+        changed = True
+        if kind == "label":
+            lines, people, labels = ppl()
+            keys = set(j.get("keys") or [])
+            todo = [l for l in lines if l["k"] in keys]
+            if ok:
+                parsed = _lc.parse_labels(r.get("obj"), j.get("ids") or {}, sess, j["sec"])
+                _lc.apply_labels(sess, j["sec"], parsed, todo, people)
+                _lc.reading(sess, j["sec"], {l["k"]: l for l in lines}, people, labels, now=_lv_now())
+                sess["label_upto"] = max(int(sess.get("label_upto") or 0), int(j.get("upto") or 0))
+                sess["label_fail"] = 0
+            else:
+                print(f"[live] reading failed: {j.get('error', '')}")
+                sess["label_fail"] = int(sess.get("label_fail") or 0) + 1
+                if sess["label_fail"] >= 2:
+                    # Two failures on the same lines: move past them, and say so.
+                    sess["label_upto"] = max(int(sess.get("label_upto") or 0), int(j.get("upto") or 0))
+                    sess["label_fail"] = 0
+                    rd = sess["reads"].setdefault(str(j["sec"]), [])
+                    rd.append({"t": _lv_now(), "n": len(rd) + 1, "picked": [], "flagged": [],
+                               "err": "Lighthouse could not read the last minute — it carries on "
+                                      "from here."})
+        elif kind == "intro":
+            if ok:
+                _sc.apply_intro(sess, r.get("found") or {})
+            else:
+                # Read again at the next tick rather than never: a name lost
+                # to a hiccup is a voice left nameless for the whole meeting.
+                print(f"[live] introductions: {j.get('error', '')}")
+                for pid in j.get("ids") or []:
+                    (sess.get("_intro_tried") or {}).pop(pid, None)
+        elif kind == "ask":
+            entry = next((q for q in (sess["chat"].get(str(j.get("sec"))) or []) if q.get("id") == j.get("qid")), None)
+            res = r.get("res") or {}
+            if entry is not None:
+                if not ok:
+                    entry.update(status="none", note="Lighthouse could not be reached — ask again.")
+                elif res.get("none"):
+                    entry.update(status="none", note=res["none"])
+                else:
+                    cid = _lc.add_current(sess, j.get("sec", 0), res["t"], "ask", body=res.get("b", ""),
+                                          ev=res.get("ev"), q=entry.get("q", ""), keep=False, now=_lv_now())
+                    entry.update(status="done", cid=cid, note=res["t"])
+        elif kind == "back":
+            i, c = _lc.find_current(sess, j.get("cid", ""))
+            if c:
+                c.pop("looking", None)
+                c.pop("jid", None)
+                res = r.get("res") or {}
+                if ok and res.get("ev"):
+                    c["ev"] = res["ev"]
+                    c["b"] = res.get("b") or c.get("b", "")
+                else:
+                    c["b"] = "Added in the session — nothing Lighthouse collected backs it yet."
+        elif kind == "terr":
+            found = r.get("found") or []
+            if ok and found:
+                _lc.apply_terr(sess, found, now=_lv_now())
+            else:
+                sess["terr"].update(status="done" if sess["terr"].get("items") else "failed",
+                                    err=(j.get("error") and "Lighthouse could not be reached — try again.")
+                                    or "Lighthouse found no territory it could build from these selects "
+                                       "— keep a few more, or star the strongest, and try again.")
+        elif kind == "dig":
+            _LV_PROGRESS.pop(j.get("id", ""), None)
+            d = sess.setdefault("dig", {})
+            if ok and any(r.get("parts") or []):
+                _lc.apply_dig(sess, r["parts"], report_id=r.get("report_id", ""), now=_lv_now())
+                d.update(status="done", at=_lv_now(), err="", n=r.get("n", 0),
+                         n_trade=r.get("n_trade", 0), n_figs=r.get("n_figs", 0))
+            else:
+                if r.get("report_id"):
+                    d["report_id"] = r["report_id"]
+                d.update(status="failed", err=j.get("error") or
+                         f"{r.get('n', 0)} posts came back, but the four parts could not be written — "
+                         "dig again.")
+        elif kind == "redig":
+            i = int(j.get("sec") or 0)
+            parts = r.get("parts") or []
+            if ok and i < len(parts) and parts[i]:
+                _lc.apply_dig(sess, parts, only=i, now=_lv_now())
+            else:
+                sess["sections"][i]["status"] = "done" if sess["sections"][i].get("currents") else "todo"
+                sess["sections"][i]["err"] = "Nothing new came back for this part — try again."
+    return changed
+
+
+def _lv_make_leave(sess: dict) -> None:
+    """Save the leave-behind as it stands and give it a link of its own."""
+    lines, people, labels = _lv_people(sess)
+    rid = (sess.get("dig") or {}).get("report_id", "")
+    doc = _lc.leave_doc(sess, _lv_answers(sess, fresh=True), people, labels, {l["k"]: l for l in lines},
+                        brief_url=_lv_abs_url("view=overview&report=" + urllib.parse.quote(rid, safe=""))
+                        if rid else "", when=_lv_now())
+    lv = sess.setdefault("leave", {})
+    tok = lv.get("token") if _lc.valid_token(lv.get("token", "")) else _lc.new_token()
+    rec = {"kind": "leave", "live_id": sess["id"], "client_name": sess.get("client_name", ""),
+           "doc": doc, "saved_at": _lv_now(), "by": st.session_state.get("logged_in_user", "")}
+    ok = _db.upsert_record(_lc.leave_record_id(tok), _LV_LEAVE_TOPIC, rec,
+                           label=f"Leave-behind · {sess.get('client_name', '')}")
+    lv.update(token=tok, saved_at=_lv_now() if ok else lv.get("saved_at", ""),
+              err="" if ok else "Could not save — the database did not answer. Try again.")
+
+
+def _lv_effect(sess: dict, eff: tuple) -> None:
+    kind = eff[0]
+    if kind == "who":
+        _lc.apply_who(sess, eff[1])
+        _lv_save(sess, force=True)
+    elif kind in ("golive", "people"):
+        _lv_save(sess, force=True)
+    elif kind == "ask":
+        _lv_start_ask(sess, eff[1], eff[2])
+    elif kind == "back":
+        _lv_start_back(sess, eff[1])
+    elif kind == "terr":
+        _lv_start_terr(sess)
+    elif kind == "leave":
+        _lv_make_leave(sess)
+    elif kind == "read":
+        sess["_force_read"] = True
+    elif kind == "pdf":
+        # The printable file is large (the fonts travel inside it), so it goes
+        # to the screen once, when asked for, not with every redraw.
+        st.session_state["_lv_pdf"] = int(st.session_state.get("_lv_pdf") or 0) + 1
+    elif kind == "end":
+        tok = sess.get("intake_token", "")
+        rec = _lv_load_intake(tok)
+        if rec and rec.get("status") == "open":
+            # The meeting happened: the client's link closes (the team can reopen it).
+            rec["status"] = "closed"
+            _lv_save_intake(tok, rec)
+        _lv_save(sess, force=True)
+
+
+def _lv_listen(sess: dict) -> dict:
+    """What the microphone inside the session screen needs: the engine, the
+    language, and — for voices told apart — a short-lived token minted here
+    (the key never reaches the browser)."""
+    has_key = bool(_rm_aai_key())
+    engine = (sess.get("engine") or ("auto" if has_key else "tap")) if has_key else "tap"
+    if sess.get("voice_mode") != engine:
+        sess["voice_mode"] = engine
+    mk = (sess.get("setup") or {}).get("market", "")
+    lang = sess.get("lang") if sess.get("lang") in _RM_LANGS else _RM_LANG_FOR_MARKET.get(mk, "en-US")
+    aai, err = None, ""
+    if engine == "auto":
+        tok, err = _rm_aai_token()
+        if tok:
+            aai = dict(tok, url=_RM_AAI_WS_URL, model=_rm_aai_model(lang), revise_ms=300000, max_s=10800)
+    return {"engine": "aai" if engine == "auto" else "chrome", "lang": lang,
+            "langs": [[k, v] for k, v in _RM_LANGS.items()], "aai": aai, "aai_error": err,
+            "has_key": has_key, "start_seq": int(sess.get("last_seq", -1)) + 1,
+            "mic_ack": int(sess.get("last_seq", -1))}
+
+
+def _lv_state(sess: dict) -> dict:
+    lines, people, labels = _lv_people(sess)
+    pv = _sc.people_view(sess, lines, pending=_rm_intro_pending(sess))
+    for p in pv:
+        p["fac"] = _lc.is_fac(people.get(p["id"]))
+    leave = {}
+    lv = sess.get("leave") or {}
+    if sess.get("screen") == "brief":
+        rid = (sess.get("dig") or {}).get("report_id", "")
+        doc = _lc.leave_doc(sess, _lv_answers(sess), people, labels, {l["k"]: l for l in lines},
+                            brief_url=_lv_abs_url("view=overview&report=" + urllib.parse.quote(rid, safe=""))
+                            if rid else "", when=_lv_now())
+        name = re.sub(r"[^a-z0-9]+", "-", str(doc.get("client") or "session").lower()).strip("-") or "session"
+        leave = {"html": _lc.leave_html(doc, standalone=False), "fname": f"lighthouse-{name}-leave-behind.html"}
+        n_pdf = int(st.session_state.get("_lv_pdf") or 0)
+        if n_pdf and n_pdf != st.session_state.get("_lv_pdf_sent"):
+            st.session_state["_lv_pdf_sent"] = n_pdf
+            leave.update(file=_lc.leave_html(doc, font_css=_sv_font_css(), print_on_open=True), pdf_n=n_pdf)
+    if lv.get("token"):
+        leave.update(url=_lv_abs_url("view=leave&k=" + lv["token"]), saved_at=_rm_clock(lv.get("saved_at", "")))
+    if lv.get("err"):
+        leave["err"] = lv["err"]
+    stp = sess.get("setup") or {}
+    running = {"label": _sc.JOBS.running(sess["id"], "label") > 0,
+               "terr": (sess.get("terr") or {}).get("status") == "running"}
+    rid = (sess.get("dig") or {}).get("report_id", "")
+    st_ = _lc.live_state(sess, {"answers": _lv_answers(sess)}, lines, pv, people, labels,
+                         listen=_lv_listen(sess), leave=leave, running=running,
+                         brief_url=_rm_report_url(rid) if rid else "",
+                         client_meta=" · ".join(x for x in (stp.get("category"), stp.get("product"),
+                                                             stp.get("market")) if x))
+    st_["saved_ok"] = not sess.get("_save_failed")
+    st_["intro"]["pending"] = sorted(_rm_intro_pending(sess))
+    # Tap mode: who was tapped last is shown as speaking.
+    st_["tap_who"] = ((_sc._tap_index(sess)[1] or [""])[-1]) if sess.get("voice_mode") == "tap" else ""
+    return st_
+
+
+@st.fragment(run_every=3)
+def _lv_run_frag() -> None:
+    """The session screen, redrawn every three seconds.
+
+    Order matters, as in the room's panel: what the microphone sent and the
+    screen's actions are applied FIRST, from the value it last sent, so what it
+    draws next already contains them; finished work is collected; a reading
+    starts if it is time; the session is saved; only then is the state handed
+    over."""
+    sess = st.session_state.get("lv_sess")
+    if not sess:
+        return
+    _lc.live_defaults(sess)
+    _sc.people_defaults(sess)
+    key = f"lv_ui_{sess['id']}"
+    val = st.session_state.get(key)
+    force = False
+    if isinstance(val, dict):
+        if sess.get("consent") and _sc.take_mic(sess, val):
+            sess["_dirty"] = True
+        # "Use the free mode", pressed in the screen after AssemblyAI said no.
+        if val.get("switch") == "tap" and val.get("sw") != st.session_state.get("_lv_sw_done"):
+            st.session_state["_lv_sw_done"] = val.get("sw")
+            sess["engine"] = "tap"
+            force = True
+        before = sess.get("live_ack", -1)
+        effects = _lc.live_apply(sess, val, now=_lv_now())
+        if sess.get("live_ack", -1) != before:
+            force = True
+        for eff in effects:
+            if eff[0] != "prep":
+                _lv_effect(sess, eff)
+        if ("prep",) in effects:
+            # Back to the preparation page: a page-wide rerun, the microphone stops.
+            _lv_save(sess, force=True)
+            _lv_set_mode("prep")
+            st.rerun(scope="app")
+    if _lv_collect(sess):
+        force = True
+    _rm_intro_tick(sess)
+    _lv_label_tick(sess)
+    if force:
+        _lv_save(sess, force=True)
+    elif sess.get("_dirty"):
+        _lv_save(sess)
+    _lv_session_ui(state=_lv_state(sess), key=key, default=None)
+
+
+def _lv_run_screen(sess: dict) -> None:
+    """The session screen: the component, edge to edge, nothing else."""
+    st.markdown("""<style>
+.stApp [data-testid="stMain"] .block-container, .stApp .block-container {
+  max-width:100% !important; padding:0 !important; }
+.stApp [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] { gap:0 !important; }
+</style>""", unsafe_allow_html=True)
+    if _lv_session_ui is None:
+        st.error("The session screen needs the folder **components/live_session/** on the server, "
+                 "next to app.py. Upload it to the repository; nothing else is affected.")
+        return
+    _lv_answers(sess, fresh=True)
+    _lv_run_frag()
+
+
+def _lv_css() -> str:
+    s = "'Telegraf', 'Space Grotesk', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+    return f"""<style>
+.lv-h {{ font-family:{s}; font-size:28px; font-weight:700; letter-spacing:-.015em; line-height:1.1;
+  color:#000; border-top:3px solid #000; padding-top:14px; margin:46px 0 6px; }}
+.lv-h span {{ color:#0000ff; margin-right:10px; }}
+.lv-meta {{ font-family:{s}; font-size:12.5px; color:#666; margin:-6px 0 18px; }}
+.lv-meta b {{ color:#000; }}
+.lv-meta .lv {{ color:#ff383c; font-weight:700; letter-spacing:.12em; text-transform:uppercase; font-size:11px; }}
+.lv-pill {{ display:inline-block; font-family:{s}; font-size:10px; font-weight:700; letter-spacing:.14em;
+  text-transform:uppercase; padding:3px 8px; border:1.5px solid #0000ff; color:#0000ff; border-radius:10.5px; }}
+.lv-pill.off {{ border-color:#999; color:#666; }}
+.lv-ans {{ border-top:1.5px solid #000; font-family:{s}; margin-top:10px; }}
+.lv-ans .row {{ display:grid; grid-template-columns:230px 1fr; gap:16px; padding:9px 0;
+  border-bottom:1px solid #e6e6e6; font-size:14px; line-height:1.5; color:#222; }}
+.lv-ans .row b {{ font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#666; padding-top:3px; }}
+.lv-ans .row .none {{ color:#999; }}
+.lv-ans .row .by {{ font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+  color:#0000ff; margin-left:8px; }}
+.lv-part {{ font-family:{s}; margin:30px 0 10px; display:flex; justify-content:space-between;
+  align-items:baseline; gap:14px; border-top:1.5px solid #000; padding-top:10px; }}
+.lv-part .k {{ font-size:11px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:#0000ff; }}
+.lv-part .h {{ font-size:22px; font-weight:700; letter-spacing:-.01em; color:#000; margin-top:2px; }}
+.lv-part .n {{ font-size:12px; color:#666; }}
+[class*="st-key-lvc_"] {{ border:1.5px solid #000000; background:#ffffff; padding:14px 16px 12px; gap:10px !important; }}
+/* Streamlit pulls every markdown block up by 16px at its foot; in a card that
+   puts the buttons on top of the evidence links. */
+[class*="st-key-lvc_"] [data-testid="stMarkdownContainer"] {{ margin-bottom:0 !important; }}
+[class*="st-key-lvc_"].cut, .lv-cut-wrap {{ opacity:.45; }}
+.lv-cur {{ font-family:{s}; }}
+.lv-cur .tag {{ font-size:9.5px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:#0000ff; }}
+.lv-cur .tag.cut {{ color:#ff383c; }}
+.lv-cur .t {{ font-size:16.5px; font-weight:700; line-height:1.28; color:#000; margin:6px 0 6px; }}
+.lv-cur.cut .t {{ text-decoration:line-through; color:#666; }}
+.lv-cur .b {{ font-size:13px; line-height:1.55; color:#222; }}
+.lv-cur.cut .b {{ color:#999; }}
+.lv-cur .ev {{ border-top:1px solid #e6e6e6; margin-top:10px; padding-top:8px; font-size:11.5px;
+  line-height:1.6; color:#666; }}
+.lv-cur .ev b {{ color:#0000ff; }}
+.lv-cur .ev a {{ color:#0000ff !important; text-decoration:none !important; }}
+.lv-run {{ font-family:{s}; border:1.5px solid #0000ff; padding:14px 16px; margin:8px 0 6px; }}
+.lv-run .h {{ font-size:10.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:#0000ff; }}
+.lv-run .s {{ font-size:15px; font-weight:700; color:#000; margin-top:4px; }}
+.lv-run .m {{ font-size:12px; color:#666; margin-top:4px; }}
+.lv-note {{ font-family:{s}; font-size:13px; line-height:1.55; color:#444; max-width:760px; }}
+.lv-note b {{ color:#000; }}
+.lv-list {{ font-family:{s}; border-top:1px solid #e6e6e6; padding:10px 0; font-size:13.5px; color:#222; }}
+.lv-list b {{ color:#000; }}
+.lv-list span {{ color:#666; }}
+.lv-list .lv {{ color:#ff383c; font-weight:700; font-size:11px; letter-spacing:.12em; text-transform:uppercase; }}
+.st-key-lv_go button, .st-key-lv_go2 button {{ min-height:48px !important; padding:10px 26px !important; }}
+.st-key-lv_go button p, .st-key-lv_go2 button p {{ font-size:15px !important; }}
+</style>"""
+
+
+def _lv_top(back_label: str = "", back_params: Optional[dict] = None) -> None:
+    st.markdown(f'<div class="rm-top"><div class="rm-eyebrow">The Lighthouse · Live session</div>'
+                f'<a class="rm-back" href="{_public_url("")}" target="_blank" rel="noopener">'
+                f'The Lighthouse ↗</a></div>', unsafe_allow_html=True)
+    if back_label and st.button(back_label, key="lv_back"):
+        for k in ("id", "mode", "client"):
+            if k in st.query_params:
+                del st.query_params[k]
+        for k, v in (back_params or {}).items():
+            st.query_params[k] = v
+        st.session_state.pop("lv_sess", None)
+        st.rerun()
+
+
+def _lv_new_session(c: dict, user: str) -> Optional[str]:
+    tok = _lc.new_token()
+    sess = _lc.new_live(c["folder_id"], c, user, tok)
+    sess["setup"] = _lc.setup_defaults(c, [""] * _lc.N_Q, markets=list(MARKETS),
+                                       default_market=DEFAULT_MARKET, window=_SV_WINDOW_DEFAULT)
+    rec = _lc.new_intake(sess["id"], c.get("name") or c.get("brand") or "", c.get("brand") or "")
+    if not _lv_save_intake(tok, rec):
+        st.error("Could not create the client's link — the database did not answer. Try again.")
+        return None
+    if not _lv_save(sess, force=True):
+        st.error("Could not create the session — the database did not answer. Try again.")
+        return None
+    st.session_state["lv_sess"] = sess
+    return sess["id"]
+
+
+def _lv_home(user: str) -> None:
+    """Who are we meeting — then that client's live sessions."""
+    clients = _rm_load_clients()
+    by_id = {c["folder_id"]: c for c in clients}
+    pick = str(st.query_params.get("client", "") or "")
+    if pick and pick != "__new__" and pick not in by_id:
+        pick = ""
+    if not clients:
+        pick = "__new__"
+    if not pick:
+        _lv_top()
+        st.markdown('<div class="rm-title">Live sessions</div>'
+                    '<div class="rm-stand">Two hours with the client on one screen. They answer ten '
+                    'questions before; Lighthouse digs four parts; the room keeps what is true, and '
+                    'Lighthouse listens for what the room keeps coming back to. Choose the client.</div>',
+                    unsafe_allow_html=True)
+        cards = [("__new__", None)] + [(c["folder_id"], c) for c in clients]
+        for r0 in range(0, len(cards), 3):
+            cols = st.columns(3, gap="medium")
+            for j, (fid, c) in enumerate(cards[r0:r0 + 3]):
+                with cols[j]:
+                    with st.container(key=f"rmc_lv{r0 + j}"):
+                        if c is None:
+                            st.markdown('<div class="rm-cc new"><div class="nm">＋ New client</div>'
+                                        '<div class="meta">Their name, brand, category and market — '
+                                        'the rest comes from their answers.</div>'
+                                        '<div class="row"><span>Profile</span></div></div>',
+                                        unsafe_allow_html=True)
+                            lab = "Add a client"
+                        else:
+                            meta = " · ".join(x for x in (c.get("category"), c.get("product"), c.get("market")) if x)
+                            st.markdown(f'<div class="rm-cc"><div class="nm">{e(c["name"] or c["brand"])}</div>'
+                                        f'<div class="meta">{e(meta) or "&nbsp;"}</div>'
+                                        f'<div class="row"><span>Live sessions</span></div></div>',
+                                        unsafe_allow_html=True)
+                            lab = "Open ›"
+                        if st.button(lab, key=f"lv_choose_{r0 + j}", use_container_width=True):
+                            st.query_params["client"] = fid
+                            st.rerun()
+        return
+    _lv_top("← All clients" if clients else "")
+    if pick == "__new__":
+        st.markdown('<div class="rm-title">New client</div>'
+                    '<div class="rm-stand">What Lighthouse needs to know to dig: the brand, the '
+                    'category and the market. Everything else can come from the client\'s own '
+                    'answers.</div>', unsafe_allow_html=True)
+        prof = _rm_client_form(None, user, "lv_new_client")
+        if prof:
+            st.query_params["client"] = prof["folder_id"]
+            st.rerun()
+        return
+    c = by_id[pick]
+    meta = " · ".join(x for x in (c.get("brand") if c.get("brand") != c.get("name") else "",
+                                  c.get("category"), c.get("product"), c.get("market")) if x)
+    st.markdown(f'<div class="rm-title">{e(c["name"] or c["brand"])}</div>'
+                f'<div class="lv-meta">{e(meta)}</div>', unsafe_allow_html=True)
+    with st.container(key="lv_go"):
+        if st.button("Start a new live session", type="primary", key="lv_new"):
+            sid = _lv_new_session(c, user)
+            if sid:
+                st.query_params["id"] = sid
+                if "client" in st.query_params:
+                    del st.query_params["client"]
+                st.rerun()
+    st.markdown('<div class="lv-note">It begins with a link for the client: ten questions, one per '
+                'screen, no password. Send it a few days before the meeting.</div>', unsafe_allow_html=True)
+    past = _lv_sessions_for(c["folder_id"])
+    if past:
+        st.markdown('<div class="rm-lbl">Sessions</div>', unsafe_allow_html=True)
+    for p in past[:12]:
+        a, b = st.columns([6, 1.2], vertical_alignment="center")
+        n_sel = len(_lc.selects(_lc.live_defaults(dict(p))))
+        stt = {"prep": "Preparing", "live": "Live", "ended": "Ended"}.get(p.get("status", ""), "")
+        with a:
+            st.markdown(f'<div class="lv-list"><b>{e(_sv_fmt_date(p.get("created_at", "")))}</b> '
+                        f'<span>· {e(stt)} · {n_sel} select{"s" if n_sel != 1 else ""}'
+                        f'{" · " + str(len((p.get("terr") or {}).get("items") or [])) + " territories" if (p.get("terr") or {}).get("items") else ""}'
+                        f'</span>{" <span class=lv>· live</span>" if p.get("status") == "live" else ""}</div>',
+                        unsafe_allow_html=True)
+        with b:
+            if st.button("Open ›", key=f"lv_open_{p.get('id')}", use_container_width=True):
+                st.query_params["id"] = p["id"]
+                if "client" in st.query_params:
+                    del st.query_params["client"]
+                st.session_state.pop("lv_sess", None)
+                st.rerun()
+
+
+def _lv_cur_card(sess: dict, i: int, c: dict) -> None:
+    """One current, before the meeting: what it says, what it stands on, and
+    the team's two moves — cut it, or rewrite it."""
+    cut = bool(c.get("cut"))
+    tag = {"dig": "Current", "team": "Added by the team", "room": "Added by the room",
+           "ask": "Asked by the room", "talk": "From the conversation"}.get(c.get("src", ""), "Current")
+    ev = c.get("ev") or []
+    links = " · ".join(f'<a href="{e(x["url"])}" target="_blank" rel="noopener">{e(_lc.clip(x.get("ti"), 60))} ↗</a>'
+                       for x in ev if x.get("url"))[:2000]
+    with st.container(key=f"lvc_{c['id']}"):
+        st.markdown(f'<div class="lv-cur{" cut" if cut else ""}"><div class="tag{" cut" if cut else ""}">'
+                    f'{"Cut — not shown in the room" if cut else e(tag)}</div>'
+                    f'<div class="t">{e(_lc.title_of(sess, c))}</div><div class="b">{e(c.get("b", ""))}</div>'
+                    + (f'<div class="ev"><b>Evidence</b> · {e(_lc.evidence_line(ev))}<br>{links}</div>' if ev else "")
+                    + "</div>", unsafe_allow_html=True)
+        a, b, _sp = st.columns([1, 1, 2.2])
+        with a:
+            if st.button("Put back" if cut else "Cut", key=f"lv_cut_{c['id']}", use_container_width=True):
+                _lc.cut(sess, c["id"], not cut)
+                _lv_save(sess, force=True)
+                st.rerun()
+        with b:
+            with st.popover("Edit", use_container_width=True):
+                with st.form(f"lv_edit_{c['id']}", border=False):
+                    t = st.text_input("Title", value=c.get("t", ""), max_chars=_lc.TITLE_MAX,
+                                      key=f"lv_et_{c['id']}")
+                    bd = st.text_area("What it says", value=c.get("b", ""), max_chars=_lc.BODY_MAX,
+                                      height=100, key=f"lv_eb_{c['id']}")
+                    if st.form_submit_button("Save", type="primary"):
+                        c["t"] = _lc.clip(t, _lc.TITLE_MAX) or c["t"]
+                        c["b"] = _lc.clip(bd, _lc.BODY_MAX)
+                        sess["tweak"].pop(c["id"], None)
+                        _lv_save(sess, force=True)
+                        st.rerun()
+
+
+def _lv_dig_panel(sid: str) -> None:
+    """While a dig runs: where it is, every three seconds. When it lands, the
+    page is drawn again with the four parts."""
+    sess = st.session_state.get("lv_sess")
+    if not sess or sess.get("id") != sid:
+        return
+    if _lv_collect(sess):
+        _lv_save(sess, force=True)
+    d = sess.get("dig") or {}
+    redig = [i for i, s in enumerate(sess["sections"]) if s.get("status") == "digging"]
+    if d.get("status") != "running" and not redig:
+        st.rerun()
+        return
+    if d.get("status") == "running":
+        prog = _LV_PROGRESS.get(d.get("jid", ""), {})
+        t0 = _lc.utc_ts(d.get("started_at")) or _rm_time.time()
+        el = max(0, int(_rm_time.time() - t0))
+        src = " · ".join(f"{_RM_NET.get(k, k)} {v}" for k, v in (prog.get("src") or {}).items()
+                         if isinstance(v, int) and v >= 0)
+        st.markdown(f'<div class="lv-run"><div class="h">Digging · {el // 60}:{el % 60:02d} · usually about '
+                    f'five minutes</div><div class="rm-run"></div><div class="s">{e(prog.get("stage") or "Starting…")}</div>'
+                    f'<div class="m">{e(src) or "&nbsp;"}</div></div>', unsafe_allow_html=True)
+    for i in redig:
+        st.markdown(f'<div class="lv-run"><div class="h">Digging again</div><div class="rm-run"></div>'
+                    f'<div class="s">{e(_lc.SECTIONS[i]["head"])}</div></div>', unsafe_allow_html=True)
+
+
+def _lv_prep(sess: dict, user: str) -> None:
+    """Before the meeting."""
+    c = next((x for x in _rm_load_clients() if x["folder_id"] == sess.get("client_id")), None) \
+        or {"name": sess.get("client_name", ""), "folder_id": sess.get("client_id", "")}
+    _lv_top("← All sessions for " + (c.get("name") or c.get("brand") or "this client"),
+            {"client": sess.get("client_id", "")})
+    if _lv_collect(sess):
+        _lv_save(sess, force=True)
+    tok = sess.get("intake_token", "")
+    intake = _lv_load_intake(tok)
+    answers = (intake or {}).get("answers") or [""] * _lc.N_Q
+    # Fields the team has not set yet follow the client's answers as they come in.
+    stp = sess.setdefault("setup", {})
+    if not stp.get("competitors") and _lc.rivals_from(answers):
+        stp["competitors"] = _lc.rivals_from(answers)
+        sess["_dirty"] = True
+    if not stp.get("question") and _lc.curiosities_from(answers):
+        stp["question"] = _lc.curiosities_from(answers)[0]
+        sess["_dirty"] = True
+    stt = {"prep": "Preparing", "live": "Live", "ended": "Ended"}.get(sess.get("status", ""), "")
+    st.markdown(f'<div class="rm-title">{e(sess.get("client_name") or "Live session")}</div>'
+                f'<div class="lv-meta">Live session · created {e(_sv_fmt_date(sess.get("created_at", "")))}'
+                f' by <b>{e(sess.get("created_by", ""))}</b> · '
+                + (f'<span class="lv">● {e(stt)}</span>' if sess.get("status") == "live" else e(stt))
+                + "</div>", unsafe_allow_html=True)
+    if sess.get("_other"):
+        o = sess["_other"]
+        st.markdown(f'<div class="rm-warn"><b>{e(o.get("user") or "Someone")}</b> has this session open '
+                    f'on another screen ({o.get("ago", 0)} s ago). One screen should drive a session — '
+                    f'two overwrite each other\'s changes.</div>', unsafe_allow_html=True)
+    if sess.get("_save_failed"):
+        st.markdown('<div class="rm-warn">The last change was not saved — the database did not answer. '
+                    'It is kept on this page and saved with the next one.</div>', unsafe_allow_html=True)
+    n_cur = sum(len(_lc.all_currents(sess, i)) for i in range(_lc.N_SEC))
+    with st.container(key="lv_go"):
+        if st.button("Open the session screen ›", type="primary", key="lv_run"):
+            _lv_save(sess, force=True)
+            _lv_set_mode("run")
+            st.rerun()
+    st.markdown(f'<div class="lv-note">The screen the room looks at — {n_cur} current{"s" if n_cur != 1 else ""} '
+                'on it so far. Open it on the computer that will be in the meeting, in Chrome or Edge.</div>',
+                unsafe_allow_html=True)
+
+    # ── 1 · The client's questions ───────────────────────────────────────
+    n_ans, n_q = _lc.intake_progress(intake or {})
+    st.markdown('<div class="lv-h"><span>1</span>Before the session: the client\'s questions</div>',
+                unsafe_allow_html=True)
+    if not intake:
+        st.markdown('<div class="rm-warn">The client\'s link could not be read — the database did not '
+                    'answer. Reload the page.</div>', unsafe_allow_html=True)
+    else:
+        url = _lv_abs_url("view=intake&k=" + tok)
+        sent = _sv_fmt_date(intake.get("submitted_at", "")) if intake.get("submitted_at") else ""
+        st.markdown(f'<div class="lv-meta">Send this link to the client. Ten questions, one per screen, '
+                    f'no password; each answer is saved as they give it. '
+                    f'<b>{n_ans} of {n_q} answered</b>{" · sent " + e(sent) if sent else ""} · '
+                    f'<span class="lv-pill{"" if intake.get("status") == "open" else " off"}">'
+                    f'{"Link open" if intake.get("status") == "open" else "Link closed"}</span></div>',
+                    unsafe_allow_html=True)
+        st.code(url, language=None)
+        a, b, c3 = st.columns([1.3, 1.3, 3])
+        with a:
+            if st.button("Reload the answers", key="lv_reload", use_container_width=True):
+                st.rerun()
+        with b:
+            if intake.get("status") == "open":
+                if st.button("Close the link", key="lv_close", use_container_width=True):
+                    intake["status"] = "closed"
+                    _lv_save_intake(tok, intake)
+                    st.rerun()
+            elif st.button("Reopen the link", key="lv_reopen", use_container_width=True):
+                intake["status"] = "open"
+                _lv_save_intake(tok, intake)
+                st.rerun()
+        rows = []
+        for i, (q, _h, label) in enumerate(_lc.QUESTIONS):
+            a_ = answers[i].strip()
+            by = (intake.get("edits") or {}).get(str(i), "")
+            rows.append(f'<div class="row"><b>{e(label)}</b><div>'
+                        + (e(a_).replace("\n", "<br>") if a_ else '<span class="none">Not answered yet</span>')
+                        + (f'<span class="by">edited by {e(by)}</span>' if by and by != "client" else "")
+                        + "</div></div>")
+        st.markdown('<div class="lv-ans">' + "".join(rows) + "</div>", unsafe_allow_html=True)
+        with st.expander("Complete or correct the answers"):
+            with st.form("lv_answers", border=False):
+                new = [st.text_area(q, value=answers[i], height=68 if i not in _lc.MULTI else 96,
+                                    max_chars=_lc.ANSWER_MAX)
+                       for i, (q, _h, _l) in enumerate(_lc.QUESTIONS)]
+                if st.form_submit_button("Save the answers", type="primary"):
+                    fresh = _lv_load_intake(tok) or intake
+                    changed = sum(_lc.intake_set(fresh, i, x, user) for i, x in enumerate(new)
+                                  if _lc.clean_answer(x) != _lc.clean_answer(answers[i]))
+                    if changed and not _lv_save_intake(tok, fresh):
+                        st.error("Could not save — the database did not answer.")
+                    else:
+                        st.rerun()
+
+    # ── 2 · What Lighthouse looks for ────────────────────────────────────
+    st.markdown('<div class="lv-h"><span>2</span>What Lighthouse looks for</div>'
+                '<div class="lv-meta">From the client\'s profile and their answers — the competitors '
+                'come from "Who do you watch?" and the question from the first thing they are curious '
+                'about. Change anything before the dig.</div>', unsafe_allow_html=True)
+    wins = _sv_windows()
+    mk = list(MARKETS)
+    with st.form("lv_setup", border=False):
+        r1 = st.columns(3)
+        brand = r1[0].text_input("Brand", value=stp.get("brand", ""))
+        cat = r1[1].text_input("Category", value=stp.get("category", ""))
+        prod = r1[2].text_input("Product", value=stp.get("product", ""))
+        r2 = st.columns(3)
+        mkt = r2[0].selectbox("Market", mk,
+                              index=mk.index(stp["market"]) if stp.get("market") in mk else mk.index(DEFAULT_MARKET))
+        win = r2[1].selectbox("Look back", wins,
+                              index=wins.index(int(stp.get("window") or _SV_WINDOW_DEFAULT))
+                              if int(stp.get("window") or _SV_WINDOW_DEFAULT) in wins else 0,
+                              format_func=lambda m: (_lhsrc.window_label(m) if _lhsrc else f"{m} months"))
+        comp = r2[2].text_input("Competitors", value=stp.get("competitors", ""))
+        r3 = st.columns([1, 2])
+        focus = r3[0].text_input("Must mention", value=stp.get("focus", ""))
+        q = r3[1].text_input("The question (Refine)", value=stp.get("question", ""))
+        if st.form_submit_button("Save"):
+            stp.update(brand=brand.strip(), category=cat.strip(), product=prod.strip(), market=mkt,
+                       window=int(win), competitors=comp.strip(), focus=focus.strip(), question=q.strip())
+            _lv_save(sess, force=True)
+            st.rerun()
+
+    # ── 3 · The dig ──────────────────────────────────────────────────────
+    st.markdown('<div class="lv-h"><span>3</span>The dig: four parts</div>', unsafe_allow_html=True)
+    d = sess.get("dig") or {}
+    running = d.get("status") == "running" or any(s.get("status") == "digging" for s in sess["sections"])
+    if d.get("status") == "done":
+        rid = d.get("report_id", "")
+        st.markdown(f'<div class="lv-meta">Dug {e(_sv_fmt_date(d.get("at", "")))} · {d.get("n", 0)} posts · '
+                    f'{d.get("n_trade", 0)} articles · {d.get("n_figs", 0)} figures'
+                    + (f' · <a href="{e(_rm_report_url(rid))}" target="_blank" rel="noopener">the full brief ↗</a>'
+                       if rid else "") + '. Cut what is weak: nothing goes on the screen that the team has '
+                    'not looked at.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="lv-meta">One full Lighthouse scan with the settings above — the nine '
+                    'sources, the trade press, By the numbers and the question — read through four lenses: '
+                    'Company, Competition, Customer, Climate. It also files a brief in the Archive. About '
+                    'five minutes; you can keep working here meanwhile.</div>', unsafe_allow_html=True)
+    if d.get("status") == "failed" and d.get("err"):
+        st.markdown(f'<div class="rm-warn">{e(d["err"])}</div>', unsafe_allow_html=True)
+    if running:
+        st.fragment(_lv_dig_panel, run_every=3)(sess["id"])
+    else:
+        lab = "Dig again" if d.get("status") == "done" else "Dig the four parts"
+        if st.button(lab, type="secondary" if d.get("status") == "done" else "primary", key="lv_dig",
+                     disabled=SCAN_PAUSED):
+            why = _lv_start_dig(sess, answers)
+            if why:
+                st.error(why)
+            else:
+                st.rerun()
+        if SCAN_PAUSED:
+            st.caption("Scanning is paused — " + SCAN_PAUSED_MSG)
+    for i, part in enumerate(_lc.SECTIONS):
+        sec = sess["sections"][i]
+        cur = _lc.all_currents(sess, i, include_cut=True)
+        shown = len([x for x in cur if not x.get("cut")])
+        st.markdown(f'<div class="lv-part"><div><div class="k">Part {i + 1} · {e(part["key"])}</div>'
+                    f'<div class="h">{e(part["head"])}</div></div>'
+                    f'<div class="n">{shown} on screen{" · " + str(len(cur) - shown) + " cut" if len(cur) > shown else ""}</div></div>',
+                    unsafe_allow_html=True)
+        if sec.get("err"):
+            st.caption(sec.pop("err"))
+        if not cur:
+            st.markdown('<div class="lv-note">Nothing here yet.</div>', unsafe_allow_html=True)
+        for r0 in range(0, len(cur), 2):
+            cols = st.columns(2, gap="medium")
+            for j, c_ in enumerate(cur[r0:r0 + 2]):
+                with cols[j]:
+                    _lv_cur_card(sess, i, c_)
+        a, b, _sp = st.columns([1.4, 1.4, 3])
+        with a:
+            if d.get("report_id") and st.button("Dig this part again", key=f"lv_redig_{i}",
+                                                use_container_width=True,
+                                                disabled=sec.get("status") == "digging"):
+                why = _lv_start_redig(sess, i)
+                if why:
+                    st.error(why)
+                else:
+                    _lv_save(sess, force=True)
+                    st.rerun()
+        with b:
+            with st.popover("+ Add a current", use_container_width=True):
+                with st.form(f"lv_add_{i}", border=False, clear_on_submit=True):
+                    t = st.text_input("The current, in one line", max_chars=_lc.TITLE_MAX, key=f"lv_at_{i}")
+                    bd = st.text_area("What it says (optional)", max_chars=_lc.BODY_MAX, height=80,
+                                      key=f"lv_ab_{i}")
+                    if st.form_submit_button("Add", type="primary") and t.strip():
+                        cid = _lc.add_current(sess, i, t, "team", body=bd, keep=False, now=_lv_now())
+                        if cid and not bd.strip():
+                            _lv_start_back(sess, cid)
+                        _lv_save(sess, force=True)
+                        st.rerun()
+
+    # ── 4 · In the room ──────────────────────────────────────────────────
+    st.markdown('<div class="lv-h"><span>4</span>In the room</div>', unsafe_allow_html=True)
+    has_key = bool(_rm_aai_key())
+    st.markdown('<div class="lv-note">'
+                '<b>In person:</b> the laptop\'s microphone hears the room. '
+                + ('Voices are told apart by AssemblyAI (EU servers), for this meeting only — nothing is '
+                   'kept as a voiceprint. ' if has_key else
+                   'Chrome transcribes for free (the audio goes to Google); tap who is speaking. ')
+                + '<br><b>On Google Meet:</b> open the session screen on the computer that is in the call, '
+                  'start listening, then press <b>Add the Meet tab</b> and choose the Meet tab with '
+                  '<b>“Also share tab audio”</b> ticked — the other side is heard through the tab, this '
+                  'room through the microphone. Headphones on this computer keep voices from being heard '
+                  'twice.' + ('' if has_key else ' (Google Meet needs the voices mode — ASSEMBLYAI_API_KEY in '
+                                                 'the secrets.)')
+                + '<br><b>Before anyone speaks:</b> tell the room it is being transcribed. The screen asks '
+                  'for that consent before the microphone switches on.</div>', unsafe_allow_html=True)
+    with st.container(key="lv_go2"):
+        if st.button("Open the session screen ›", type="primary", key="lv_run2"):
+            _lv_save(sess, force=True)
+            _lv_set_mode("run")
+            st.rerun()
+    with st.expander("Delete this session"):
+        st.markdown('<div class="lv-note">Removes the session, the client\'s link to the questions and the '
+                    'leave-behind\'s link. The brief the dig filed in the Archive stays.</div>',
+                    unsafe_allow_html=True)
+        sure = st.checkbox("Yes, delete it for good", key=f"lv_del_ok_{sess['id']}")
+        if st.button("Delete the session", key=f"lv_del_{sess['id']}", disabled=not sure):
+            for rid in (_lc.intake_record_id(sess.get("intake_token", "")) if _lc.valid_token(sess.get("intake_token", "")) else "",
+                        _lc.leave_record_id((sess.get("leave") or {}).get("token", ""))
+                        if _lc.valid_token((sess.get("leave") or {}).get("token", "")) else "",
+                        sess["id"]):
+                if rid:
+                    try:
+                        _db.delete_record(rid)
+                    except Exception as exc:
+                        print(f"[live] delete {rid}: {exc}")
+            st.session_state.pop("lv_sess", None)
+            for k in ("id", "mode"):
+                if k in st.query_params:
+                    del st.query_params[k]
+            st.query_params["client"] = sess.get("client_id", "")
+            st.rerun()
+    if sess.get("_dirty"):
+        _lv_save(sess)
+
+
+def render_live_page() -> bool:
+    """The live session. Returns True when the session screen took the page."""
+    user = st.session_state.get("logged_in_user", "")
+    # TWO CALLS, NOT ONE STRING. Joined, the second <style> would open on the
+    # line where the first one closes, and the markdown parser would read the
+    # rest as text — turning the "*" in [class*=…] selectors into emphasis.
+    st.markdown(_rm_css(), unsafe_allow_html=True)
+    st.markdown(_lv_css(), unsafe_allow_html=True)
+    sid = str(st.query_params.get("id", "") or "")
+    if not sid:
+        st.session_state.pop("lv_sess", None)
+        _lv_home(user)
+        return False
+    sess = _lv_open(sid)
+    if not sess:
+        _lv_top("← Live sessions")
+        st.markdown('<div class="rm-title">Not found</div><div class="rm-stand">This live session '
+                    'could not be found — it may have been removed, or the database did not '
+                    'answer. Reload to try again.</div>', unsafe_allow_html=True)
+        return False
+    if _lv_mode() == "run":
+        _lv_run_screen(sess)
+        return True
+    _lv_prep(sess, user)
+    return False
+
+
 # ── Top-level navigation: Trends / Dispatch / Projects / Road Map ──────────
 # One-page layout: hero masthead always visible above the nav bar.
 # Clients see masthead + dispatch content only (no nav bar, no other sections).
@@ -13697,6 +15168,24 @@ if IS_SESSION:
                  "upload it to the repository with app.py. The rest of the Lighthouse is unaffected.")
         st.stop()
     if not render_session_room():      # the live panel fills the screen: no footer
+        render_footer()
+    st.stop()
+
+# ── The live session (?view=live) ──────────────────────────────────────────
+# Team only, like the room: the login gate above sends anyone without a
+# session to the sign-in form, and this turns away a guest or a client account.
+# (The client's own pages, ?view=intake and ?view=leave, were answered before
+# the login gate — they need no team account.)
+if IS_LIVE:
+    if IS_CLIENT or st.session_state.get("_is_guest"):
+        st.error("The live session is for the Atlantic team — sign in with a team account.")
+        st.stop()
+    if _sc is None or _lc is None:
+        st.error("The live session needs **live_core.py** and **session_core.py** next to app.py on "
+                 "the server — upload them to the repository with app.py. The rest of the Lighthouse "
+                 "is unaffected.")
+        st.stop()
+    if not render_live_page():         # the session screen fills the page: no footer
         render_footer()
     st.stop()
 

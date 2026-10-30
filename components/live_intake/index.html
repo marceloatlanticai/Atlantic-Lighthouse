@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Lighthouse · before your session</title>
+<!--
+  THE CLIENT'S INTAKE — a Streamlit component with no build step.
+
+  One question per screen, Enter to move on (Typeform-style), the ten questions
+  of the session plan. It runs on the PUBLIC route (?view=intake&k=…): the link
+  is the only key, there is no password, and this page is given nothing but
+  the questions, the client's own answers and the client's name.
+
+  EVERY ANSWER SAVES AS IT IS GIVEN. Each one goes out with an id of its own
+  and stays in an outbox until the app lists that id as applied (args.applied),
+  so a slow connection, a reload or two tabs cannot lose or double an answer —
+  and an answer resent by a rerun is never applied twice over a correction the
+  Atlantic team made in the meantime.
+
+  PROTOCOL as in the other Lighthouse components (read off Streamlit 1.58's
+  bundle): messages to the parent carry `isStreamlitMessage`; args arrive as
+  `streamlit:render`.
+-->
+<style>
+@font-face{font-family:'Telegraf';font-weight:400;font-style:normal;font-display:swap;src:url(fonts/Telegraf-Regular.woff2) format('woff2');}
+@font-face{font-family:'Telegraf';font-weight:500;font-style:normal;font-display:swap;src:url(fonts/Telegraf-Medium.woff2) format('woff2');}
+@font-face{font-family:'Telegraf';font-weight:700;font-style:normal;font-display:swap;src:url(fonts/Telegraf-Bold.woff2) format('woff2');}
+:root{--ink:#000;--paper:#fff;--blue:#0000ff;--press:#0000cc;--red:#ed0005;--body:#222;--meta:#666;--track:#ececec;--rad:10.5px;
+  --sans:'Telegraf','Space Grotesk','Helvetica Neue',Helvetica,Arial,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer}
+.top{display:flex;align-items:center;gap:18px;padding:14px 28px;border-bottom:3px solid var(--ink)}
+.wm{font-size:20px;font-weight:700;letter-spacing:-.01em}
+.wm i{font-style:normal;color:var(--blue)}
+.who{font-size:12px;color:var(--meta)}
+.save{margin-left:auto;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--meta)}
+.save.warn{color:var(--red)}
+.box{display:flex;flex-direction:column;justify-content:center;padding:36px 28px 28px;max-width:960px;margin:0 auto;min-height:calc(100vh - 56px)}
+.n{font-size:12px;font-weight:700;color:var(--blue);letter-spacing:.12em;text-transform:uppercase}
+.q{font-size:42px;font-weight:700;letter-spacing:-.022em;line-height:1.08;margin:14px 0 10px;max-width:900px}
+.hint{font-size:14px;color:var(--meta);margin-bottom:24px;line-height:1.5;max-width:720px}
+textarea{width:100%;max-width:900px;font:inherit;font-size:22px;line-height:1.4;border:none;border-bottom:1.5px solid var(--ink);padding:10px 0;
+  outline:none;background:transparent;resize:none;color:var(--ink)}
+textarea:focus{border-bottom-color:var(--blue)}
+.row{display:flex;gap:14px;align-items:center;margin-top:24px;flex-wrap:wrap}
+.k{font-size:12px;color:var(--meta)}
+.btn{border-radius:var(--rad);border:1.5px solid var(--blue);background:var(--blue);color:#fff;font-weight:700;font-size:14px;padding:12px 20px}
+.btn:hover{background:var(--press)}
+.btn.out{background:#fff;color:var(--ink);border-color:var(--ink)}
+.btn.out:hover{background:var(--ink);color:#fff}
+.bar{height:3px;background:var(--track);max-width:900px;margin-top:38px}
+.bar i{display:block;height:100%;background:var(--blue);transition:width .3s}
+.list{margin-top:26px;border-top:1.5px solid var(--ink);max-width:900px}
+.list button{display:flex;gap:14px;width:100%;text-align:left;background:none;border:none;border-bottom:1px solid #eee;padding:11px 0;font-size:14px;color:var(--body)}
+.list button b{color:var(--blue);min-width:24px}
+.list button span{flex:1}
+.list button em{font-style:normal;color:var(--meta);font-size:12px}
+@media (max-width:700px){.q{font-size:28px}textarea{font-size:18px}.top{padding:12px 16px}.box{padding:24px 16px}}
+@media (prefers-reduced-motion:reduce){.bar i{transition:none}}
+</style></head>
+<body>
+<div class="top"><div class="wm">LIGHT<i>HOUSE</i></div><div class="who" id="who"></div><div class="save" id="save"></div></div>
+<div class="box" id="box"></div>
+<script>
+(function () {
+  "use strict";
+  function send(type, data) { window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*"); }
+  function setHeight() {
+    var want = 600;
+    try { want = Math.max(560, (window.parent && window.parent.innerHeight ? window.parent.innerHeight : 700) - 40); } catch (e) {}
+    send("streamlit:setFrameHeight", { height: Math.max(want, Math.ceil(document.body.scrollHeight) + 4) });
+  }
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+  var A = { client: "", questions: [], answers: [], status: "open", submitted: false, applied: [] };
+  var S = { screen: "welcome", i: 0, answers: [], outbox: [], done: "", ready: false, sentAt: 0 };
+
+  function flush() {
+    S.sentAt = Date.now();
+    send("streamlit:setComponentValue", { value: { items: S.outbox, done: S.done }, dataType: "json" });
+    saveState();
+  }
+  function saveState() {
+    var el = $("save");
+    if (!S.outbox.length && (!S.done || A.applied.indexOf(S.done) >= 0)) { el.textContent = S.ready && S.answers.some(function (x) { return x; }) ? "Saved" : ""; el.className = "save"; return; }
+    var late = Date.now() - S.sentAt > 6000;
+    el.textContent = late ? "Not saved yet — check the connection" : "Saving…";
+    el.className = "save" + (late ? " warn" : "");
+  }
+  setInterval(function () { if (S.outbox.length) { saveState(); if (Date.now() - S.sentAt > 6000) flush(); } }, 3000);
+
+  function keep(i, text) {
+    text = String(text || "");
+    if ((S.answers[i] || "") === text) return;
+    S.answers[i] = text;
+    S.outbox = S.outbox.filter(function (it) { return it.i !== i; });     // only the latest for each question
+    S.outbox.push({ u: uid(), i: i, x: text });
+    flush();
+  }
+
+  function render() {
+    var box = $("box"), n = A.questions.length;
+    $("who").textContent = A.client ? A.client + " × Atlantic New York" : "Atlantic New York";
+    if (A.status !== "open") {
+      box.innerHTML = '<div class="n">Before your session</div><div class="q">This link is closed.</div>' +
+        '<div class="hint">Your answers reached the Atlantic team. If you want to change something, write to them and they will update it.</div>';
+      return setHeight();
+    }
+    if (S.screen === "welcome") {
+      var started = S.answers.some(function (x) { return x && x.trim(); });
+      box.innerHTML = '<div class="n">Before your Lighthouse session</div><div class="q">Ten questions before we meet.</div>' +
+        '<div class="hint">About ten minutes. Your answers go only to the Atlantic team, who use them to point Lighthouse before the session. ' +
+        'Everything saves as you go — you can stop and come back to this link.</div>' +
+        '<div class="row"><button class="btn" id="go">' + (started ? "Continue ›" : "Start ›") + '</button><span class="k">or press <b>Enter ↵</b></span></div>';
+      $("go").onclick = function () { S.screen = "q"; S.i = started ? firstEmpty() : 0; render(); };
+      return setHeight();
+    }
+    if (S.screen === "done") {
+      box.innerHTML = '<div class="n">Done</div><div class="q">Thank you. See you in the room.</div>' +
+        '<div class="hint">Your answers are with the Atlantic team. You can still change any of them on this link until the session.</div>' +
+        '<div class="list">' + A.questions.map(function (q, i) {
+          var a = (S.answers[i] || "").trim();
+          return '<button data-i="' + i + '"><b>' + (i + 1) + '</b><span>' + esc(q.q) + '</span><em>' + (a ? "answered" : "not answered") + '</em></button>';
+        }).join("") + '</div>';
+      Array.prototype.forEach.call(box.querySelectorAll(".list button"), function (b) {
+        b.onclick = function () { S.screen = "q"; S.i = +b.getAttribute("data-i"); render(); };
+      });
+      return setHeight();
+    }
+    var i = S.i, q = A.questions[i] || { q: "", h: "" };
+    box.innerHTML = '<div class="n">' + (i + 1) + ' → ' + n + '</div><div class="q" id="qt">' + esc(q.q) + '</div>' +
+      '<div class="hint">' + esc(q.h || "Type your answer.") + '</div>' +
+      '<textarea id="in" rows="' + (q.multi ? 3 : 2) + '" aria-labelledby="qt"></textarea>' +
+      '<div class="row"><button class="btn" id="ok">' + (i === n - 1 ? "Send ✓" : "OK ✓") + '</button>' +
+      (i > 0 ? '<button class="btn out" id="back">‹ Back</button>' : '') +
+      '<span class="k">press <b>Enter ↵</b> · Shift+Enter for a new line</span></div>' +
+      '<div class="bar"><i style="width:' + Math.round(100 * i / n) + '%"></i></div>';
+    var ta = $("in");
+    ta.value = S.answers[i] || "";
+    ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); next(); } });
+    $("ok").onclick = next;
+    if ($("back")) $("back").onclick = function () { keep(i, ta.value); S.i = Math.max(0, i - 1); render(); };
+    setHeight();
+  }
+  function firstEmpty() {
+    for (var i = 0; i < A.questions.length; i++) if (!(S.answers[i] || "").trim()) return i;
+    return 0;
+  }
+  function next() {
+    var ta = $("in"); if (!ta) return;
+    keep(S.i, ta.value);
+    if (S.i >= A.questions.length - 1) {
+      if (!S.done) { S.done = uid(); flush(); }
+      S.screen = "done";
+    } else S.i += 1;
+    render();
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && S.screen === "welcome" && A.status === "open") { e.preventDefault(); var g = $("go"); if (g) g.click(); }
+  });
+
+  window.addEventListener("message", function (e) {
+    var d = e.data || {};
+    if (d.type !== "streamlit:render") return;
+    var a = d.args || {};
+    var first = !S.ready;
+    A.client = a.client || ""; A.questions = a.questions || []; A.status = a.status || "open";
+    A.submitted = !!a.submitted; A.applied = a.applied || [];
+    S.outbox = S.outbox.filter(function (it) { return A.applied.indexOf(it.u) < 0; });
+    if (first) {
+      S.answers = (a.answers || []).slice();
+      S.ready = true;
+      if (A.submitted) S.screen = "done";
+      render();
+    } else {
+      // The Atlantic team may have corrected an answer: take theirs, except
+      // where this page still has one of its own waiting, and never under the
+      // cursor of the question being typed.
+      var pend = {}; S.outbox.forEach(function (it) { pend[it.i] = 1; });
+      (a.answers || []).forEach(function (x, i) {
+        if (!pend[i] && !(S.screen === "q" && S.i === i)) S.answers[i] = x;
+      });
+      if (A.status !== "open") render();
+    }
+    saveState();
+  });
+  send("streamlit:componentReady", { apiVersion: 1 });
+  setHeight();
+  window.addEventListener("resize", setHeight);
+  // test hook (read-only)
+  window.__lhi = { state: function () { return { screen: S.screen, i: S.i, outbox: S.outbox.length, done: S.done, answers: S.answers.slice() }; } };
+})();
+</script>
+</body></html>

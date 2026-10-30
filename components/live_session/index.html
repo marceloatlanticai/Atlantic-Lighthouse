@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lighthouse · Live session</title>
+<!--
+  THE LIVE SESSION SCREEN — a Streamlit component with no build step.
+
+  The prototype the team approved (Lighthouse-Live-Session-prototype.html),
+  made real: one screen for the team and the client, run of show → the four
+  parts (Dig · Discuss · Decide) → selects → countercurrents → leave-behind,
+  with "The room" beside each part — the microphone, who said what, and
+  Lighthouse's picks as the conversation happens.
+
+  THE APP DECIDES, THIS PAGE DRAWS. Every click becomes a numbered action kept
+  in an outbox until the app acknowledges it (state.ack), the protocol of the
+  session room's panel: a component holds one value at a time and two clicks
+  can land between two reruns. Meanwhile the page shows the click at once, by
+  applying its pending actions on top of the last state it was given.
+
+  The microphone lives here too (engine.js), so its items travel in the same
+  value: {msgs, items, need}.
+-->
+<style>
+@font-face{font-family:'Telegraf';font-weight:400;font-style:normal;font-display:swap;src:url(fonts/Telegraf-Regular.woff2) format('woff2');}
+@font-face{font-family:'Telegraf';font-weight:500;font-style:normal;font-display:swap;src:url(fonts/Telegraf-Medium.woff2) format('woff2');}
+@font-face{font-family:'Telegraf';font-weight:700;font-style:normal;font-display:swap;src:url(fonts/Telegraf-Bold.woff2) format('woff2');}
+:root{
+  --ink:#000;--paper:#fff;--blue:#0000ff;--press:#0000cc;--red:#ff383c;--red-text:#ed0005;--body:#222;--meta:#666;
+  --hair:#ddd;--row:#eee;--track:#ececec;--rad:10.5px;
+  --sans:'Telegraf','Space Grotesk','Helvetica Neue',Helvetica,Arial,sans-serif;
+  --gut:max(32px,calc((100% - 1240px)/2));
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{font-family:var(--sans);background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer}
+button:disabled{cursor:not-allowed}
+a{color:var(--blue)}
+.lbl{font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:var(--blue)}
+.micro{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:var(--meta)}
+.head{font-size:40px;font-weight:700;letter-spacing:-.022em;line-height:1.08}
+.head.xl{font-size:56px;letter-spacing:-.03em}
+.head.blue{color:var(--blue)}
+.lead{font-size:17.5px;font-weight:600;line-height:1.3;color:var(--body);max-width:780px}
+.btn{border-radius:var(--rad);border:1.5px solid var(--blue);background:var(--blue);color:#fff;font-weight:700;font-size:14px;padding:12px 20px;transition:background .12s}
+.btn:hover{background:var(--press)}
+.btn.out{background:#fff;color:var(--ink);border-color:var(--ink)}
+.btn.out:hover{background:var(--ink);color:#fff}
+.btn.inv{background:#fff;color:var(--blue);border-color:#fff}
+.btn.inv:hover{background:#eaeaff}
+.btn:disabled,.btn:disabled:hover{background:#f2f2f2;border-color:#ccc;color:#666}
+.btn.sm{font-size:12px;padding:6px 12px}
+.quiet{font-size:12.5px;color:var(--meta)}
+
+/* top bar: wordmark · client · the run of show as steps · the pile of selects */
+.top{display:flex;align-items:center;gap:18px;padding:14px var(--gut);border-bottom:3px solid var(--ink);flex-wrap:wrap;background:#fff}
+.wm{font-size:22px;font-weight:700;letter-spacing:-.01em}
+.wm i{font-style:normal;color:var(--blue)}
+.client{font-size:12px;color:var(--meta)}
+.client b{color:var(--ink)}
+.steps{display:flex;gap:4px;flex-wrap:wrap;flex:1;justify-content:flex-end}
+.step{border:1.5px solid var(--ink);border-radius:var(--rad);background:#fff;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:6px 10px;color:var(--ink)}
+.step.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.step.done{border-color:var(--blue);color:var(--blue)}
+.pile{border:1.5px solid var(--blue);border-radius:var(--rad);padding:6px 12px;font-size:12px;font-weight:700;color:var(--blue);background:#fff}
+.prepl{border:none;background:none;font-size:11.5px;font-weight:700;color:var(--meta);text-decoration:underline;padding:4px 2px}
+.unsaved{font-size:11px;font-weight:700;color:var(--red-text);letter-spacing:.06em}
+
+.screen{display:none}
+.screen.on{display:block}
+.sec{padding:48px var(--gut) 56px}
+.sec.blue{background:var(--blue);color:#fff}
+.sec.blue .lbl{color:#fff}
+.sec.blue .lead{color:rgba(255,255,255,.88)}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.box{border:1.5px solid var(--ink);padding:20px 22px;background:#fff}
+.box p{font-size:15px;line-height:1.45;color:var(--body);margin-top:10px}
+.ros{display:grid;grid-template-columns:repeat(9,1fr);border-top:1.5px solid #fff;margin-top:26px}
+.ros div{padding:12px 10px 0 0;font-size:12px;color:rgba(255,255,255,.88)}
+.ros b{display:block;font-size:22px;color:#fff;letter-spacing:-.01em}
+
+/* a part: Dig · Discuss · Decide */
+.loop{display:flex;gap:6px;margin:16px 0 0;flex-wrap:wrap;align-items:center}
+.loop span{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;border:1.5px solid #fff;padding:6px 10px}
+.loop span.on{background:#fff;color:var(--blue)}
+.loop span.done{border-style:dashed;opacity:.8}
+.loop em{font-style:normal;font-size:12px;color:rgba(255,255,255,.85);margin-left:8px}
+.timer{font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.9);text-align:right}
+.timer .over{color:#fff;text-decoration:underline}
+.listening{display:block;margin-top:6px;color:#fff;visibility:hidden}
+.listening.on{visibility:visible}
+.seclay{display:grid;grid-template-columns:1fr 350px;gap:24px;margin-top:26px;align-items:start}
+.cur{background:#fff;color:var(--ink);padding:20px 22px;display:flex;flex-direction:column;position:relative}
+.cur .tag{font-size:10px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--blue);margin-bottom:9px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cur h3{font-size:18px;font-weight:700;line-height:1.28;margin-bottom:8px}
+.cur p.b{font-size:13.5px;line-height:1.55;color:var(--body)}
+.cur .ev{border-top:1px solid var(--hair);margin-top:12px;padding-top:9px;font-size:11.5px;line-height:1.55;color:var(--meta)}
+.cur .ev b{color:var(--blue);font-weight:700}
+.cur .ev button{border:none;background:none;color:var(--blue);font-size:11.5px;font-weight:700;padding:0;text-decoration:underline}
+.cur .evl{margin-top:6px;padding-left:0;list-style:none}
+.cur .evl li{padding:3px 0;border-top:1px dotted var(--hair)}
+.cur .evl a{text-decoration:none;font-weight:600}
+.cur .evl span{color:#999;margin-left:4px}
+.dec{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+.dec button{border-radius:var(--rad);border:1.5px solid var(--ink);background:#fff;font-size:11.5px;font-weight:700;padding:5px 10px;color:var(--ink)}
+.dec button:hover{background:#f2f2f2}
+.dec button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.dec button.kill.on{background:#fff;color:var(--red-text);border-color:var(--red)}
+.cur.killed{opacity:.38}
+.cur.killed h3{text-decoration:line-through}
+.cur.starred{outline:4px solid var(--blue);outline-offset:-10px}
+.star{color:var(--blue)}
+.cur textarea{width:100%;font:inherit;font-size:15px;font-weight:700;border:1.5px solid var(--ink);border-radius:var(--rad);padding:8px 10px;margin-bottom:6px;resize:vertical}
+.addrow{margin-top:20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.addrow input{flex:0 1 420px;font:inherit;font-size:14px;border:1.5px solid #fff;border-radius:var(--rad);padding:8px 12px;background:transparent;color:#fff;outline:none}
+.addrow input::placeholder{color:rgba(255,255,255,.75)}
+.addrow span{font-size:12.5px;color:rgba(255,255,255,.88)}
+.chat{margin-top:28px;border-top:2px solid #fff;padding-top:18px}
+.chat .rowc{display:flex;gap:10px;margin-top:10px}
+.chat input{flex:1;font:inherit;font-size:15px;border:1.5px solid #fff;border-radius:var(--rad);padding:11px 14px;background:transparent;color:#fff;outline:none}
+.chat input::placeholder{color:rgba(255,255,255,.75)}
+.tries{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;align-items:center}
+.tries span{font-size:11px;color:rgba(255,255,255,.8);letter-spacing:.08em;text-transform:uppercase;font-weight:700}
+.tries button{border:1.5px solid rgba(255,255,255,.7);border-radius:var(--rad);background:transparent;color:#fff;font-size:12px;font-weight:700;padding:5px 10px}
+.chatlog{margin-top:12px;font-size:13px;color:rgba(255,255,255,.9);line-height:1.6}
+.chatlog p b{color:#fff}
+.chatlog p.run{opacity:.85}
+.nav{display:flex;justify-content:space-between;align-items:center;margin-top:30px;gap:12px;flex-wrap:wrap}
+.nav .k{font-size:12.5px;color:rgba(255,255,255,.88)}
+.sec:not(.blue) .nav .k{color:var(--meta)}
+.dugnote{font-size:12px;color:rgba(255,255,255,.85);margin-top:10px}
+.empty-w{font-size:14px;line-height:1.55;color:rgba(255,255,255,.9);max-width:640px;margin-top:6px}
+
+/* section codes — four fills inside a three-colour system */
+.code{display:inline-block;width:14px;height:14px;border:1.5px solid var(--ink);vertical-align:-2px}
+.code.c0{background:var(--blue);border-color:var(--blue)}
+.code.c1{background:#fff;border:3px solid var(--blue)}
+.code.c2{background:var(--ink)}
+.code.c3{background:#fff;border:3px solid var(--ink)}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--body);margin:18px 0 0}
+
+/* selects */
+.sel{border:1.5px solid var(--ink);padding:16px 18px;background:#fff;display:flex;flex-direction:column;gap:6px}
+.sel .t{font-size:16px;font-weight:700;line-height:1.3}
+.sel .s{font-size:11px;color:var(--meta);display:flex;gap:8px;align-items:center}
+.sel .x{align-self:flex-start;border:none;background:none;color:var(--meta);font-size:11.5px;text-decoration:underline;padding:0}
+.sel .ai{font-size:11px;color:var(--blue);font-weight:700}
+
+/* territories */
+.terr{background:#fff;color:var(--ink);padding:22px 24px;border:1.5px solid var(--ink)}
+.terr .k{font-size:10px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--blue)}
+.terr h3{font-size:26px;font-weight:700;letter-spacing:-.01em;line-height:1.15;margin:10px 0 14px}
+.tens{display:grid;grid-template-columns:1fr 1fr;border-top:1.5px solid var(--ink)}
+.tens div{padding:12px 14px 12px 0;font-size:13.5px;line-height:1.5}
+.tens div+div{border-left:1px solid var(--ink);padding-left:14px}
+.terr .why{font-size:13.5px;line-height:1.6;color:var(--body);margin:12px 0}
+.terr .evs{font-size:12px;line-height:1.7;color:var(--meta);border-top:1px solid var(--hair);padding-top:10px}
+.terr textarea{width:100%;min-height:58px;font:inherit;font-size:13.5px;border:1.5px solid var(--ink);border-radius:var(--rad);padding:8px 10px;margin-top:10px}
+.terr.ripe{background:var(--blue);color:#fff;border-color:var(--blue)}
+.terr.ripe .k,.terr.ripe .evs,.terr.ripe .why{color:rgba(255,255,255,.88)}
+.terr.ripe .tens{border-top-color:#fff}.terr.ripe .tens div+div{border-left-color:#fff}
+.terr.ripe .micro{color:#fff}
+.terr.ripe .evs{border-top-color:rgba(255,255,255,.55)}
+.bar{height:3px;background:rgba(255,255,255,.3);overflow:hidden;position:relative;margin-top:22px}
+.bar i{position:absolute;left:0;top:0;height:100%;width:30%;background:#fff;animation:ind 1.15s cubic-bezier(.62,.03,.35,1) infinite}
+@keyframes ind{0%{left:-30%}100%{left:100%}}
+.say{font-size:13px;color:rgba(255,255,255,.88);margin-top:10px;min-height:18px}
+.errline{margin-top:14px;font-size:13px;line-height:1.5;border-left:3px solid #fff;padding-left:10px}
+.sec:not(.blue) .errline{border-left-color:var(--red);color:var(--body)}
+
+/* the leave-behind */
+.doc{max-width:860px}
+.linkrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.linkrow input{flex:1 1 380px;font:inherit;font-size:13px;border:1.5px solid var(--ink);border-radius:var(--rad);padding:9px 12px;color:var(--body)}
+
+/* ── the room ── */
+.room{background:#fff;color:var(--ink);padding:16px 16px 14px;position:sticky;top:12px;border:1.5px solid #fff}
+.sec:not(.blue) .room{border-color:var(--ink)}
+.room-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.room .lbl,.sec.blue .room .lbl{color:var(--blue)}
+.live{font-size:10px;letter-spacing:.14em;font-weight:700;color:var(--meta);display:inline-flex;align-items:center;gap:6px;text-transform:uppercase}
+.live i{width:8px;height:8px;border-radius:50%;background:#ccc;display:inline-block}
+.live.on{color:var(--red-text)}.live.on i{background:var(--red);animation:pulse 1.4s ease-in-out infinite}
+.live.wait{color:var(--blue)}.live.wait i{background:var(--blue);animation:pulse .8s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.room-ctl{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 6px}
+.room-ctl button{border-radius:var(--rad);border:1.5px solid var(--ink);background:#fff;font-size:11.5px;font-weight:700;padding:6px 10px;color:var(--ink)}
+.room-ctl button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.room-ctl button:disabled{opacity:.45}
+.room-ctl button.gear{margin-left:auto}
+.engs{font-size:11px;color:var(--meta);line-height:1.4}
+.interim{font-size:12.5px;color:var(--meta);font-style:italic;min-height:0;margin-top:4px;line-height:1.4}
+.rmsg{font-size:12px;line-height:1.45;color:var(--red-text);margin-top:6px}
+.rmsg:empty{display:none}
+.rmsg button{border:1.5px solid var(--blue);background:#fff;color:var(--blue);border-radius:var(--rad);font-size:11px;font-weight:700;padding:3px 8px;margin-left:6px}
+.tabwhy{font-size:11.5px;line-height:1.45;color:var(--body);margin-top:6px;border-left:3px solid var(--blue);padding-left:8px}
+.tabwhy:empty{display:none}
+.consentbox{border:1.5px solid var(--blue);padding:10px 12px;margin:10px 0 4px;font-size:12.5px;line-height:1.45;color:var(--body)}
+.consentbox button{margin-top:8px}
+.settings{border-top:1px solid var(--hair);margin-top:8px;padding-top:8px;display:grid;gap:8px}
+.settings label{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:var(--meta);display:grid;gap:4px}
+.settings select{font:inherit;font-size:13px;padding:6px 8px;border:1.5px solid var(--ink);border-radius:var(--rad);background:#fff}
+.room-mode{display:flex;border:1.5px solid var(--ink);border-radius:var(--rad);overflow:hidden;margin:12px 0 10px}
+.room-mode button{flex:1;border:none;background:#fff;font-size:11px;font-weight:700;padding:6px 4px;color:var(--ink)}
+.room-mode button.on{background:var(--ink);color:#fff}
+.ppl{display:flex;gap:5px;flex-wrap:wrap;margin:4px 0 10px}
+.ppl button{border:1.5px solid var(--ink);border-radius:var(--rad);background:#fff;font-size:11px;font-weight:700;padding:4px 8px;color:var(--ink)}
+.ppl button.fac{border-style:dashed;color:var(--meta)}
+.ppl button.tapped{background:var(--blue);border-color:var(--blue);color:#fff}
+.ppl button.unk{color:var(--meta)}
+.ppl button.ghost{border-color:var(--blue);color:var(--blue)}
+.ppl em{font-style:normal;font-weight:500;opacity:.7;margin-left:3px}
+.pedit{border-top:1px solid var(--hair);padding-top:8px;margin-bottom:10px}
+.pedit .pr{display:grid;grid-template-columns:1fr 1fr;gap:5px;padding:6px 0;border-bottom:1px solid var(--row)}
+.pedit .pr input{font:inherit;font-size:12.5px;border:1.5px solid var(--ink);border-radius:8px;padding:5px 7px;min-width:0}
+.pedit .pr .acts{grid-column:1/3;display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--meta)}
+.pedit .pr .acts button{border:1.5px solid var(--ink);border-radius:8px;background:#fff;font-size:11px;font-weight:700;padding:3px 8px}
+.pedit .pr .acts button.on{background:var(--ink);color:#fff}
+.pedit .pr .acts select{font:inherit;font-size:11px;border:1px solid var(--hair);border-radius:6px;padding:2px 4px}
+.pedit .heard{grid-column:1/3;font-size:11px;color:var(--meta);font-style:italic}
+.tx{max-height:300px;overflow:auto;border-top:1.5px solid var(--ink)}
+.tx p{font-size:13px;line-height:1.45;padding:7px 0;border-bottom:1px solid var(--row)}
+.tx p b{font-weight:700}.tx p span{font-size:11px;color:var(--meta);margin-left:4px}
+.tx p.fac b{color:var(--meta)}
+.tx .empty{font-size:12.5px;color:var(--meta);padding:10px 0;line-height:1.45}
+.reads{margin-top:10px;border-top:1.5px solid var(--ink);padding-top:6px}
+.reads .rh{display:flex;justify-content:space-between;align-items:center}
+.reads .rh button{border:none;background:none;color:var(--blue);font-size:11px;font-weight:700;text-decoration:underline;padding:0}
+.reads p{font-size:12px;line-height:1.5;color:var(--body);padding:4px 0}
+.reads p b{color:var(--blue)}
+.reads p.err{color:var(--meta)}
+.consent{font-size:11px;color:var(--meta);margin-top:10px;line-height:1.45}
+.talk{font-size:11.5px;color:var(--meta);margin-top:8px}
+.talk b{color:var(--ink)}
+.aimark{margin-top:12px;padding:9px 11px;border:1.5px solid var(--blue);font-size:12px;line-height:1.45;color:var(--blue)}
+.aimark b{font-weight:700}
+.aimark button{border:none;background:none;color:var(--blue);text-decoration:underline;font-size:12px;font-weight:700;padding:0;margin-left:6px}
+.aimark.sugg{background:var(--blue);color:#fff}
+.aimark.sugg button{color:#fff}
+.contest{margin-top:10px;padding:8px 11px;border:1.5px solid var(--ink);font-size:12px;line-height:1.45;color:var(--ink)}
+.contest b{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase}
+.said{margin-top:8px;font-size:12px;line-height:1.5;color:var(--body);font-style:italic}
+.said b{font-style:normal}
+@media(max-width:1100px){.seclay{grid-template-columns:1fr}.room{position:static}}
+@media(max-width:820px){.grid2,.grid3,.tens{grid-template-columns:1fr}.head{font-size:30px}.head.xl{font-size:36px}.ros{grid-template-columns:repeat(3,1fr)}}
+@media(prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}.live.on i,.live.wait i{animation:none}}
+</style>
+</head>
+<body>
+<div class="top" id="top">
+  <div class="wm">LIGHT<i>HOUSE</i></div>
+  <div class="client" id="clientline"></div>
+  <span class="unsaved" id="unsaved"></span>
+  <div class="steps" id="steps"></div>
+  <div class="pile" id="pile">Selects · 0</div>
+  <button class="prepl" id="prepl" title="Back to the preparation page — the microphone stops">‹ Prepare</button>
+</div>
+<div class="screen" id="s-setup"></div>
+<div class="screen" id="s-sec"></div>
+<div class="screen" id="s-selects"></div>
+<div class="screen" id="s-terr"></div>
+<div class="screen" id="s-brief"></div>
+<script src="engine.js"></script>
+<script>
+(function () {
+  "use strict";
+  function send(type, data) { window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*"); }
+  var lastH = 0;
+  function setHeight() {
+    var h = Math.ceil(document.documentElement.scrollHeight);
+    if (Math.abs(h - lastH) > 2) { lastH = h; send("streamlit:setFrameHeight", { height: h }); }
+  }
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function clone(x) { return JSON.parse(JSON.stringify(x)); }
+  function mmss(s) { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2); }
+
+  var SRV = null, V = null, gotAt = 0;
+  var L = { seq: -1, pending: [], editing: null, drafts: {}, evOpen: {}, people: false, settings: false,
+            tabOn: false, tabWhy: "", listen: ["", "Not listening"], interim: "", msg: "", msgFb: false,
+            sigs: {}, sayN: 0, lastTap: "" };
+  var extra = null;
+
+  // ── the microphone ──
+  var eng = window.LhEngine({
+    flush: flush,
+    onState: function (cls, label) { L.listen = [cls, label]; drawListen(); },
+    onInterim: function (t) { L.interim = t || ""; var el = $("interim"); if (el) el.textContent = L.interim; },
+    onMsg: function (t, fb) { L.msg = t; L.msgFb = fb; drawListen(); },
+    onTab: function (on, why) { L.tabOn = on; L.tabWhy = why || ""; drawListen(); }
+  });
+
+  function flush() {
+    var v = { msgs: L.pending, items: eng.outbox(), need: eng.need() };
+    if (extra) { v.switch = extra.switch; v.sw = extra.sw; }
+    send("streamlit:setComponentValue", { value: v, dataType: "json" });
+  }
+  function act(m) {
+    L.seq += 1; m.seq = L.seq; L.pending.push(m);
+    flush();
+    if (SRV) { V = view(SRV); render(true); }
+  }
+
+  // ── the view: the app's state with this page's unacknowledged actions on top ──
+  function curOf(st, id) {
+    for (var i = 0; i < st.sections.length; i++) {
+      var cs = st.sections[i].currents;
+      for (var j = 0; j < cs.length; j++) if (cs[j].id === id) return cs[j];
+    }
+    return null;
+  }
+  function view(s) {
+    var st = clone(s);
+    L.pending.forEach(function (m) {
+      var c = m.id ? curOf(st, m.id) : null;
+      switch (m.type) {
+        case "go": st.screen = m.screen; st.sec = m.sec; break;
+        case "decide": if (c) { c.dec = c.dec === m.d ? "" : m.d; c.ai = null; c.sugg = null; } break;
+        case "set": if (c) { c.dec = m.d; c.ai = null; c.sugg = null; } break;
+        case "tweak": if (c) { c.t = m.text; if (!c.dec || c.dec === "kill") c.dec = "keep"; c.ai = null; c.sugg = null; } break;
+        case "undo": if (c) { c.dec = ""; c.ai = null; c.locked = true; } break;
+        case "confirm": if (c && c.sugg) { c.dec = c.sugg.lv; c.ai = { who: c.sugg.who, m: c.sugg.m }; c.sugg = null; } break;
+        case "dismiss": if (c) c.sugg = null; break;
+        case "mode": st.mode = m.m; break;
+        case "consent": st.consent = true; break;
+        case "golive": st.went_live = true; break;
+        case "add": st.sections[m.sec].currents.push({ id: "tmp" + m.seq, t: m.text, b: "Added in the session.", src: "room", ev: [], dec: "keep", said: [] }); break;
+        case "ask": (st.sections[m.sec].chat = st.sections[m.sec].chat || []).push({ id: "tmp" + m.seq, q: m.q, status: "running" }); break;
+        case "terr": st.terr.status = "running"; st.terr.err = ""; break;
+        case "ripe": st.terr.items.forEach(function (t) { if (t.id === m.id) t.ripe = !!m.on; }); break;
+        case "tnote": st.terr.items.forEach(function (t) { if (t.id === m.id) t.notes = m.text; }); break;
+        case "fac": st.people.forEach(function (p) { if (p.id === m.id) p.fac = !p.fac; }); break;
+        case "name": st.people.forEach(function (p) { if (p.id === m.id) { p.name = m.name; p.role = m.role; p.short = (m.name || "").split(" ")[0] || p.short; } }); break;
+        case "intro": st.intro.on = !!m.on; break;
+        case "lang": if (st.listen) st.listen.lang = m.lang; break;
+        case "engine": if (st.listen) st.listen.engine = m.engine === "auto" ? "aai" : "chrome"; break;
+      }
+    });
+    // selects follow the decisions
+    var sel = [];
+    st.sections.forEach(function (sc, i) { sc.currents.forEach(function (c) { if (c.dec === "keep" || c.dec === "star") sel.push({ id: c.id, sec: i, t: c.t, star: c.dec === "star", ai: !!c.ai }); }); });
+    st.selects = sel;
+    return st;
+  }
+
+  // ── navigation ──
+  var STEPS = [["setup", "Session"], ["sec0", "Company"], ["sec1", "Competition"], ["sec2", "Customer"], ["sec3", "Climate"],
+               ["selects", "Selects"], ["terr", "Countercurrent"], ["brief", "Brief"]];
+  function go(screen, sec) {
+    if (screen === "sec" && !V.went_live) act({ type: "golive" });
+    act({ type: "go", screen: screen, sec: sec === undefined ? V.sec : sec });
+    // The page scrolls in the app around this frame: bring the frame's top into view.
+    try { if (window.frameElement) window.frameElement.scrollIntoView({ block: "start" }); } catch (e) {}
+  }
+  function stepKey(st) { return st.screen === "sec" ? "sec" + st.sec : st.screen; }
+
+  // ── drawing ──
+  function keepInputs(fn) {
+    // Redrawing must never take text from under someone's fingers: remember
+    // what is typed in every field with an id, and where the cursor is.
+    var a = document.activeElement, aid = a && a.id, sel = null, vals = {};
+    if (aid && (a.tagName === "INPUT" || a.tagName === "TEXTAREA")) { try { sel = [a.selectionStart, a.selectionEnd]; } catch (e) {} }
+    Array.prototype.forEach.call(document.querySelectorAll("input[id],textarea[id]"), function (el) {
+      if (el.type !== "checkbox") vals[el.id] = el.value;
+    });
+    var txs = {}; Array.prototype.forEach.call(document.querySelectorAll(".tx[id]"), function (el) { txs[el.id] = el.scrollHeight - el.scrollTop - el.clientHeight < 30; });
+    fn();
+    Object.keys(vals).forEach(function (id) { var el = $(id); if (el && el.dataset.keep !== "0") el.value = vals[id]; });
+    Object.keys(txs).forEach(function (id) { var el = $(id); if (el && txs[id]) el.scrollTop = el.scrollHeight; });
+    Array.prototype.forEach.call(document.querySelectorAll(".tx"), function (el) { if (!(el.id in txs)) el.scrollTop = el.scrollHeight; });
+    if (aid) { var b = $(aid); if (b) { b.focus(); if (sel) { try { b.setSelectionRange(sel[0], sel[1]); } catch (e) {} } } }
+  }
+  function render(force) {
+    if (!V) return;
+    var sig = JSON.stringify([V, L.editing, L.evOpen, L.people, L.settings, L.tabOn, L.tabWhy, L.pdfWait], function (k, v) { return k === "file" ? undefined : v; });
+    if (!force && sig === L.lastSig) { drawListen(); return; }
+    L.lastSig = sig;
+    keepInputs(function () {
+      drawTop();
+      var scr = V.screen || "setup";
+      // Only the screen on show exists: the room panel appears on two screens,
+      // and two copies of it would mean two microphone buttons with one id.
+      ["setup", "sec", "selects", "terr", "brief"].forEach(function (k) {
+        var el = $("s-" + k); el.classList.toggle("on", k === scr);
+        if (k !== scr && el.innerHTML) el.innerHTML = "";
+      });
+      if (scr === "setup") drawSetup();
+      else if (scr === "sec") drawSec();
+      else if (scr === "selects") drawSelects();
+      else if (scr === "terr") drawTerr();
+      else drawBrief();
+      wire();
+    });
+    drawListen(); tick(); setHeight();
+  }
+  function drawTop() {
+    var c = V.client || {};
+    $("clientline").innerHTML = "Live session · <b>" + esc(c.name || c.brand || "") + "</b>" + (c.meta ? " · " + esc(c.meta) : "");
+    var cur = stepKey(V), idx = STEPS.findIndex(function (s) { return s[0] === cur; });
+    $("steps").innerHTML = STEPS.map(function (s, i) {
+      return '<button class="step ' + (i === idx ? "on" : (i < idx ? "done" : "")) + '" data-step="' + i + '"><span style="opacity:.55;margin-right:5px">' + i + '</span>' + s[1] + '</button>';
+    }).join("");
+    $("pile").textContent = "Selects · " + V.selects.length;
+    $("unsaved").textContent = V.saved_ok === false ? "Not saved — retrying" : "";
+  }
+
+  function cardsHtml() {
+    return (V.cards || []).length ? V.cards.map(function (c) {
+      return '<div class="box"><div class="micro" style="color:var(--blue)">' + esc(c.l) + '</div><p>' + esc(c.x).replace(/\n/g, "<br>") + '</p></div>';
+    }).join("") : '<div class="quiet" style="grid-column:1/-1">The client has not answered the questions yet — their link is on the preparation page.</div>';
+  }
+  function drawSetup() {
+    var ros = (V.ros || []).map(function (r) { return '<div><b>' + r[0] + '′</b>' + esc(r[1]) + '</div>'; }).join("");
+    var names = (V.room_names || "").trim();
+    $("s-setup").innerHTML =
+      '<section class="sec blue"><div class="lbl">Live session · 2 hours' + (V.elapsed != null ? ' · <span id="clock">' + mmss(V.elapsed) + '</span> in' : '') + '</div>' +
+      '<div class="head xl" style="margin:14px 0 18px">Find something you weren\'t looking for</div>' +
+      '<div class="lead">Four parts, each dug by Lighthouse before we met. The room discusses, keeps what is true and kills what is not; the selects become the raw material for the countercurrents.</div>' +
+      '<div class="ros">' + ros + '</div></section>' +
+      '<section class="sec"><div class="seclay"><div>' +
+      '<div class="lbl">From the intake</div><div class="head blue" style="margin:14px 0 22px">What the room already told us</div>' +
+      '<div class="grid3">' + cardsHtml() + '</div>' +
+      (names ? '<div class="box" style="margin-top:16px"><div class="micro" style="color:var(--blue)">Who will be in the room</div><p>' + esc(names).replace(/\n/g, "<br>") + '</p></div>' : '') +
+      '<div class="nav"><span class="k">Start listening on the right, and run a round of introductions so Lighthouse knows who is who.</span>' +
+      '<button class="btn" data-go="sec" data-sec="0">Start · Company currents ›</button></div>' +
+      '</div>' + roomHtml(true) + '</div></section>';
+  }
+
+  // "Dana Reyes" → "Dana"; a voice with no name yet keeps its letter ("Voice C").
+  function shortName(w) { w = String(w || ""); return /^Voice [A-Z]+$/.test(w) || w === "You" || w === "Someone" ? w : w.split(" ")[0]; }
+  function srcTag(c) {
+    return c.src === "talk" ? "◉ From the conversation" : c.src === "room" ? "Added by the room" : c.src === "team" ? "Added by Atlantic" : c.src === "ask" ? "Asked by the room" : "Current";
+  }
+  function roomBits(c) {
+    var out = [], L_ = function (lv) { return lv === "star" ? "★ Star" : "✓ Keep"; };
+    if (c.ai && c.dec) out.push('<div class="aimark">◉ <b>Picked from the conversation</b> — ' + esc((c.ai.who || []).join(", ")) + ' · ' + c.ai.m + ' mention' + (c.ai.m === 1 ? "" : "s") + '<button data-undo="' + c.id + '">Undo</button></div>');
+    if (c.sugg && !c.dec) out.push('<div class="aimark sugg">◉ <b>Lighthouse suggests ' + L_(c.sugg.lv) + '</b> — ' + esc((c.sugg.who || []).join(", ")) + ' · ' + c.sugg.m + ' mentions<br><button data-confirm="' + c.id + '">Confirm</button><button data-dismiss="' + c.id + '">Dismiss</button></div>');
+    if (c.flag) out.push('<div class="contest"><b>Contested</b> — ' + esc(c.flag.who) + ': “' + esc(c.flag.x) + '”</div>');
+    if (c.said && c.said.length) out.push('<div class="said">' + c.said.map(function (q) { return '<b>' + esc(shortName(q.who)) + ':</b> “' + esc(q.x) + '”'; }).join("<br>") + '</div>');
+    out.push('<div class="talk">' + (c.talk ? 'Talk · <b>' + c.talk.m + ' mention' + (c.talk.m > 1 ? "s" : "") + '</b> · ' + c.talk.n + ' ' + (c.talk.n === 1 ? "person" : "people") + (c.talk.ret ? " · came back to it" : "") : "Not discussed yet") + '</div>');
+    return out.join("");
+  }
+  function evHtml(c) {
+    var ev = c.ev || [];
+    if (!ev.length && !c.evline) return (c.src === "room" || c.src === "team") ? '<div class="ev">' + (c.looking ? "Lighthouse is looking for posts that back it…" : (c.src === "team" ? "Atlantic's own — no source yet." : "The room's own — no source yet.")) + '</div>' : "";
+    var open = !!L.evOpen[c.id], links = ev.filter(function (x) { return x.url; });
+    return '<div class="ev"><b>Evidence</b> · ' + esc(c.evline || "") + (links.length ? ' <button data-ev="' + c.id + '">' + (open ? "hide" : "show ↗") + '</button>' : "") +
+      (open ? '<ul class="evl">' + links.map(function (x) { return '<li><a href="' + esc(x.url) + '" target="_blank" rel="noopener">' + esc(x.ti || x.url) + ' ↗</a><span>' + esc(x.src) + (x.d ? " · " + esc(x.d) : "") + '</span></li>'; }).join("") + '</ul>' : "") + '</div>';
+  }
+  function curHtml(c) {
+    var d = c.dec || "", tw = L.editing === c.id;
+    return '<div class="cur ' + (d === "kill" ? "killed " : "") + (d === "star" ? "starred" : "") + '" data-id="' + c.id + '">' +
+      '<div class="tag">' + srcTag(c) + (d === "star" ? ' <span class="star">★ starred</span>' : "") + (c.q ? ' <span style="color:var(--meta);letter-spacing:.04em;text-transform:none;font-weight:600">“' + esc(c.q) + '”</span>' : "") + '</div>' +
+      (tw ? '<textarea id="tw-' + c.id + '" rows="2" maxlength="120">' + esc(L.drafts[c.id] != null ? L.drafts[c.id] : c.t) + '</textarea><div class="dec" style="margin-top:0"><button class="on" data-save="' + c.id + '">Save</button><button data-cancel="1">Cancel</button></div>'
+          : '<h3>' + esc(c.t) + '</h3>') +
+      '<p class="b">' + esc(c.b) + '</p>' + evHtml(c) + roomBits(c) +
+      '<div class="dec">' +
+      '<button class="' + (d === "keep" ? "on" : "") + '" data-dec="keep" data-id="' + c.id + '">✓ Keep</button>' +
+      '<button class="' + (d === "star" ? "on" : "") + '" data-dec="star" data-id="' + c.id + '">★ Star</button>' +
+      '<button data-tweak="' + c.id + '">Tweak</button>' +
+      '<button class="kill ' + (d === "kill" ? "on" : "") + '" data-dec="kill" data-id="' + c.id + '">✕ Kill</button></div></div>';
+  }
+  function drawSec() {
+    var i = V.sec || 0, sc = V.sections[i] || { currents: [] };
+    var cur = sc.currents || [];
+    var anyDec = cur.some(function (c) { return c.dec; });
+    var kept = cur.filter(function (c) { return c.dec === "keep" || c.dec === "star"; }).length;
+    var killed = cur.filter(function (c) { return c.dec === "kill"; }).length;
+    var dug = sc.dug_at ? "Lighthouse dug this part on " + esc(String(sc.dug_at).slice(0, 10)) + " · the team checked it before the session." : "";
+    var next = i < V.sections.length - 1 ? "Next · " + esc(V.sections[i + 1].key) + " ›" : "To the selects ›";
+    var chat = (sc.chat || []).map(function (q) {
+      var tail = q.status === "running" ? "<p class='run'>Digging…</p>" : q.status === "done" ? "<p>A new current below — keep, tweak or kill it like the others.</p>" : "<p>" + esc(q.note || "Nothing found.") + "</p>";
+      return "<p><b>Room:</b> " + esc(q.q) + "</p>" + tail;
+    }).join("");
+    var tries = (V.curious || []).map(function (q, k) { return '<button data-try="' + k + '">' + esc(q) + '</button>'; }).join("");
+    $("s-sec").innerHTML =
+      '<section class="sec blue"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px;flex-wrap:wrap"><div>' +
+      '<div class="lbl">Part ' + (i + 1) + ' of 4 · ' + esc(sc.key) + '</div><div class="head" style="margin-top:14px">' + esc(sc.head) + '</div>' +
+      '<div class="lead" style="margin-top:12px">' + esc(sc.q) + '</div></div>' +
+      '<div class="timer"><span id="sectimer"></span><span class="listening" id="listening">◉ Lighthouse is listening</span></div></div>' +
+      '<div class="loop"><span class="done">Dig ✓</span><span class="' + (anyDec ? "" : "on") + '">Discuss</span><span class="' + (anyDec ? "on" : "") + '">Decide</span></div>' +
+      (dug ? '<div class="dugnote">' + dug + '</div>' : "") +
+      '<div class="seclay"><div>' +
+      (cur.length ? '<div class="grid2">' + cur.map(curHtml).join("") + '</div>'
+                  : '<div class="empty-w">Nothing on screen for this part yet. Add what the room knows, or ask Lighthouse below.</div>') +
+      '</div>' + roomHtml(false) + '</div>' +
+      '<div class="addrow"><input id="add-in" maxlength="120" placeholder="+ Add a current — something the room knows that the data did not find"><button class="btn inv sm" data-add="1">Add</button></div>' +
+      '<div class="chat"><div class="lbl">Ask Lighthouse</div>' +
+      '<div class="rowc"><input id="ask-in" maxlength="300" placeholder="Dig into something the room just said — e.g. “what about Gen Z planners?”"><button class="btn inv" data-ask="1">Dig ›</button></div>' +
+      (tries ? '<div class="tries"><span>Their questions</span>' + tries + '</div>' : "") +
+      '<div class="chatlog">' + chat + '</div></div>' +
+      '<div class="nav"><span class="k">' + kept + ' kept · ' + killed + ' killed · ' + cur.length + ' on screen · keys K S T X decide the first open one</span>' +
+      '<div style="display:flex;gap:10px"><button class="btn inv" data-prev="1">‹ Back</button><button class="btn inv" data-next="1">' + next + '</button></div></div>' +
+      '</section>';
+  }
+
+  function roomHtml(setup) {
+    var lv = V.listen || {}, aai = lv.engine === "aai", listening = eng.listening();
+    var lines = V.lines || [];
+    var people = V.people || [];          // the app already left out who has not spoken
+    var tapMode = lv.engine !== "aai";
+    var chips = people.map(function (p, k) {
+      var cls = (p.fac ? "fac " : "") + (tapMode && V.tap_who === p.id ? "tapped " : "") + (!p.name && !p.you ? "unk" : "");
+      return '<button class="' + cls + '" data-person="' + p.id + '" title="' + (tapMode ? "Tap: this person is speaking (key " + (k + 1) + ")" : "Names") + '">' + esc(p.label) + (p.pct ? '<em>' + p.pct + '%</em>' : '') + '</button>';
+    }).join("");
+    var pedit = "";
+    if (L.people) {
+      pedit = '<div class="pedit">' + (V.people || []).map(function (p) {
+        var others = (V.people || []).filter(function (q) { return q.id !== p.id; });
+        return '<div class="pr"><input id="pn-' + p.id + '" placeholder="Name" value="' + esc(p.name || "") + '"><input id="pr-' + p.id + '" placeholder="Role" value="' + esc(p.role || "") + '">' +
+          (p.heard ? '<div class="heard">“' + esc(p.heard) + '”</div>' : '') +
+          '<div class="acts"><button data-pname="' + p.id + '">Save</button><button class="' + (p.fac ? "on" : "") + '" data-pfac="' + p.id + '" title="The Atlantic side: their words never count as strength">Atlantic</button>' +
+          (others.length ? '<select data-pmerge="' + p.id + '"><option value="">Same person as…</option>' + others.map(function (q) { return '<option value="' + q.id + '">' + esc(q.label) + '</option>'; }).join("") + '</select>' : '') +
+          '<span>' + (p.words || 0) + ' words</span></div></div>';
+      }).join("") + (tapMode ? '<button class="btn sm out" data-padd="1" style="margin-top:6px">+ Someone new</button>' : '') + '</div>';
+    }
+    var settings = "";
+    if (L.settings) {
+      settings = '<div class="settings"><label>Language<select id="set-lang">' + (lv.langs || []).map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === lv.lang ? " selected" : "") + '>' + esc(x[1]) + '</option>'; }).join("") + '</select></label>' +
+        (lv.has_key ? '<label>Voices<select id="set-eng"><option value="auto"' + (aai ? " selected" : "") + '>Voices told apart · AssemblyAI EU</option><option value="tap"' + (!aai ? " selected" : "") + '>Tap who speaks · free</option></select></label>' : '') + '</div>';
+    }
+    var consent = V.consent ? "" :
+      '<div class="consentbox">Before the microphone switches on: everyone in the room knows this conversation is being transcribed, with names on who said what' + (aai ? " — voices are told apart for this meeting only." : ".") +
+      '<br><button class="btn sm" data-consent="1">I\'ve told the room ✓</button></div>';
+    var intro = setup ? '<button class="' + (V.intro && V.intro.on ? "on" : "") + '" data-intro="1">' + (V.intro && V.intro.on ? "■ End the introductions" : "Round of introductions") + '</button>' : "";
+    var reads = (setup ? [] : ((V.sections[V.sec] || {}).reads || [])).map(function (r) {
+      if (r.err) return '<p class="err"><b>Reading ' + r.n + '</b> · ' + esc(r.err) + '</p>';
+      var verb = r.mode === "suggest" ? "suggests" : "picked";
+      var bits = [];
+      if (r.picked && r.picked.length) bits.push(verb + " " + r.picked.map(function (p) { return (p.lv === "star" ? "★ " : "✓ ") + esc(p.t); }).join(" · "));
+      if (r.flagged && r.flagged.length) bits.push("flagged as contested: " + r.flagged.map(esc).join(" · "));
+      return '<p><b>Reading ' + r.n + '</b> · ' + (bits.length ? bits.join(" — ") : "nothing strong enough yet.") + '</p>';
+    }).join("");
+    var running = V.running || {};
+    return '<aside class="room" id="room"><div class="room-h"><span class="lbl">◉ The room</span><span class="live" id="live"><i></i><span id="live-t">Off</span></span></div>' +
+      consent +
+      '<div class="room-ctl"><button id="listen" data-listen="1"' + (V.consent ? "" : " disabled") + '>▶ Listen</button>' +
+      (aai ? '<button id="tabbtn" data-tab="1" title="Google Meet: add the Meet tab\'s sound">' + (L.tabOn ? "■ Meet tab" : "+ Meet tab") + '</button>' : '') + intro +
+      '<button class="gear" data-gear="1" title="Language and voices">⚙</button></div>' +
+      '<div class="engs" id="engs"></div><div class="interim" id="interim">' + esc(L.interim) + '</div><div class="rmsg" id="rmsg"></div><div class="tabwhy" id="tabwhy">' + esc(L.tabWhy) + '</div>' +
+      settings +
+      (setup ? "" : '<div class="room-mode"><button class="' + (V.mode !== "suggest" ? "on" : "") + '" data-mode="auto">AI selects</button><button class="' + (V.mode === "suggest" ? "on" : "") + '" data-mode="suggest">AI suggests</button></div>') +
+      '<div class="micro" style="margin:8px 0 4px">People' + (tapMode ? " · tap who is speaking" : "") + '</div><div class="ppl">' + (chips || '<span class="quiet">' + (tapMode ? "Nobody yet — add who is in the room." : "Voices appear as people speak.") + '</span>') +
+      '<button class="ghost" data-people="1">' + (L.people ? "Done" : "Names") + '</button></div>' + pedit +
+      '<div class="micro" style="margin-bottom:6px">Transcript · who said it</div>' +
+      '<div class="tx" id="tx-' + (setup ? "s" : V.sec) + '">' + (lines.length ? lines.map(function (l) {
+        return '<p class="' + (l.fac ? "fac" : "") + '"><b>' + esc(l.who) + '</b>' + (l.role ? '<span>' + esc(l.role) + '</span>' : '') + '<br>' + esc(l.x) + '</p>';
+      }).join("") : '<div class="empty">' + (V.consent ? "Press Listen — what is said here appears here, with who said it." : "Ask the room first, then press Listen.") + '</div>') + '</div>' +
+      (setup ? "" : '<div class="reads"><div class="rh"><span class="micro">Lighthouse\'s readings' + (running.label ? " · reading…" : "") + '</span><button data-readnow="1">Read now</button></div>' +
+        (reads || '<p style="color:var(--meta)">Lighthouse reads the last minutes every 30 seconds and counts what the room keeps coming back to.</p>') + '</div>') +
+      '<div class="consent">Recorded with the room\'s consent. Voices told apart for this meeting only — nothing is kept as a voiceprint.</div></aside>';
+  }
+  function drawListen() {
+    var lv = V ? (V.listen || {}) : {}, cls = L.listen[0], on = eng.listening();
+    var live = $("live"); if (live) { live.className = "live " + (cls === "on" ? "on" : cls === "wait" ? "wait" : ""); }
+    var lt = $("live-t"); if (lt) lt.textContent = cls === "on" ? "Live" : cls === "wait" ? "…" : "Off";
+    var b = $("listen"); if (b) { b.textContent = on ? "❚❚ Pause" : "▶ Listen"; b.classList.toggle("on", on); }
+    var es = $("engs"); if (es) es.textContent = (on ? L.listen[1] : "Not listening") + " · " + (lv.engine === "aai" ? "AssemblyAI EU, voices told apart" : "Chrome, tap who speaks");
+    var tb = $("tabbtn"); if (tb) tb.textContent = L.tabOn ? "■ Meet tab" : "+ Meet tab";
+    var tw = $("tabwhy"); if (tw) tw.textContent = L.tabWhy;
+    var m = $("rmsg");
+    if (m) {
+      m.innerHTML = "";
+      if (L.msg) {
+        m.appendChild(document.createTextNode(L.msg));
+        if (L.msgFb) { var fb = document.createElement("button"); fb.textContent = "Use the free mode"; fb.onclick = function () { eng.useFree(); extra = { switch: "tap", sw: Date.now() }; flush(); }; m.appendChild(fb); }
+      }
+    }
+    var li = $("listening"); if (li) li.classList.toggle("on", on && cls === "on");
+  }
+
+  function drawSelects() {
+    var sel = V.selects || [], secs = V.sections;
+    $("s-selects").innerHTML = '<section class="sec"><div class="lbl">The selects</div>' +
+      '<div class="head blue" style="margin-top:14px">Everything the room kept, side by side</div>' +
+      '<div class="lead" style="margin-top:14px">Starred currents carry more weight when Lighthouse looks for the countercurrents. Take anything out, or go back and add what is missing, before generating.</div>' +
+      '<div class="legend">' + secs.map(function (s, i) { return '<span><span class="code c' + i + '"></span> ' + esc(s.key) + '</span>'; }).join("") + '</div>' +
+      '<div class="grid3" style="margin-top:22px">' + (sel.length ? sel.map(function (c) {
+        return '<div class="sel"><div class="s"><span class="code c' + c.sec + '"></span>' + esc(secs[c.sec].key) + (c.star ? ' · <b class="star">★ starred</b>' : '') + '</div>' +
+          (c.ai ? '<div class="ai">◉ picked from the conversation</div>' : '') + '<div class="t">' + esc(c.t) + '</div><button class="x" data-out="' + c.id + '">Take it out</button></div>';
+      }).join("") : '<div class="quiet">Nothing kept yet — go back to a part and keep what is true.</div>') + '</div>' +
+      '<div class="nav"><span class="k">' + sel.length + ' currents · ' + sel.filter(function (c) { return c.star; }).length + ' starred. Lighthouse needs at least ' + (V.min_selects || 4) + ' to find the gaps between them.</span>' +
+      '<button class="btn" data-gen="1"' + (sel.length < (V.min_selects || 4) || (V.terr || {}).status === "running" ? " disabled" : "") + '>Find the countercurrents ›</button></div></section>';
+  }
+
+  var SAY = ["Looking for the gaps between the selects…", "Holding two true things against each other…", "Reading what the room starred…", "Throwing out what everyone else already says…", "Checking each territory against the selects…"];
+  function drawTerr() {
+    var t = V.terr || {}, items = t.items || [], run = t.status === "running";
+    $("s-terr").innerHTML = '<section class="sec blue"><div class="lbl">Countercurrent</div>' +
+      '<div class="head xl" style="margin-top:14px">Where the brand could go that nobody else is going</div>' +
+      '<div class="lead" style="margin-top:14px">Each territory sits in the gap between two currents the room kept. Discuss, add notes, and mark the ones that are ripe — ripe ones stay when Lighthouse looks again.</div>' +
+      (run ? '<div class="bar"><i></i></div><div class="say" id="say">' + SAY[L.sayN % SAY.length] + '</div>' : '') +
+      (t.err ? '<div class="errline">' + esc(t.err) + '</div>' : '') + '</section>' +
+      '<section class="sec">' + (items.length ? '<div class="grid2">' + items.map(function (x, k) {
+        return '<div class="terr ' + (x.ripe ? "ripe" : "") + '"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span class="k">Territory / 0' + (k + 1) + '</span>' +
+          '<button class="btn sm ' + (x.ripe ? "inv" : "out") + '" data-ripe="' + x.id + '" data-on="' + (x.ripe ? 0 : 1) + '">' + (x.ripe ? "★ Ripe" : "Mark ripe") + '</button></div>' +
+          '<h3>' + esc(x.t) + '</h3><div class="tens"><div><div class="micro" style="margin-bottom:6px">Side A</div>' + esc(x.a) + '</div><div><div class="micro" style="margin-bottom:6px">Side B</div>' + esc(x.b) + '</div></div>' +
+          '<div class="why">' + esc(x.why) + '</div><div class="evs">Built from: ' + ((x.from || []).map(function (f) { return "· " + esc(f); }).join("<br>") || "—") + '</div>' +
+          '<textarea id="tn-' + x.id + '" data-tnote="' + x.id + '" placeholder="Notes from the room…">' + esc(x.notes || "") + '</textarea></div>';
+      }).join("") + '</div>' : (run ? '' : '<div class="quiet">No territories yet. ' + ((V.selects || []).length >= (V.min_selects || 4) ? 'Find them from the selects.' : 'Keep at least ' + (V.min_selects || 4) + ' currents first.') + '</div>')) +
+      '<div class="nav"><button class="btn out" data-gen="1"' + (run || (V.selects || []).length < (V.min_selects || 4) ? " disabled" : "") + '>' + (items.length ? "Regenerate with the notes" : "Find the countercurrents ›") + '</button>' +
+      '<button class="btn" data-go="brief">Write the leave-behind ›</button></div></section>';
+  }
+  function drawBrief() {
+    var lv = V.leave || {};
+    $("s-brief").innerHTML = '<section class="sec"><div class="doc">' + (lv.html || '<div class="quiet">Preparing the leave-behind…</div>') + '</div>' +
+      '<div class="nav" style="max-width:860px;margin-top:34px;display:block">' +
+      (lv.url ? '<div class="micro" style="margin-bottom:6px">Its own link' + (lv.saved_at ? " · saved " + esc(lv.saved_at) : "") + '</div><div class="linkrow"><input id="leave-url" data-keep="0" readonly value="' + esc(lv.url) + '"><button class="btn sm out" data-copy="1">Copy</button><a class="btn sm out" style="text-decoration:none" href="' + esc(lv.url) + '" target="_blank" rel="noopener">Open ↗</a></div>' : '') +
+      (lv.err ? '<div class="errline">' + esc(lv.err) + '</div>' : '') +
+      '<div class="linkrow" style="margin-top:16px"><button class="btn" data-leave="1">' + (lv.url ? "Save the changes to the link" : "Save it and get a link") + '</button>' +
+      '<button class="btn out" data-pdf="1">' + (L.pdfWait ? "Preparing the PDF…" : "Export PDF") + '</button>' +
+      (V.status !== "ended" ? '<button class="btn out" data-end="1">End the session</button>' : '<span class="quiet">The session has ended.</span>') + '</div>' +
+      '<div class="quiet" style="margin-top:10px">The link opens the leave-behind on its own page, without the team login. The PDF opens the print dialog — choose Save as PDF.</div></div></section>';
+  }
+
+  // ── wiring the buttons after each draw ──
+  function on(sel, fn) { Array.prototype.forEach.call(document.querySelectorAll(sel), function (el) { el.onclick = function (e) { fn(el, e); }; }); }
+  function wire() {
+    on("[data-step]", function (el) {
+      var k = STEPS[+el.dataset.step][0];
+      if (k.indexOf("sec") === 0) go("sec", +k.slice(3)); else go(k, V.sec);
+    });
+    on("[data-go]", function (el) { go(el.dataset.go, el.dataset.sec !== undefined ? +el.dataset.sec : V.sec); });
+    on("[data-dec]", function (el) { if (el.dataset.id.indexOf("tmp") === 0) return; act({ type: "decide", id: el.dataset.id, d: el.dataset.dec }); });
+    on("[data-tweak]", function (el) { if (el.dataset.tweak.indexOf("tmp") === 0) return; L.editing = el.dataset.tweak; render(true); var t = $("tw-" + L.editing); if (t) { t.focus(); t.select(); } });
+    on("[data-save]", function (el) { var t = $("tw-" + el.dataset.save); var v = t ? t.value.trim() : ""; L.editing = null; if (v) act({ type: "tweak", id: el.dataset.save, text: v }); else render(true); });
+    on("[data-cancel]", function () { L.editing = null; render(true); });
+    on("[data-undo]", function (el) { act({ type: "undo", id: el.dataset.undo }); });
+    on("[data-confirm]", function (el) { act({ type: "confirm", id: el.dataset.confirm }); });
+    on("[data-dismiss]", function (el) { act({ type: "dismiss", id: el.dataset.dismiss }); });
+    on("[data-ev]", function (el) { L.evOpen[el.dataset.ev] = !L.evOpen[el.dataset.ev]; render(true); });
+    on("[data-add]", function () { var i = $("add-in"); var v = i ? i.value.trim() : ""; if (!v) return; i.value = ""; act({ type: "add", sec: V.sec, text: v }); });
+    on("[data-ask]", function () { var i = $("ask-in"); var v = i ? i.value.trim() : ""; if (!v) return; i.value = ""; act({ type: "ask", sec: V.sec, q: v }); });
+    on("[data-try]", function (el) { var q = (V.curious || [])[+el.dataset.try]; if (q) act({ type: "ask", sec: V.sec, q: q }); });
+    on("[data-prev]", function () { if (V.sec > 0) go("sec", V.sec - 1); else go("setup", 0); });
+    on("[data-next]", function () { if (V.sec < V.sections.length - 1) go("sec", V.sec + 1); else go("selects", V.sec); });
+    on("[data-mode]", function (el) { act({ type: "mode", m: el.dataset.mode }); });
+    on("[data-consent]", function () { act({ type: "consent" }); });
+    on("[data-listen]", function () { if (!V.consent) return; if (eng.listening()) eng.stop(); else eng.start(); drawListen(); });
+    on("[data-tab]", function () { if (L.tabOn) eng.removeTab(""); else eng.addTab(); });
+    on("[data-gear]", function () { L.settings = !L.settings; render(true); });
+    on("[data-people]", function () { L.people = !L.people; render(true); });
+    on("[data-person]", function (el) {
+      var lv = V.listen || {};
+      if (lv.engine !== "aai") act({ type: "tap", who: el.dataset.person, at: Date.now() });
+      else { L.people = true; render(true); }
+    });
+    on("[data-padd]", function () { act({ type: "person_add", tap: true, at: Date.now() }); });
+    on("[data-pname]", function (el) { var id = el.dataset.pname; act({ type: "name", id: id, name: ($("pn-" + id) || {}).value || "", role: ($("pr-" + id) || {}).value || "" }); });
+    on("[data-pfac]", function (el) { act({ type: "fac", id: el.dataset.pfac }); });
+    on("[data-intro]", function () { act({ type: "intro", on: !(V.intro && V.intro.on), at: Date.now() }); });
+    on("[data-readnow]", function () { act({ type: "read" }); });
+    on("[data-out]", function (el) { act({ type: "set", id: el.dataset.out, d: "" }); });
+    on("[data-gen]", function () { if ((V.selects || []).length < (V.min_selects || 4)) return; act({ type: "terr" }); if (V.screen !== "terr") go("terr", V.sec); });
+    on("[data-ripe]", function (el) { act({ type: "ripe", id: el.dataset.ripe, on: el.dataset.on === "1" }); });
+    on("[data-leave]", function () { act({ type: "leave" }); });
+    on("[data-end]", function () { if (confirm("End the session? The microphone stops and the client's link to the questions closes.")) { eng.stop(); act({ type: "end" }); } });
+    on("[data-copy]", function () { var i = $("leave-url"); if (!i) return; try { navigator.clipboard.writeText(i.value); } catch (e) { i.select(); try { document.execCommand("copy"); } catch (e2) {} } });
+    on("[data-pdf]", function () { if (L.pdfWait) return; L.pdfWait = true; act({ type: "pdf" }); });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-pmerge]"), function (el) {
+      el.onchange = function () { if (el.value) act({ type: "merge", id: el.dataset.pmerge, into: el.value }); };
+    });
+    var sl = $("set-lang"); if (sl) sl.onchange = function () { act({ type: "lang", lang: sl.value }); };
+    var se = $("set-eng"); if (se) se.onchange = function () { act({ type: "engine", engine: se.value }); };
+    Array.prototype.forEach.call(document.querySelectorAll("[data-tnote]"), function (el) {
+      var tmr = null;
+      el.oninput = function () { clearTimeout(tmr); tmr = setTimeout(function () { act({ type: "tnote", id: el.dataset.tnote, text: el.value }); }, 900); };
+      el.onblur = function () { clearTimeout(tmr); var t = (V.terr.items || []).filter(function (x) { return x.id === el.dataset.tnote; })[0]; if (t && (t.notes || "") !== el.value) act({ type: "tnote", id: el.dataset.tnote, text: el.value }); };
+    });
+    var ai = $("ask-in"); if (ai) ai.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); var b = document.querySelector("[data-ask]"); if (b) b.click(); } };
+    var ad = $("add-in"); if (ad) ad.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); var b = document.querySelector("[data-add]"); if (b) b.click(); } };
+    if (L.editing) { var tw = $("tw-" + L.editing); if (tw) tw.oninput = function () { L.drafts[L.editing] = tw.value; }; if (tw) tw.onkeydown = function (e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); var b = document.querySelector("[data-save]"); if (b) b.click(); } if (e.key === "Escape") { L.editing = null; render(true); } }; }
+  }
+  $("prepl").onclick = function () { eng.stop(); act({ type: "prep" }); };
+  document.addEventListener("keydown", function (e) {
+    if (!V || /INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || "")) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var k = e.key.toLowerCase();
+    if (/^[1-9]$/.test(k) && (V.listen || {}).engine !== "aai") {
+      var p = (V.people || [])[+k - 1]; if (p) act({ type: "tap", who: p.id, at: Date.now() });
+      return;
+    }
+    if (V.screen !== "sec") return;
+    var cur = ((V.sections[V.sec] || {}).currents || []).filter(function (c) { return !c.dec && c.id.indexOf("tmp") !== 0; });
+    if (!cur.length) return;
+    var m = { k: "keep", s: "star", x: "kill" }[k];
+    if (m) { e.preventDefault(); act({ type: "decide", id: cur[0].id, d: m }); }
+    if (k === "t") { e.preventDefault(); L.editing = cur[0].id; render(true); var t = $("tw-" + L.editing); if (t) { t.focus(); t.select(); } }
+  });
+
+  // clocks and the loader's sayings, once a second, without redrawing anything else
+  function tick() {
+    if (!V) return;
+    var dt = (Date.now() - gotAt) / 1000;
+    var c = $("clock"); if (c && V.elapsed != null) c.textContent = mmss(V.elapsed + dt);
+    var t = $("sectimer");
+    if (t && V.screen === "sec") {
+      var sc = V.sections[V.sec] || {}, el = sc.elapsed;
+      if (el == null) t.textContent = sc.min + " min";
+      else { var s = el + dt; t.innerHTML = '<span class="' + (s > sc.min * 60 ? "over" : "") + '">' + mmss(s) + '</span> of ' + sc.min + ' min'; }
+    }
+  }
+  setInterval(function () { tick(); }, 1000);
+  setInterval(function () { if (V && (V.terr || {}).status === "running") { L.sayN += 1; var s = $("say"); if (s) s.textContent = SAY[L.sayN % SAY.length]; } }, 1800);
+
+  window.addEventListener("message", function (e) {
+    var d = e.data || {};
+    if (d.type !== "streamlit:render") return;
+    var st = (d.args || {}).state;
+    if (!st) return;
+    var first = !SRV;
+    SRV = st; gotAt = Date.now();
+    // never reuse a number the app has already taken
+    if (typeof st.ack === "number") {
+      if (L.seq < st.ack) L.seq = st.ack;
+      L.pending = L.pending.filter(function (m) { return m.seq > st.ack; });
+    }
+    if (st.listen) eng.setArgs(st.listen);
+    if (extra && st.listen && st.listen.engine !== "aai") extra = null;
+    V = view(SRV);
+    if (L.editing && !curOf(V, L.editing)) L.editing = null;
+    // The printable file arrives once, after "Export PDF": download it then.
+    var lv = st.leave || {};
+    if (lv.file && lv.pdf_n && lv.pdf_n !== L.pdfGot) {
+      L.pdfGot = lv.pdf_n; L.pdfWait = false;
+      var url = URL.createObjectURL(new Blob([lv.file], { type: "text/html" }));
+      var a = document.createElement("a"); a.href = url; a.download = lv.fname || "leave-behind.html"; document.body.appendChild(a); a.click();
+      setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 2000);
+      first = true;
+    }
+    render(first);
+  });
+  send("streamlit:componentReady", { apiVersion: 1 });
+  setHeight();
+  try { new ResizeObserver(function () { setHeight(); }).observe(document.body); } catch (e) { setInterval(setHeight, 1000); }
+  // test hook (read-only)
+  window.__lv = { eng: function () { return eng.state(); }, pending: function () { return L.pending.slice(); }, view: function () { return V; } };
+})();
+</script>
+</body>
+</html>

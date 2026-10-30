@@ -234,12 +234,14 @@ def _load_all_dispatches_uncached(limit: int = 150) -> list:
             def _query(skip_records: bool):
                 q = sb.table("dispatches").select("*")
                 if skip_records:
-                    # Client profiles, session logs and stored news races live here too,
+                    # Client profiles, session logs, stored news races and the live
+                    # sessions (with their intakes and leave-behinds) live here too,
                     # and a session log carries its whole transcript. Left in,
                     # every Archive load would download every meeting ever
                     # transcribed, only to throw them away. The NULL branch
                     # keeps any old row written without a topic.
-                    q = q.or_("topic.is.null,topic.not.in.(__client__,__session__,__chart__)")
+                    q = q.or_("topic.is.null,topic.not.in.(__client__,__session__,__chart__,"
+                              "__live__,__intake__,__leave__)")
                 # There was no limit at all. The Archive shows 40 and nothing
                 # else reads further back, so every row beyond this was being
                 # downloaded and parsed for nobody.
