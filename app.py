@@ -15336,9 +15336,10 @@ def _lv_prep(sess: dict, user: str) -> None:
     running = d.get("status") == "running" or any(s.get("status") == "digging" for s in sess["sections"])
     if d.get("status") == "done":
         rid = d.get("report_id", "")
-        st.markdown(f'<div class="lv-meta">Dug {e(_sv_fmt_date(d.get("at", "")))} · {d.get("n", 0)} posts · '
-                    f'{d.get("n_trade", 0)} articles · {d.get("n_figs", 0)} figures'
-                    + (f' · {d.get("n_pins", 0)} Pinterest searches' if d.get("n_pins") else "")
+        _pl = lambda n, w: f"{n} {w}{'' if n == 1 else 's'}"
+        st.markdown(f'<div class="lv-meta">Dug {e(_sv_fmt_date(d.get("at", "")))} · {_pl(d.get("n", 0), "post")} · '
+                    f'{_pl(d.get("n_trade", 0), "article")} · {_pl(d.get("n_figs", 0), "figure")}'
+                    + (f' · {d["n_pins"]} Pinterest search{"" if d["n_pins"] == 1 else "es"}' if d.get("n_pins") else "")
                     + (f' · <a href="{e(_rm_report_url(rid))}" target="_blank" rel="noopener">the full brief ↗</a>'
                        if rid else "") + '. Cut what is weak: nothing goes on the screen that the team has '
                     'not looked at.</div>', unsafe_allow_html=True)

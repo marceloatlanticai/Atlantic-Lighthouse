@@ -359,8 +359,20 @@ def net_label(src: str) -> str:
     return _NET.get(s, clip(src, 24) or "Web")
 
 
+def plain(s) -> str:
+    """Source text as words: X and the news hand over '&amp;' and '&#39;' already
+    escaped — read as markup they come out as '&a…' once a title is cut."""
+    t = str(s or "")
+    for _ in range(2):              # some arrive escaped twice
+        u = html.unescape(t)
+        if u == t:
+            break
+        t = u
+    return t
+
+
 def _ev_from_signal(s: dict, kind: str = "post") -> dict:
-    return {"ti": clip(s.get("title") or s.get("content") or "", 140),
+    return {"ti": clip(plain(s.get("title") or s.get("content") or ""), 140),
             "url": str(s.get("url") or "")[:500] if str(s.get("url") or "").startswith(("http://", "https://")) else "",
             "src": clip(s.get("source") or kind, 30), "d": str(s.get("timestamp") or s.get("date") or "")[:10],
             "k": kind}
@@ -1167,7 +1179,7 @@ WHAT THE ROOM KEPT (the selects; starred ones carry more weight):
 {extra}
 
 Find {want} countercurrent territor{'y' if want == 1 else 'ies'}: where {brand} could go that nobody else is going. Each one sits in the GAP between two currents the room kept — a tension with two sides that are both true. For each:
-- "title": the territory, at most 7 words, an idea a creative team could run with
+- "title": the territory, at most 7 words, an idea a creative team could run with — a line with a point of view, in sentence case. Never "X vs. Y": the tension goes in "a" and "b", the title is where the brand goes
 - "a": side A of the tension, one line
 - "b": side B, one line, starting with "…" (it answers side A)
 - "why": two sentences, at most 40 words: why the brand can own it, in plain words
@@ -1328,6 +1340,13 @@ def _local(iso, tz_name: str = "") -> Optional[datetime]:
 def fmt_clock(iso, tz_name: str = "") -> str:
     d = _local(iso, tz_name)
     return d.strftime("%H:%M") if d else ""
+
+
+def fmt_zone(iso, tz_name: str = "") -> str:
+    """'EST', 'EDT', 'BRT'… — or 'UTC' when the team has not set its clock."""
+    d = _local(iso, tz_name) if tz_name else None
+    z = d.strftime("%Z") if d is not None and d.tzinfo else ""
+    return z or ("UTC" if not tz_name else tz_name)
 
 
 def fmt_day(iso, tz_name: str = "") -> str:
@@ -1630,6 +1649,7 @@ def report_doc(sess: dict, answers: list, lines: list, people: dict, labels: dic
         "opts": o,
         "overview": {
             "day": doc["day"], "start": clock(start), "end": clock(end) if sess.get("ended_at") else "",
+            "zone": fmt_zone(start or when or now_iso(), tz_name),
             "minutes": int(round((t1 - t0) / 60)) if (t0 and t1 and t1 >= t0) else None,
             "ended": bool(sess.get("ended_at")),
             "recorded": recorded_with(sess),
@@ -1656,11 +1676,20 @@ def report_doc(sess: dict, answers: list, lines: list, people: dict, labels: dic
 
 
 def tension(a, b) -> str:
-    """Side A and side B as one sentence: "tired of performing… but still…"."""
+    """Side A and side B as one thought. Side B is written to start with "…"
+    (it answers A): "tired of performing… but still want a room" — and after
+    a full stop, a new sentence, not "flavors. …Shoppers"."""
     a, b = str(a or "").strip(), str(b or "").strip()
-    if a.endswith(("…", "...")) and b.startswith(("…", "...")):
-        b = b.lstrip(".…").lstrip()
-    return f"{a} {b}".strip()
+    if not b.startswith(("…", "...")):
+        return f"{a} {b}".strip()
+    b = b.lstrip(".…").lstrip()
+    if not a or not b:
+        return (a or b).strip()
+    if a.endswith(("…", "...")):
+        return f"{a} {b}"
+    if a.endswith((".", "!", "?")):
+        return f"{a} {b[:1].upper()}{b[1:]}"
+    return f"{a}… {b}"
 
 
 def _x(s) -> str:
@@ -1727,7 +1756,7 @@ def _full_html(f: dict, brief_url: str = "") -> str:
         if not p.get("currents"):
             h.append('<p class="lb-quiet">No current was on screen in this part.</p>')
         for c in p.get("currents") or []:
-            links = " · ".join(f'<a href="{_e(e["url"])}" target="_blank" rel="noopener">{_x(clip(e.get("ti"), 70))} ↗</a>'
+            links = " · ".join(f'<a href="{_e(e["url"])}" target="_blank" rel="noopener">{_x(clip(plain(e.get("ti")), 70))} ↗</a>'
                                for e in c.get("ev") or [])
             tk = c.get("talk")
             h.append(
@@ -1795,7 +1824,8 @@ def _full_html(f: dict, brief_url: str = "") -> str:
     tl = f.get("timeline") or []
     if tl:
         out.append(sec_open("lb-timeline", "Every interaction, in order", "",
-                            "Every decision, rewrite, question, pick and move, with the time it happened.",
+                            "Every decision, rewrite, question, pick and move, with the time it happened"
+                            + (f" ({ov['zone']})." if ov.get("zone") else "."),
                             entry=f"Every interaction, in order · {len(tl)}")
                    + '<table class="lb-tl"><tbody>' + "".join(
                        f'<tr><td class="lb-time">{_x(x["t"])}</td><td class="lb-tpart">{_x(x.get("part"))}</td>'
@@ -1815,12 +1845,14 @@ def _full_html(f: dict, brief_url: str = "") -> str:
         out.append(sec_open("lb-transcript", "The full transcript", "", entry=f"The full transcript · {_plural(len(tx), 'line')}", quiet=
                             (f"{_plural(len(tx), 'line')}, transcribed by machine as the session happened"
                             + (f", with the room's consent (given at {ov['consent']})" if ov.get("consent") else "")
+                            + (f". Times in {ov['zone']}" if ov.get("zone") else "")
                             + ". Names as the room gave them; a machine mishears, so check a quote before using it."))
                    + '<table class="lb-tx"><tbody>' + "".join(rows) + "</tbody></table></section>")
 
     # the band on top: the session at a glance, and the contents
     facts = [("Date", ov.get("day")),
              ("Time", " – ".join(x for x in (ov.get("start"), ov.get("end")) if x)
+              + (f" {ov['zone']}" if ov.get("zone") else "")
               + ("" if ov.get("ended") else " (not ended)") if ov.get("start") else ""),
              ("Length", f"{ov['minutes']} min" if ov.get("minutes") is not None else ""),
              ("Recorded", ov.get("recorded") + (f" · {ov['lang']}" if ov.get("lang") else "") if ov.get("recorded") else ""),
@@ -1870,7 +1902,8 @@ def transcript_text(sess: dict, lines: list, people: dict, labels: dict, tz_name
     head = [f"{sess.get('client_name') or 'Live session'} — Lighthouse live session",
             " · ".join(x for x in (fmt_day(start, tz_name),
                                    " – ".join(y for y in (fmt_clock(start, tz_name),
-                                                          fmt_clock(sess.get("ended_at"), tz_name)) if y),
+                                                          fmt_clock(sess.get("ended_at"), tz_name)) if y)
+                                   + (" " + fmt_zone(start, tz_name) if start else ""),
                                    recorded_with(sess)) if x),
             "Transcribed by machine as the session happened. Names as the room gave them."]
     out, last = head, None
@@ -1904,7 +1937,7 @@ def leave_html(doc: dict, font_css: str = "", standalone: bool = True,
             + (f'<div class="lb-from">Built from<ul>{frm}</ul></div>' if frm else "") + "</div>")
     ev_html = []
     for c in doc.get("evidence") or []:
-        links = " · ".join(f'<a href="{_e(e["url"])}" target="_blank" rel="noopener">{_e(clip(e.get("ti"), 70))} ↗</a>'
+        links = " · ".join(f'<a href="{_e(e["url"])}" target="_blank" rel="noopener">{_e(clip(plain(e.get("ti")), 70))} ↗</a>'
                            for e in c.get("ev") or [])
         src = ("raised in the room" if c.get("src") == "talk" else
                "added by the room" if c.get("src") == "room" and not c.get("ev") else
@@ -2280,7 +2313,7 @@ def live_state(sess: dict, intake: Optional[dict], lines: list, people_view: lis
             cur.append({
                 "id": cid, "t": title_of(sess, c), "t0": c.get("t", ""), "b": c.get("b", ""),
                 "src": c.get("src", "dig"), "q": c.get("q", ""), "looking": bool(c.get("looking")),
-                "ev": [{"ti": e.get("ti", ""), "url": e.get("url", ""), "src": net_label(e.get("src")),
+                "ev": [{"ti": plain(e.get("ti", "")), "url": e.get("url", ""), "src": net_label(e.get("src")),
                         "d": e.get("d", ""), "k": e.get("k", "")} for e in ev[:6]],
                 "evline": evidence_line(ev) or ("the room · " + ", ".join(dict.fromkeys(x["who"] for x in said))
                                                 if c.get("src") == "talk" and said else ""),
