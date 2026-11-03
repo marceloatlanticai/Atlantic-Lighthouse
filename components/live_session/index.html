@@ -170,8 +170,16 @@ a{color:var(--blue)}
 .errline{margin-top:14px;font-size:13px;line-height:1.5;border-left:3px solid #fff;padding-left:10px}
 .sec:not(.blue) .errline{border-left-color:var(--red);color:var(--body)}
 
-/* the leave-behind */
+/* the leave-behind, and the final report under it */
 .doc{max-width:860px}
+.report-box{max-width:860px;margin-top:46px;border-top:3px solid var(--ink);padding-top:16px}
+.report-box .head{font-size:30px;margin-top:10px}
+.report-box .rtxt{font-size:14.5px;line-height:1.5;color:var(--body);margin-top:10px;max-width:760px}
+.opts{display:flex;gap:22px;flex-wrap:wrap;margin-top:16px}
+.opt{display:flex;gap:9px;align-items:center;font-size:14px;font-weight:700;cursor:pointer}
+.opt input{width:17px;height:17px;accent-color:var(--blue);cursor:pointer}
+.opt span{font-weight:400;color:var(--meta);font-size:12.5px}
+.full-doc{margin-top:8px}
 .linkrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px}
 .linkrow input{flex:1 1 380px;font:inherit;font-size:13px;border:1.5px solid var(--ink);border-radius:var(--rad);padding:9px 12px;color:var(--body)}
 
@@ -280,7 +288,9 @@ a{color:var(--blue)}
   var SRV = null, V = null, gotAt = 0;
   var L = { seq: -1, pending: [], editing: null, drafts: {}, evOpen: {}, people: false, settings: false,
             tabOn: false, tabWhy: "", listen: ["", "Not listening"], interim: "", msg: "", msgFb: false,
-            sigs: {}, sayN: 0, lastTap: "" };
+            sigs: {}, sayN: 0, lastTap: "",
+            // the final report: shown on demand; the transcript as a file on demand
+            fullOn: false, fullHtml: "", fullGot: 0, txtWait: false, txtGot: 0 };
   var extra = null;
 
   // ── the microphone ──
@@ -336,6 +346,7 @@ a{color:var(--blue)}
         case "intro": st.intro.on = !!m.on; break;
         case "lang": if (st.listen) st.listen.lang = m.lang; break;
         case "engine": if (st.listen) st.listen.engine = m.engine === "auto" ? "aai" : "chrome"; break;
+        case "leave_opt": st.leave = st.leave || {}; st.leave.opts = st.leave.opts || {}; st.leave.opts[m.k] = !!m.on; break;
       }
     });
     // selects follow the decisions
@@ -374,7 +385,9 @@ a{color:var(--blue)}
   }
   function render(force) {
     if (!V) return;
-    var sig = JSON.stringify([V, L.editing, L.evOpen, L.people, L.settings, L.tabOn, L.tabWhy, L.pdfWait], function (k, v) { return k === "file" ? undefined : v; });
+    // the full report is shown for the visit to the brief: leaving puts it away
+    if (V.screen !== "brief" && (L.fullOn || L.fullHtml)) { L.fullOn = false; L.fullHtml = ""; }
+    var sig = JSON.stringify([V, L.editing, L.evOpen, L.people, L.settings, L.tabOn, L.tabWhy, L.pdfWait, L.fullOn, L.fullGot, L.txtWait]);
     if (!force && sig === L.lastSig) { drawListen(); return; }
     L.lastSig = sig;
     keepInputs(function () {
@@ -612,7 +625,24 @@ a{color:var(--blue)}
       '<div class="linkrow" style="margin-top:16px"><button class="btn" data-leave="1">' + (lv.url ? "Save the changes to the link" : "Save it and get a link") + '</button>' +
       '<button class="btn out" data-pdf="1">' + (L.pdfWait ? "Preparing the PDF…" : "Export PDF") + '</button>' +
       (V.status !== "ended" ? '<button class="btn out" data-end="1">End the session</button>' : '<span class="quiet">The session has ended.</span>') + '</div>' +
-      '<div class="quiet" style="margin-top:10px">The link opens the leave-behind on its own page, without the team login. The PDF opens the print dialog — choose Save as PDF.</div></div></section>';
+      '<div class="quiet" style="margin-top:10px">The link opens the leave-behind and the final report on their own page, without the team login. The PDF opens the print dialog — choose Save as PDF.</div></div>' +
+      drawReport(lv) + '</section>';
+  }
+  function drawReport(lv) {
+    var o = lv.opts || {}, n = lv.counts || {};
+    var box = function (k, label, extra) {
+      return '<label class="opt"><input type="checkbox" id="opt-' + k + '" data-opt="' + k + '"' + (o[k] !== false ? " checked" : "") + '>' + label + ' <span>' + extra + '</span></label>';
+    };
+    return '<div class="report-box" id="report-box"><div class="lbl">The final report</div>' +
+      '<div class="head">Everything that happened in the room</div>' +
+      '<div class="rtxt">Under the leave-behind, the whole session: what the client told us, what Lighthouse looked for, every current and who decided it, every question, every round of territories, every interaction with its time — and the full transcript. Nothing in it is written by a model.</div>' +
+      '<div class="opts">' + box("transcript", "The full transcript", (n.lines || 0) + " line" + (n.lines === 1 ? "" : "s")) +
+      box("timeline", "Every interaction, in order", String(n.events || 0)) + '</div>' +
+      '<div class="quiet" style="margin-top:8px">What is ticked goes into the link and the PDF. The link changes when it is saved again.</div>' +
+      '<div class="linkrow" style="margin-top:16px"><button class="btn out" data-full="1">' + (L.fullOn ? "Hide the full report" : "Show the full report") + '</button>' +
+      '<button class="btn out" data-txt="1"' + (L.txtWait ? " disabled" : "") + '>' + (L.txtWait ? "Preparing the transcript…" : "Download the transcript (.txt)") + '</button></div>' +
+      (L.fullOn ? (L.fullHtml ? '<div class="doc full-doc">' + L.fullHtml + '</div>' : '<div class="quiet" style="margin-top:16px">Putting the full report together…</div>') : '') +
+      '</div>';
   }
 
   // ── wiring the buttons after each draw ──
@@ -659,6 +689,27 @@ a{color:var(--blue)}
     on("[data-end]", function () { if (confirm("End the session? The microphone stops and the client's link to the questions closes.")) { eng.stop(); act({ type: "end" }); } });
     on("[data-copy]", function () { var i = $("leave-url"); if (!i) return; try { navigator.clipboard.writeText(i.value); } catch (e) { i.select(); try { document.execCommand("copy"); } catch (e2) {} } });
     on("[data-pdf]", function () { if (L.pdfWait) return; L.pdfWait = true; act({ type: "pdf" }); });
+    on("[data-full]", function () {
+      if (L.fullOn) { L.fullOn = false; render(true); return; }
+      L.fullOn = true; L.fullHtml = ""; act({ type: "full" });
+    });
+    on("[data-txt]", function () { if (L.txtWait) return; L.txtWait = true; act({ type: "txt" }); });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-opt]"), function (el) {
+      el.onchange = function () {
+        act({ type: "leave_opt", k: el.dataset.opt, on: el.checked });
+        // what is on show follows the switch
+        if (L.fullOn) { L.fullHtml = ""; act({ type: "full" }); }
+      };
+    });
+    // the report's contents: a jump inside this frame moves the page around it
+    Array.prototype.forEach.call(document.querySelectorAll('.doc a[href^="#lb-"]'), function (a) {
+      a.onclick = function (ev) {
+        var t = document.getElementById(a.getAttribute("href").slice(1));
+        if (!t) return;
+        ev.preventDefault();
+        try { t.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) { t.scrollIntoView(); }
+      };
+    });
     Array.prototype.forEach.call(document.querySelectorAll("[data-pmerge]"), function (el) {
       el.onchange = function () { if (el.value) act({ type: "merge", id: el.dataset.pmerge, into: el.value }); };
     });
@@ -719,17 +770,34 @@ a{color:var(--blue)}
     }
     if (st.listen) eng.setArgs(st.listen);
     if (extra && st.listen && st.listen.engine !== "aai") extra = null;
-    V = view(SRV);
-    if (L.editing && !curOf(V, L.editing)) L.editing = null;
-    // The printable file arrives once, after "Export PDF": download it then.
+    // The printable file, the full report and the transcript arrive once, when
+    // asked for. Taken out of the state here, so they never ride along in the
+    // view that is copied and compared at every redraw.
     var lv = st.leave || {};
-    if (lv.file && lv.pdf_n && lv.pdf_n !== L.pdfGot) {
-      L.pdfGot = lv.pdf_n; L.pdfWait = false;
-      var url = URL.createObjectURL(new Blob([lv.file], { type: "text/html" }));
-      var a = document.createElement("a"); a.href = url; a.download = lv.fname || "leave-behind.html"; document.body.appendChild(a); a.click();
+    var file = lv.file, full = lv.full_html, txt = lv.txt;
+    delete lv.file; delete lv.full_html; delete lv.txt;
+    function download(data, type, name) {
+      var url = URL.createObjectURL(new Blob([data], { type: type }));
+      var a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click();
       setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 2000);
+    }
+    if (file && lv.pdf_n && lv.pdf_n !== L.pdfGot) {
+      L.pdfGot = lv.pdf_n; L.pdfWait = false;
+      download(file, "text/html", lv.fname || "final-report.html");
       first = true;
     }
+    if (txt && lv.txt_n && lv.txt_n !== L.txtGot) {
+      L.txtGot = lv.txt_n; L.txtWait = false;
+      download(txt, "text/plain;charset=utf-8", lv.txt_fname || "transcript.txt");
+      first = true;
+    }
+    if (full && lv.full_n && lv.full_n !== L.fullGot) {
+      L.fullGot = lv.full_n;
+      if (L.fullOn) L.fullHtml = full;
+      first = true;
+    }
+    V = view(SRV);
+    if (L.editing && !curOf(V, L.editing)) L.editing = null;
     render(first);
   });
   send("streamlit:componentReady", { apiVersion: 1 });

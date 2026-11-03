@@ -1303,6 +1303,118 @@ def scrape_instagram(
     return signals
 
 
+# ── Pinterest pins (Apify actor — OFF unless PINTEREST_SCRAPE = "1") ──────────
+# Pinterest's terms forbid scraping without permission. The app therefore only
+# calls this when a person has switched it on in the secrets, and never for a
+# brief about Pinterest itself — that one reads Pinterest's own Trends API
+# (pinterest.py). The actor is a community one and can be swapped without a
+# code change: PINTEREST_APIFY_ACTOR names it, PINTEREST_APIFY_INPUT (JSON, with
+# "{q}" and "{n}" in it) shapes its input if it differs from the default.
+
+def _pin_get(item: dict, *paths):
+    """The first non-empty value among dotted paths ("pinner.username")."""
+    for p in paths:
+        v = item
+        for part in p.split("."):
+            v = v.get(part) if isinstance(v, dict) else None
+            if v is None:
+                break
+        if v not in (None, "", [], {}):
+            return v
+    return None
+
+
+def _pin_int(v) -> int:
+    try:
+        return max(0, int(float(str(v).replace(",", ""))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def parse_pinterest_items(items: list, client_tag: Optional[str] = None) -> list["Signal"]:
+    """Pins from any of the common Pinterest actors, as Signals.
+
+    Field names differ from actor to actor, so each is looked for under the
+    names the popular ones use. Promoted pins are adverts and are dropped. A pin
+    whose date was not sent stays UNDATED rather than being stamped "now" — the
+    window cannot vouch for it, and the brief says so."""
+    out = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        if it.get("result_type") not in (None, "pin"):
+            continue
+        if _pin_get(it, "isPromoted", "is_promoted", "promoted"):
+            continue
+        pid = str(_pin_get(it, "pinId", "pin_id", "id") or "")
+        url = str(_pin_get(it, "url", "pinUrl", "pin_url") or "")
+        if not url.startswith("http") and pid.isdigit():
+            url = f"https://www.pinterest.com/pin/{pid}/"
+        if "pinterest." not in url:
+            continue
+        title = re.sub(r"\s+", " ", str(_pin_get(it, "title", "gridTitle", "grid_title",
+                                                 "seo_title") or "")).strip()
+        desc = re.sub(r"\s+", " ", str(_pin_get(it, "description", "descriptionText",
+                                                "closeup_description", "seo_description") or "")).strip()
+        if not (title or desc):
+            continue                    # an image with no words says nothing a brief can quote
+        saves = _pin_int(_pin_get(it, "saveCount", "save_count", "saves", "repinCount", "repin_count",
+                                  "aggregated_pin_data.aggregated_stats.saves"))
+        comments = _pin_int(_pin_get(it, "commentCount", "comment_count", "comments"))
+        link = str(_pin_get(it, "link", "outboundLink", "outbound_link") or "")
+        domain = str(_pin_get(it, "domain") or "") or (
+            urllib.parse.urlparse(link).netloc.replace("www.", "") if link.startswith("http") else "")
+        who = str(_pin_get(it, "pinnerUsername", "pinner_username", "creator_username",
+                           "pinner.username", "username") or "")
+        board = str(_pin_get(it, "boardName", "board_name", "board.name") or "")
+        ts = str(_pin_get(it, "createdAt", "created_at", "created", "date") or "")
+        bits = [f"Saved {saves:,} times" if saves else "", f"from {domain}" if domain else "",
+                f"on the board “{board}”" if board else ""]
+        tail = " · ".join(b for b in bits if b)
+        content = (f"{title}\n{desc}" if title and desc and desc != title else (desc or title))
+        out.append(Signal(
+            id=_make_id(url, ts), title=_clean_title(title or desc[:100], desc),
+            content=(content + (f"\n\n{tail}" if tail else ""))[:4000], source="pinterest", url=url,
+            timestamp=ts, client_tag=client_tag,
+            raw_meta={"saves": saves, "comments": comments, "owner": who, "board": board,
+                      "domain": domain, "link": link[:500],
+                      "thumbnail": str(_pin_get(it, "imageUrl", "image_url", "image",
+                                                "images.orig.url") or "")[:500]}))
+    return out
+
+
+def scrape_pinterest(
+    topic: str,
+    api_token: str,
+    n: int = 12,
+    client_tag: Optional[str] = None,
+    callback: Optional[Callable] = None,
+) -> list[Signal]:
+    """Search Pinterest pins for a phrase through an Apify actor."""
+    if not api_token:
+        return []
+    actor = (os.environ.get("PINTEREST_APIFY_ACTOR") or "crawloop/pinterest-scraper").strip()
+    tmpl = (os.environ.get("PINTEREST_APIFY_INPUT") or "").strip()
+    if tmpl:
+        run_input = json.loads(tmpl.replace('"{n}"', str(int(n))).replace("{n}", str(int(n)))
+                               .replace("{q}", json.dumps(topic)[1:-1]))
+    else:
+        run_input = {"searchQueries": [topic], "maxItems": int(n)}
+    if callback:
+        callback(f"[Pinterest] Searching '{topic[:40]}' via Apify ({actor})…")
+    from apify_client import ApifyClient
+    client = ApifyClient(api_token)
+    run = _apify_call(client.actor(actor), run_input=run_input)
+    _ds = _run_dataset_id(run)
+    if not _ds:
+        raise RuntimeError("Apify returned no dataset id for the Pinterest run")
+    items = list(client.dataset(_ds).iterate_items())
+    signals = parse_pinterest_items(items, client_tag)[:n]
+    if callback:
+        callback(f"[Pinterest] ✓ {len(signals)} pins")
+    return signals
+
+
 # ── X / Twitter (Apify actor — needs APIFY_API_TOKEN) ────────────────────────
 
 def _run_dataset_id(run) -> Optional[str]:

@@ -1269,6 +1269,12 @@ def _lv_public_note(title: str, text: str) -> None:
                 f'<h1>{e(title)}</h1><p>{e(text)}</p></div>', unsafe_allow_html=True)
 
 
+def _lv_slug(name) -> str:
+    """'Atlantic & Co.' → 'atlantic-co' — for file names. Up here: the public
+    pages below run before the rest of the file has been read."""
+    return re.sub(r"[^a-z0-9]+", "-", str(name or "session").lower()).strip("-") or "session"
+
+
 def _lv_public_record(kind: str, rid_for) -> tuple:
     """(token, record) for the link in the address bar, or ("", None)."""
     tok = str(st.query_params.get("k", "") or "")
@@ -1319,9 +1325,10 @@ def _lv_public_leave() -> None:
     with _m, st.container(key="lv_pdf_box"):
         st.download_button("⬇  Export as PDF", data=_lc.leave_html(doc, font_css=_sv_font_css_safe(),
                                                                     print_on_open=True),
-                           file_name=f"lighthouse-{re.sub(r'[^a-z0-9]+', '-', str(doc.get('client', 'session')).lower()).strip('-') or 'session'}-leave-behind.html",
+                           file_name=f"lighthouse-{_lv_slug(doc.get('client'))}-"
+                                     f"{'final-report' if doc.get('full') else 'leave-behind'}.html",
                            mime="text/html", use_container_width=True, key="lv_leave_pdf",
-                           help="Downloads the leave-behind. Open it and choose Print → Save as PDF "
+                           help="Downloads the page. Open it and choose Print → Save as PDF "
                                 "(the print dialog opens by itself).")
 
 
@@ -4354,7 +4361,7 @@ _SV_PROFILES = {
 
 _SV_SRC_LABEL = {"reddit": "Reddit", "gdelt": "News", "hacker_news": "HN", "youtube": "YouTube",
                  "tiktok": "TikTok", "instagram": "Instagram", "twitter": "X/Twitter",
-                 "web": "Web", "rss": "RSS", "db": "Archive"}
+                 "web": "Web", "rss": "RSS", "db": "Archive", "pinterest": "Pinterest"}
 
 # THE TRUSTED SOURCES AND THE WINDOW live in sources.py, tested on their own.
 # Guarded like session_core: if the file does not reach the server, the brief
@@ -4373,6 +4380,14 @@ try:
 except Exception as _ref_imp_exc:
     _lhref = None
     print(f"[overview] refine.py unavailable — no prompt bar, focus or question: {_ref_imp_exc}")
+# Pinterest (pinterest.py): Pinterest's own Trends API, on when a token is in
+# the secrets, and the switch for the scraped pins. Same guard again: without
+# the file, Pinterest is simply not one of the sources.
+try:
+    import pinterest as _lhpin
+except Exception as _pin_imp_exc:
+    _lhpin = None
+    print(f"[overview] pinterest.py unavailable — no Pinterest: {_pin_imp_exc}")
 
 
 # ── What the line says while it works ────────────────────────────────────────
@@ -5190,6 +5205,20 @@ def _sv_gather_letters(search_terms: str, category: str, market: str,
 #
 # Cost: up to 4 web searches (US$0.01 each) plus Haiku tokens — a few cents a
 # brief. LH_NUMBERS=off in the secrets switches the lane off without a deploy.
+def _sv_gather_pinterest(brand: str, category: str, product: str, market: str,
+                         focus: str = "") -> dict:
+    """PINTEREST — the searches growing on Pinterest that contain the category's
+    words, from Pinterest's own Trends API (pinterest.py). A lane of the scan,
+    like By the numbers. Off — an empty answer with the reason — until a token
+    is in the secrets. Thread-safe: no st.* in here."""
+    if not _lhpin:
+        return {}
+    try:
+        return _lhpin.gather(brand or "", category or "", product or "", focus or "", market or "")
+    except Exception as exc:
+        return {"items": [], "error": f"Pinterest Trends failed ({type(exc).__name__})"}
+
+
 def _sv_gather_numbers(brand: str, category: str, product: str, market: str,
                        months: int, competitors: str = "", focus: str = "") -> dict:
     """Figures for the brief, checked. Runs in a worker thread; never raises
@@ -5437,6 +5466,11 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
     from ingestion import (scrape_reddit, scrape_gdelt, scrape_hacker_news,
                            scrape_youtube, scrape_tiktok, scrape_instagram,
                            scrape_twitter, scrape_web)
+    try:
+        # Its own import: an ingestion.py from before Pinterest must not stop the scan.
+        from ingestion import scrape_pinterest
+    except ImportError:
+        scrape_pinterest = None
 
     # Every source is wrapped so one dead scraper cannot kill a scan. What it no
     # longer does is fail SILENTLY: a brief missing half its inputs used to look
@@ -5638,6 +5672,17 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             lambda q, n: scrape_instagram(q, api_token=apify, n=n), 20)
         jobs["twitter"] = lambda: _across(
             lambda q, n: scrape_twitter(q, api_token=apify, n=n), 20)
+        # PINS, SCRAPED — only when a person switched it on (PINTEREST_SCRAPE),
+        # and never for a brief about Pinterest: its terms forbid scraping, and
+        # that brief has Pinterest's own Trends API instead (pinterest.py).
+        if _lhpin and _lhpin.scrape_on():
+            if _lhpin.is_pinterest(brand, active, search_terms):
+                tally["pinterest"] = "skipped (a brief about Pinterest uses Pinterest's own data only)"
+            elif scrape_pinterest is None:
+                tally["pinterest"] = "skipped (ingestion.py on the server has no Pinterest yet)"
+            else:
+                jobs["pinterest"] = lambda: _across(
+                    lambda q, n: scrape_pinterest(q, api_token=apify, n=n), 12)
     else:
         tally["apify"] = "skipped (no APIFY_API_TOKEN)"
     if fckey:
@@ -5695,7 +5740,8 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                             "meta": {k: _rm[k] for k in
                                      ("subreddit", "author", "owner", "handle", "channel",
                                       "likes", "plays", "views", "score", "points",
-                                      "retweets", "comments", "num_comments", "q")
+                                      "retweets", "comments", "num_comments", "q",
+                                      "saves", "board", "domain")
                                      if k in _rm}})
             tally[name] = len(sigs)
             if progress:
@@ -5824,7 +5870,7 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
 def _sv_synthesize(signals: list, category: str, competitors: list, brand: str = "the brand",
                    trade: Optional[list] = None, letters: Optional[list] = None,
                    numbers: Optional[list] = None, months: int = 0,
-                   question: str = "", focus: str = "") -> dict:
+                   question: str = "", focus: str = "", pinterest: Optional[dict] = None) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key or not signals:
         return {}
@@ -5885,6 +5931,9 @@ def _sv_synthesize(signals: list, category: str, competitors: list, brand: str =
         figures_text = ("\nFIGURES (checked numbers from research houses and official "
                         "statistics — the ONLY percentages or totals you may quote; cite "
                         f"them by [F#]):\n{_ftxt}\n")
+    # PINTEREST'S OWN SEARCH TRENDS (pinterest.py) — figures straight from the
+    # API, quoted as given and cited by [P#]. Absent without a token.
+    pins_text = _lhpin.prompt_block(pinterest) if (_lhpin and pinterest) else ""
     comp = ", ".join(competitors)
     # The trade block is labelled separately so the model can tell industry
     # coverage from consumer chatter — the contrast between them is the point.
@@ -5933,13 +5982,15 @@ SIGNALS:
 {trade_text}
 {letters_text}
 {figures_text}
+{pins_text}
 
 Respond with ONLY valid JSON (no markdown), EXACTLY this shape:
 {{
 {q_shape}  "trends": [
     {{"title": "argumentative headline", "summary": "2-3 sharp sentences with a point of view",
-      "stat": "one momentum line. If a FIGURE [F#] supports this current, use it with its source, e.g. '+27% sales, H1 2026 · Circana', and set figure_index. Otherwise a REAL handle or engagement figure from the signals; otherwise a qualitative phrase like 'rising across TikTok & Reddit'. NEVER invent a percentage.",
+      "stat": "one momentum line. If a FIGURE [F#] supports this current, use it with its source, e.g. '+27% sales, H1 2026 · Circana', and set figure_index. Else, if a PINTEREST SEARCH [P#] does, quote it exactly, e.g. 'Pinterest searches for \\"mocktail bar\\" +120% on last month', and set pinterest_index. Otherwise a REAL handle or engagement figure from the signals; otherwise a qualitative phrase like 'rising across TikTok & Reddit'. NEVER invent a percentage.",
       "figure_index": null,
+      "pinterest_index": null,
       "signal_indexes": [0,5,12]}}
   ],
   "insights_summary": "3-4 sentences: what are people really asking of {category}? The tension, the recurring complaint, the surprise.",
@@ -6817,7 +6868,8 @@ def _sv_weight(meta: dict) -> int:
         try: return max(0, int(x))
         except (TypeError, ValueError): return 0
     return (num(m.get("plays")) + num(m.get("views"))) * 3 \
-         + (num(m.get("likes")) + num(m.get("score")) + num(m.get("points"))) * 2 \
+         + (num(m.get("likes")) + num(m.get("score")) + num(m.get("points"))
+            + num(m.get("saves"))) * 2 \
          + num(m.get("retweets")) + num(m.get("comments")) + num(m.get("num_comments"))
 
 
@@ -6833,7 +6885,7 @@ def _sv_weight(meta: dict) -> int:
 # on TikTok is nothing, 50 likes on Instagram is a real post, 10 points on
 # Hacker News is a thread people read.
 _SV_ENG_KEYS = ("views", "plays", "likes", "score", "points",
-                "retweets", "comments", "num_comments")
+                "retweets", "comments", "num_comments", "saves")
 
 _SV_FLOOR = {
     "tiktok":      10000,   # ≈ 3,000 views
@@ -6842,6 +6894,7 @@ _SV_FLOOR = {
     "twitter":        20,   # ≈ 10 likes
     "reddit":         20,   # ≈ 10 upvotes
     "hacker_news":    20,   # ≈ 10 points
+    "pinterest":      20,   # ≈ 10 saves
 }
 
 
@@ -6999,7 +7052,7 @@ def _sv_save_brief(active: str, result: dict, signals: list) -> str:
 def _sv_finish_result(result: dict, signals: list, *, brand: str, category: str, product: str,
                       market: str, competitors: str, window: int, focus: str, question: str,
                       qq: list, numbers: dict, trade_sigs: list, trade_outs: list,
-                      let_sigs: list, let_outs: list) -> dict:
+                      let_sigs: list, let_outs: list, pinterest: Optional[dict] = None) -> dict:
     """Everything a brief carries besides what the model wrote.
 
     SHARED BY THE OVERVIEW'S SCAN AND THE LIVE SESSION'S DIG, so both file the
@@ -7055,6 +7108,24 @@ def _sv_finish_result(result: dict, signals: list, *, brand: str, category: str,
          "pages", "secs", "at", "months", "model", "search_errors")
         if numbers.get(k) not in (None, "", [], {})}
     result["_numbers"].setdefault("items", [])
+    # PINTEREST, stored whole: what was asked, where, the week, the figures and
+    # the year of weekly interest each one draws. A stat may point at one
+    # (pinterest_index); a pointer that resolves to nothing is cleared.
+    _pin = pinterest if isinstance(pinterest, dict) else {}
+    if _pin:
+        result["_pinterest"] = {
+            k: _pin.get(k) for k in ("items", "region", "region_name", "keywords", "week", "calls",
+                                     "error", "note", "skipped", "about_pinterest", "at")
+            if _pin.get(k) not in (None, "", [], {})}
+    _np = len(_pin.get("items") or [])
+    for _t in result.get("trends") or []:
+        if isinstance(_t, dict) and _t.get("pinterest_index") is not None:
+            try:
+                _ok = 0 <= int(_t["pinterest_index"]) < _np
+            except (TypeError, ValueError):
+                _ok = False
+            if not _ok:
+                _t["pinterest_index"] = None
     # EVERY PERCENTAGE HAS TO COME FROM SOMEWHERE. A stat line whose
     # percentage no source states is removed; one anywhere else in the
     # brief is listed in the diagnostic for a person to check.
@@ -7062,7 +7133,8 @@ def _sv_finish_result(result: dict, signals: list, *, brand: str, category: str,
         try:
             _said = ([f"{s.get('title', '')} {s.get('content', '')}" for s in signals]
                      + [f"{t.get('title', '')} {t.get('content', '')}" for t in trade_sigs]
-                     + [f"{l.get('title', '')} {l.get('content', '')}" for l in let_sigs])
+                     + [f"{l.get('title', '')} {l.get('content', '')}" for l in let_sigs]
+                     + ((_lhpin.texts(_pin) if (_lhpin and _pin) else [])))
             _gone = _lhsrc.check_stats(result.get("trends") or [],
                                        result["_numbers"]["items"], _said)
             _loose = _lhsrc.audit_numbers(result, result["_numbers"]["items"], _said)
@@ -7603,7 +7675,8 @@ def _sv_curation_rows(res: dict, sigs: list) -> list:
     _lsigs = res.get("_letters_sigs") or []
     _LBL = {"reddit": "Reddit", "gdelt": "News", "hacker_news": "HN",
             "youtube": "YouTube", "tiktok": "TikTok", "instagram": "Instagram",
-            "twitter": "X/Twitter", "web": "Web", "rss": "RSS", "db": "Archive"}
+            "twitter": "X/Twitter", "web": "Web", "rss": "RSS", "db": "Archive",
+            "pinterest": "Pinterest"}
 
     def _from_signals(idxs):
         src = []
@@ -7940,10 +8013,10 @@ def _sv_diagnostics(res: dict) -> None:
             # two of the three scrapers returned nothing.
             with st.expander("Sources — what each one returned", expanded=False):
                 _t = _src_tally or {}
-                _paid = {"tiktok", "instagram", "twitter"}
+                _paid = {"tiktok", "instagram", "twitter", "pinterest"}
                 _rows = []
                 for k in ("reddit", "gdelt", "hacker_news", "youtube", "web",
-                          "tiktok", "instagram", "twitter", "question", "archive", "apify"):
+                          "tiktok", "instagram", "twitter", "pinterest", "question", "archive", "apify"):
                     if k not in _t:
                         continue
                     v = _t[k]
@@ -7961,6 +8034,16 @@ def _sv_diagnostics(res: dict) -> None:
                 if _t.get("without the focus words"):
                     _rows.append(f"{'must mention':14} -{_t['without the focus words']} without "
                                  f"the focus words (dropped)")
+                # Pinterest's own Trends API — a lane of its own, outside the tally.
+                _pd = (_result or {}).get("_pinterest")
+                if isinstance(_pd, dict) and _pd:
+                    _pv = (f"{len(_pd.get('items') or [])} searches ({_pd.get('region', '')}, "
+                           f"{', '.join(_pd.get('keywords') or []) or 'all of Pinterest'})")
+                    if _pd.get("skipped"):
+                        _pv = f"skipped ({_pd['skipped']})"
+                    elif _pd.get("error"):
+                        _pv = f"ERROR {_pd['error']}"
+                    _rows.append(f"{'pinterest api':14} {_pv}")
                 _wm = ((_result or {}).get("_meta") or {}).get("window")
                 st.code("\n".join(_rows) or "no data")
                 if _wm and _lhsrc:
@@ -8535,6 +8618,41 @@ details .src a{color:__BLUE__;text-decoration:none;}
 .nbwhere{margin-top:22px;padding-top:14px;border-top:1px solid rgba(0,0,0,.14);
   font-size:11.5px;line-height:1.6;color:__BODY__;}
 .statlink{color:inherit;text-decoration:none;margin-left:6px;font-weight:700;}
+/* ── 01P · On Pinterest ──────────────────────────────────────────────────────
+   Same grammar as By the numbers — ruled tiles, a blue figure, a tracked credit —
+   with the search itself as the headline and its year drawn underneath. */
+.pngrid{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1.5px solid __INK__;}
+.pngrid.n1{grid-template-columns:1fr;}
+.pngrid.n2{grid-template-columns:repeat(2,1fr);}
+.pngrid.n3{grid-template-columns:repeat(3,1fr);}
+.pn{padding:22px 22px 20px 0;border-bottom:1px solid __INK__;display:flex;flex-direction:column;}
+.pn + .pn{border-left:1px solid __INK__;padding-left:22px;}
+.pngrid.n4 .pn:nth-child(4n+1),.pngrid.n3 .pn:nth-child(3n+1),.pngrid.n2 .pn:nth-child(2n+1){
+  border-left:none;padding-left:0;}
+.pnkw{font-size:21px;font-weight:700;letter-spacing:-.015em;line-height:1.15;color:__INK__;
+  margin-bottom:14px;flex:1;}
+.pnfig{font-size:44px;font-weight:700;letter-spacing:-.04em;line-height:1;color:__BLUE__;
+  white-space:nowrap;}
+.pnfig.neg{color:__RED__;}
+.pnsub{font-size:10px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;
+  color:__META__;margin:7px 0 12px;}
+.pnline{display:block;width:100%;height:34px;margin-bottom:10px;}
+.pnline path{fill:none;stroke:__BLUE__;stroke-width:1.6;vector-effect:non-scaling-stroke;}
+.pnline path.area{fill:__BLUE__;fill-opacity:.08;stroke:none;}
+.pnmore{font-size:11.5px;line-height:1.5;color:__BODY__;margin-bottom:10px;}
+.pnlink{font-size:11.5px;font-weight:600;color:__BLUE__;text-decoration:none;
+  border-bottom:1px solid currentColor;padding-bottom:1px;align-self:flex-start;}
+.pnwhere{margin-top:20px;padding-top:12px;border-top:1px solid rgba(0,0,0,.14);
+  font-size:11.5px;line-height:1.6;color:__BODY__;}
+@media(max-width:1100px){
+  .pngrid,.pngrid.n3,.pngrid.n4{grid-template-columns:repeat(2,1fr);}
+  .pngrid .pn{border-left:none;padding-left:0;}
+  .pngrid .pn:nth-child(2n){border-left:1px solid __INK__;padding-left:22px;}
+}
+@media(max-width:820px){
+  .pngrid,.pngrid.n2,.pngrid.n3,.pngrid.n4{grid-template-columns:1fr;}
+  .pngrid .pn,.pngrid .pn:nth-child(2n){border-left:none;padding-left:0;}
+}
 /* ── 00Q · Your question ─────────────────────────────────────────────────────
    The approved Refine prototype: the brief opens with the answer. White
    section, blue headline, three blue cards whose every number is counted. */
@@ -8606,7 +8724,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
     """
     SRC = {"reddit":"Reddit","gdelt":"News","hacker_news":"HN","youtube":"YouTube",
            "tiktok":"TikTok","instagram":"Instagram","twitter":"X/Twitter",
-           "web":"Web","rss":"RSS","db":"Archive"}
+           "web":"Web","rss":"RSS","db":"Archive","pinterest":"Pinterest"}
     _SV_LOGO_EMITTED.clear()   # each document carries its own <symbol> defs
 
     def sig(i):
@@ -8645,6 +8763,17 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         except Exception:
             return None
         return it if it and it.get("check") in ("page", "excerpt") else None
+
+    # Pinterest's own searches (01P). A trend's pinterest_index points in here.
+    _pn = res.get("_pinterest") if isinstance(res.get("_pinterest"), dict) else None
+    _pitems = (_pn or {}).get("items") or []
+
+    def pfig(i):
+        try:
+            i = int(i)
+            return _pitems[i] if 0 <= i < len(_pitems) else None
+        except Exception:
+            return None
 
     # ── 00Q · Your question ──────────────────────────────────────────────────
     # The Refine, as the approved prototype draws it: the brief OPENS with the
@@ -8763,6 +8892,10 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             _flink = (f' <a class="statlink" href="{e(_f["url"])}" target="_blank" '
                       f'title="{e(_f.get("source", ""))}'
                       f'{(" · " + e(_f["date"])) if _f.get("date") else ""}">↗</a>') if _f else ""
+            _pf = None if _f else pfig(t.get("pinterest_index"))
+            if _pf and _pf.get("url"):
+                _flink = (f' <a class="statlink" href="{e(_pf["url"])}" target="_blank" '
+                          f'title="Pinterest Trends · {e((_pn or {}).get("region_name", ""))}">↗</a>')
             st_ = (f'<div class="hair"></div><div class="stat">{e(_sv_stat_text(t.get("stat","")))}{_flink}</div>'
                    if t.get("stat") else "")
             dd = f'<details><summary>Dig deeper</summary>{links}</details>' if links else ""
@@ -8862,6 +8995,44 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                          f'{e(" · ".join(_names))}</div>'); h += 70
             H.append('</section>'); h += 160
 
+    # ── 01P · On Pinterest ───────────────────────────────────────────────────
+    # What people are PLANNING: the searches growing on Pinterest that contain
+    # the category's words, from Pinterest's own Trends API. Every figure is a
+    # field of its answer, quoted as given; the line under each is the year of
+    # weekly interest Pinterest sends with it. Absent without a token, and on
+    # briefs made before Pinterest was a source.
+    if "01P" in which and _pitems and _lhpin:
+        _rn = (_pn or {}).get("region_name") or ""
+        _wk = _lhpin._day(_pn.get("week", "")) if _pn.get("week") else ""
+        _about = bool(_pn.get("about_pinterest"))
+        H.append(open_sec("01P") + head("01P", "On Pinterest",
+                                        "What is rising on Pinterest" if _about
+                                        else "What people are planning"))
+        _kw = ", ".join(f"“{e(k)}”" for k in (_pn.get("keywords") or []))
+        _lead = (f"The searches rising fastest across Pinterest in {e(_rn)}" if _about else
+                 f"Searches on Pinterest that contain {_kw} and are growing in {e(_rn)}")
+        H.append(f'<div class="lead">{_lead}. People come to Pinterest to plan, before '
+                 f'they decide — so these run ahead of what they post.</div>')
+        H.append(f'<div class="pngrid n{min(4, len(_pitems))}">')
+        for it in _pitems[:8]:
+            _fig, _what = _lhpin.headline(it)
+            _rest = " · ".join(f"{_lhpin.pct(it[k])} {lab}" for k, lab in
+                               (("yoy", "on a year ago"), ("mom", "on last month"), ("wow", "on last week"))
+                               if it.get(k) is not None and lab != _what)
+            _neg = " neg" if _fig.startswith("−") else ""
+            H.append(f'<div class="pn"><div class="pnkw">{e(it.get("keyword", ""))}</div>'
+                     f'<div class="pnfig{_neg}">{e(_fig)}</div><div class="pnsub">{e(_what)}</div>'
+                     f'{_lhpin.sparkline(it.get("series"))}'
+                     + (f'<div class="pnmore">{e(_rest)}</div>' if _rest else "")
+                     + (f'<a class="pnlink" href="{e(it["url"])}" target="_blank">On Pinterest Trends ↗</a>'
+                        if it.get("url") else "") + '</div>')
+        H.append('</div>')
+        _src = "Pinterest Trends API" + (f" · {e(_rn)}" if _rn else "") + \
+               (f" · week ending {e(_wk)}" if _wk else "") + \
+               (f" · {e(_pn['note'])}" if _pn.get("note") and mode == "screen" else "")
+        H.append(f'<div class="pnwhere"><span class="fadedlbl">Source</span>{_src}</div>')
+        H.append('</section>'); h += 240 + ((min(8, len(_pitems)) + 3) // 4) * 330
+
     if "02" in which:
         H.append(open_sec("02") + head("02", "Consumer Insight", "What people are actually saying"))
         if res.get("insights_summary"):
@@ -8876,7 +9047,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         #
         # This costs nothing per report. The top-ups are signals already
         # collected and already paid for; no second model call is made.
-        VOICE = ("twitter", "tiktok", "instagram", "youtube", "reddit", "hacker_news")
+        VOICE = ("twitter", "tiktok", "instagram", "youtube", "reddit", "hacker_news", "pinterest")
         PER_NET, ALL_SLOTS = 6, 6
 
         _mt = (res or {}).get("_meta", {}) or {}
@@ -9879,6 +10050,16 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
             return None
         return it if it and it.get("check") in ("page", "excerpt") else None
 
+    _pn = res.get("_pinterest") if isinstance(res.get("_pinterest"), dict) else {}
+    _pall = (_pn or {}).get("items") or []
+
+    def _pfig(i):
+        try:
+            i = int(i)
+            return _pall[i] if 0 <= i < len(_pall) else None
+        except Exception:
+            return None
+
     tr = res.get("trends", [])
     if tr:
         parts.append(_sec("01", "The Currents", "What is trending"))
@@ -9886,6 +10067,9 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
         for t in tr[:6]:
             _f = _nfig(t.get("figure_index"))
             _cite = (f' <a href="{e(_f["url"])}" style="color:{GOLD};">↗</a>' if _f else "")
+            _pf = None if _f else _pfig(t.get("pinterest_index"))
+            if _pf and _pf.get("url"):
+                _cite = f' <a href="{e(_pf["url"])}" style="color:{GOLD};">↗</a>'
             _st = f'<div class="stat">{e(_sv_stat_text(t.get("stat","")))}{_cite}</div>' if t.get("stat") else ""
             parts.append(f'<div class="card"><div class="clabel">{"Your current" if t.get("_custom") else "Current"}</div>'
                          f'<div class="ctitle">{e(t.get("title",""))}</div>'
@@ -9911,6 +10095,31 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
                 f'<div class="ctitle" style="font-size:14px;">{e(x.get("claim",""))}</div>'
                 f'<div class="stat">{e(_who)} · <a href="{e(x.get("url",""))}" '
                 f'style="color:{GOLD};">source ↗</a></div></div>')
+        parts.append('</div>')
+
+    # On Pinterest — Pinterest's own figures, as on screen, with the year drawn.
+    if _pall and _lhpin:
+        _rn = _pn.get("region_name") or ""
+        _wk = _lhpin._day(_pn.get("week", "")) if _pn.get("week") else ""
+        parts.append(_sec("01P", "On Pinterest", "What is rising on Pinterest" if _pn.get("about_pinterest")
+                          else "What people are planning"))
+        _kw = ", ".join(f"“{e(k)}”" for k in (_pn.get("keywords") or []))
+        parts.append('<div class="lead">' + (f"The searches rising fastest across Pinterest in {e(_rn)}"
+                                             if _pn.get("about_pinterest") else
+                                             f"Searches on Pinterest that contain {_kw} and are growing in {e(_rn)}")
+                     + f'. Pinterest Trends API{(" · week ending " + e(_wk)) if _wk else ""}.</div>')
+        parts.append('<div class="cards">')
+        for it in _pall[:8]:
+            _fig, _what = _lhpin.headline(it)
+            _col = RED if _fig.startswith("−") else GOLD
+            parts.append(
+                f'<div class="card"><div class="ctitle" style="font-size:15px;">{e(it.get("keyword",""))}</div>'
+                f'<div style="font-size:40px;font-weight:700;letter-spacing:-.04em;line-height:1;'
+                f'color:{_col};margin:8px 0 4px;">{e(_fig)}</div>'
+                f'<div class="stat" style="border:none;padding-top:0;">{e(_what)}</div>'
+                + _lhpin.sparkline(it.get("series"), h=30, color=GOLD if str(GOLD).startswith("#") else "#0000ff")
+                + f'<div class="stat">{e(_lhpin.growth_line(it))} · <a href="{e(it.get("url",""))}" '
+                  f'style="color:{GOLD};">Pinterest Trends ↗</a></div></div>')
         parts.append('</div>')
 
     iq = res.get("insight_quotes", [])
@@ -9958,7 +10167,8 @@ def _sv_export_html(res: dict, brand: str, tagline: str, date_label: str,
         parts.append('<div class="cards">')
         _LBL = {"reddit": "Reddit", "hacker_news": "HN", "youtube": "YouTube",
                 "tiktok": "TikTok", "instagram": "Instagram",
-                "twitter": "X/Twitter", "gdelt": "News", "web": "Web", "rss": "RSS"}
+                "twitter": "X/Twitter", "gdelt": "News", "web": "Web", "rss": "RSS",
+                "pinterest": "Pinterest"}
         # THE PDF NOW FILTERS LIKE THE SCREEN.
         # It did not, and the two disagreed in the worst direction: a client
         # received a printed brief containing the five cards the team had
@@ -11198,7 +11408,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # articles are not filtered by it — the industry's week is context.
             _search_f = (_lhref.with_focus(_search, _lhref.focus_items(_in_focus))
                          if (_lhref and _in_focus) else _search)
-            with ThreadPoolExecutor(max_workers=4) as _pool:
+            with ThreadPoolExecutor(max_workers=5) as _pool:
                 # Fourth lane: BY THE NUMBERS. Started first because it is the
                 # one that waits on a model (searching, then reading pages);
                 # it is done long before the nine sources are.
@@ -11206,6 +11416,11 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                           _in_cat or _prof["category"], _in_prod,
                                           _in_market, _in_window, _prof_competitors,
                                           _in_focus)
+                # Fifth lane: PINTEREST'S OWN TRENDS (pinterest.py) — a few
+                # quick API calls, or nothing at all without a token.
+                _f_pin = _pool.submit(_sv_gather_pinterest, _in_brand or _active,
+                                      _in_cat or _prof["category"], _in_prod, _in_market,
+                                      _in_focus)
                 # Resolved here, on the main thread, then handed to the worker.
                 try:
                     _outs_pre = _sv_trade_outlets(_in_cat or _prof["category"],
@@ -11282,6 +11497,11 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 if _numbers.get("error") and not _numbers.get("items"):
                     _tick("numbers", -1, _numbers["error"])
                 _mark("numbers home")
+                try:
+                    _pin = _f_pin.result(timeout=45) or {}
+                except Exception as _pexc:
+                    _pin = {"items": [], "error": f"Pinterest Trends did not arrive "
+                                                  f"({type(_pexc).__name__})"}
             _status.markdown(
                 '<div class="sv-empty" style="text-align:left;padding:0 0 6px;">'
                 'Writing the brief…</div>', unsafe_allow_html=True)
@@ -11311,7 +11531,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                              trade=_trade_sigs, letters=_let_sigs,
                                              numbers=_numbers.get("items") or [],
                                              months=_in_window, question=_in_q,
-                                             focus=_in_focus)
+                                             focus=_in_focus, pinterest=_pin)
                 except Exception as _exc:
                     _name = type(_exc).__name__
                     if "Authentication" in _name or "PermissionDenied" in _name:
@@ -11411,7 +11631,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 category=_in_cat or _prof["category"], product=_in_prod, market=_in_market,
                 competitors=_prof_competitors, window=_in_window, focus=_in_focus,
                 question=_in_q, qq=_qq, numbers=_numbers, trade_sigs=_trade_sigs,
-                trade_outs=_trade_outs, let_sigs=_let_sigs, let_outs=_let_outs)
+                trade_outs=_trade_outs, let_sigs=_let_sigs, let_outs=_let_outs,
+                pinterest=_pin)
             st.session_state["sv_result"]   = _result
             # Trade signals are appended so trade_moves' signal_index can resolve
             # to a real URL in the renderer and in the archive.
@@ -11579,7 +11800,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
         # ── EDIT THE CURRENTS ────────────────────────────────────────────────
         _sv_edit_panel(_res, _sigs, _active, _saved_at)
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
-                                     ("00Q", "01", "01N", "02", "09", "02T", "02N", "03", "04", "05", "06"),
+                                     ("00Q", "01", "01N", "01P", "02", "09", "02T", "02N", "03", "04", "05", "06"),
                                      "screen",
                                      trade_sigs=_res.get("_trade_sigs") or [],
                                      trend_ages=_ages, faded=_faded,
@@ -12921,7 +13142,7 @@ def _rm_listen_frag() -> None:
 # The networks as the brief labels them, for the voices tile.
 _RM_NET = {"reddit": "Reddit", "tiktok": "TikTok", "instagram": "Instagram", "twitter": "X",
            "youtube": "YouTube", "web": "Web", "gdelt": "News", "hacker_news": "HN",
-           "rss": "RSS", "db": "Archive"}
+           "rss": "RSS", "db": "Archive", "pinterest": "Pinterest"}
 
 
 def _rm_brief_bits(c: dict) -> dict:
@@ -14129,8 +14350,9 @@ def _lv_dig_worker(jid: str, p: dict, outlets: list, lets: list, archive: list) 
         search = " ".join(dict.fromkeys(f"{cat} {prod}".split())).strip() or brand
         search_f = (_lhref.with_focus(search, _lhref.focus_items(focus)) if (_lhref and focus) else search)
         _stage("Asking nine sources…")
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             f_num = pool.submit(_sv_gather_numbers, brand, cat, prod, mk, months, comps, focus)
+            f_pin = pool.submit(_sv_gather_pinterest, brand, cat, prod, mk, focus)
             f_trade = pool.submit(_sv_gather_trade, search_f, cat, mk, prod, outlets, months)
             f_let = pool.submit(_sv_gather_letters, search_f, cat, mk, prod, lets, months)
             sigs, tally = _sv_gather(search, brand, mk, progress=_src, product=prod, brand=brand,
@@ -14151,20 +14373,26 @@ def _lv_dig_worker(jid: str, p: dict, outlets: list, lets: list, archive: list) 
                 numbers = f_num.result(timeout=90) or {}
             except Exception as nexc:
                 numbers = {"items": [], "error": f"the figures did not arrive ({type(nexc).__name__})"}
+            try:
+                pin = f_pin.result(timeout=45) or {}
+            except Exception as pexc:
+                pin = {"items": [], "error": f"Pinterest Trends did not arrive ({type(pexc).__name__})"}
         if not sigs:
             _sc.JOBS.finish(jid, error="No posts came back for that search — check the brand, "
                                        "the category and the product, then dig again.")
             return
         figs = numbers.get("items") or []
+        # Pinterest's searches join the figures the four parts may stand on.
+        lens_figs = list(figs) + (_lhpin.as_figures(pin) if (_lhpin and pin) else [])
         pool_s = _lc.interleave(_lv_clean_pool(sigs), 160)
         trade_all = list(trade_sigs or []) + list(let_sigs or [])
         _stage("Writing the four parts — and the brief behind them…")
-        lens_prompt = _lc.dig_prompt(p, p.get("answers") or [], pool_s, trade_all[:40], figs, _lv_today())
+        lens_prompt = _lc.dig_prompt(p, p.get("answers") or [], pool_s, trade_all[:40], lens_figs, _lv_today())
         comp_list = [c.strip() for c in comps.split(",") if c.strip()]
         with ThreadPoolExecutor(max_workers=2) as pool:
             f_brief = pool.submit(_sv_synthesize, sigs, cat or search, comp_list, brand,
                                   trade=trade_sigs, letters=let_sigs, numbers=figs, months=months,
-                                  question=q, focus=focus)
+                                  question=q, focus=focus, pinterest=pin)
             f_lens = pool.submit(_lv_ai, lens_prompt, CLAUDE_MODEL, 4500, 0.5, 240.0)
             lens = f_lens.result(timeout=300)
             try:
@@ -14172,19 +14400,21 @@ def _lv_dig_worker(jid: str, p: dict, outlets: list, lets: list, archive: list) 
             except Exception as bexc:
                 print(f"[live] the brief behind the dig was not written: {bexc}")
                 res = {}
-        parts = _lc.parse_dig(lens, pool_s, trade_all[:40], figs)
+        parts = _lc.parse_dig(lens, pool_s, trade_all[:40], lens_figs)
         rid = ""
         if res:
             _stage("Filing the brief in the Archive…")
             res = _sv_finish_result(res, sigs, brand=brand, category=cat, product=prod, market=mk,
                                     competitors=comps, window=months, focus=focus, question=q,
                                     qq=qq, numbers=numbers, trade_sigs=trade_sigs,
-                                    trade_outs=trade_outs, let_sigs=let_sigs, let_outs=let_outs)
+                                    trade_outs=trade_outs, let_sigs=let_sigs, let_outs=let_outs,
+                                    pinterest=pin)
             res["_diag"] = {"tally": tally, "origin": f"live session · {p.get('session_id', '')}",
                             "n_trade": len(trade_sigs or []), "n_letters": len(let_sigs or [])}
             rid = _sv_save_brief(brand, res, sigs)
         _sc.JOBS.finish(jid, {"parts": parts, "report_id": rid, "n": len(sigs),
-                              "n_trade": len(trade_all), "n_figs": len(figs)})
+                              "n_trade": len(trade_all), "n_figs": len(figs),
+                              "n_pins": len((pin or {}).get("items") or [])})
     except Exception as exc:
         _sc.JOBS.finish(jid, error=_lv_job_error(exc))
     finally:
@@ -14257,7 +14487,9 @@ def _lv_brief_bits(sess: dict) -> tuple:
                    "url": t.get("url", "")} for t in res.get("_trade_sigs") or []] +
                  [{"title": t.get("title", ""), "content": "", "source": t.get("letter") or "Newsletter",
                    "url": t.get("url", "")} for t in res.get("_letters_sigs") or []])
-        figs = (res.get("_numbers") or {}).get("items") or []
+        figs = list((res.get("_numbers") or {}).get("items") or [])
+        if _lhpin and isinstance(res.get("_pinterest"), dict):
+            figs += _lhpin.as_figures(res["_pinterest"])
     if not sigs:
         # No dig yet: what was saved for this brand before is the next best pool.
         brand = str((sess.get("setup") or {}).get("brand") or sess.get("client_name") or "")
@@ -14415,6 +14647,11 @@ def _lv_collect(sess: dict) -> bool:
                     cid = _lc.add_current(sess, j.get("sec", 0), res["t"], "ask", body=res.get("b", ""),
                                           ev=res.get("ev"), q=entry.get("q", ""), keep=False, now=_lv_now())
                     entry.update(status="done", cid=cid, note=res["t"])
+                # the answer, in the record of the session (the question is there already)
+                _lc.log_event(sess, "ask_done" if entry.get("status") == "done" else "ask_none", _lv_now(),
+                              screen="sec", sec=int(j.get("sec") or 0), q=entry.get("q", ""),
+                              id=entry.get("cid", ""), title=entry.get("note", "") if entry.get("status") == "done" else "",
+                              note=entry.get("note", "") if entry.get("status") != "done" else "")
         elif kind == "back":
             i, c = _lc.find_current(sess, j.get("cid", ""))
             if c:
@@ -14426,6 +14663,9 @@ def _lv_collect(sess: dict) -> bool:
                     c["b"] = res.get("b") or c.get("b", "")
                 else:
                     c["b"] = "Added in the session — nothing Lighthouse collected backs it yet."
+                if sess.get("went_live"):
+                    _lc.log_event(sess, "back", _lv_now(), screen="sec", sec=max(0, i), id=c.get("id", ""),
+                                  title=_lc.title_of(sess, c), n=len(c.get("ev") or []) if ok and res.get("ev") else 0)
         elif kind == "terr":
             found = r.get("found") or []
             if ok and found:
@@ -14435,13 +14675,16 @@ def _lv_collect(sess: dict) -> bool:
                                     err=(j.get("error") and "Lighthouse could not be reached — try again.")
                                     or "Lighthouse found no territory it could build from these selects "
                                        "— keep a few more, or star the strongest, and try again.")
+                _lc.log_event(sess, "terr_fail", _lv_now(), screen="terr", sec=int(sess.get("sec") or 0),
+                              note=sess["terr"]["err"])
         elif kind == "dig":
             _LV_PROGRESS.pop(j.get("id", ""), None)
             d = sess.setdefault("dig", {})
             if ok and any(r.get("parts") or []):
                 _lc.apply_dig(sess, r["parts"], report_id=r.get("report_id", ""), now=_lv_now())
                 d.update(status="done", at=_lv_now(), err="", n=r.get("n", 0),
-                         n_trade=r.get("n_trade", 0), n_figs=r.get("n_figs", 0))
+                         n_trade=r.get("n_trade", 0), n_figs=r.get("n_figs", 0),
+                         n_pins=r.get("n_pins", 0))
             else:
                 if r.get("report_id"):
                     d["report_id"] = r["report_id"]
@@ -14459,19 +14702,32 @@ def _lv_collect(sess: dict) -> bool:
     return changed
 
 
-def _lv_make_leave(sess: dict) -> None:
-    """Save the leave-behind as it stands and give it a link of its own."""
+def _lv_report(sess: dict, fresh: bool = False) -> dict:
+    """The final report as it stands: the leave-behind, and under it the whole
+    session — with or without the transcript and the timeline, as the team
+    ticked them (live_core.report_doc). Times on the team's clock."""
     lines, people, labels = _lv_people(sess)
     rid = (sess.get("dig") or {}).get("report_id", "")
-    doc = _lc.leave_doc(sess, _lv_answers(sess, fresh=True), people, labels, {l["k"]: l for l in lines},
-                        brief_url=_lv_abs_url("view=overview&report=" + urllib.parse.quote(rid, safe=""))
-                        if rid else "", when=_lv_now())
+    return _lc.report_doc(sess, _lv_answers(sess, fresh=fresh), lines, people, labels,
+                          brief_url=_lv_abs_url("view=overview&report=" + urllib.parse.quote(rid, safe=""))
+                          if rid else "", when=_lv_now(), tz_name=DISPLAY_TZ)
+
+
+def _lv_transcript_txt(sess: dict) -> str:
+    lines, people, labels = _lv_people(sess)
+    return _lc.transcript_text(sess, lines, people, labels, DISPLAY_TZ)
+
+
+def _lv_make_leave(sess: dict) -> None:
+    """Save the final report as it stands — the leave-behind with the session
+    under it — and give it a link of its own."""
+    doc = _lv_report(sess, fresh=True)
     lv = sess.setdefault("leave", {})
     tok = lv.get("token") if _lc.valid_token(lv.get("token", "")) else _lc.new_token()
     rec = {"kind": "leave", "live_id": sess["id"], "client_name": sess.get("client_name", ""),
            "doc": doc, "saved_at": _lv_now(), "by": st.session_state.get("logged_in_user", "")}
     ok = _db.upsert_record(_lc.leave_record_id(tok), _LV_LEAVE_TOPIC, rec,
-                           label=f"Leave-behind · {sess.get('client_name', '')}")
+                           label=f"Final report · {sess.get('client_name', '')}")
     lv.update(token=tok, saved_at=_lv_now() if ok else lv.get("saved_at", ""),
               err="" if ok else "Could not save — the database did not answer. Try again.")
 
@@ -14493,10 +14749,12 @@ def _lv_effect(sess: dict, eff: tuple) -> None:
         _lv_make_leave(sess)
     elif kind == "read":
         sess["_force_read"] = True
-    elif kind == "pdf":
-        # The printable file is large (the fonts travel inside it), so it goes
-        # to the screen once, when asked for, not with every redraw.
-        st.session_state["_lv_pdf"] = int(st.session_state.get("_lv_pdf") or 0) + 1
+    elif kind in ("pdf", "full", "txt"):
+        # The printable file is large (the fonts travel inside it), and so are
+        # the full report and the transcript: each goes to the screen once,
+        # when asked for, not with every redraw.
+        k = f"_lv_{kind}"
+        st.session_state[k] = int(st.session_state.get(k) or 0) + 1
     elif kind == "end":
         tok = sess.get("intake_token", "")
         rec = _lv_load_intake(tok)
@@ -14536,16 +14794,28 @@ def _lv_state(sess: dict) -> dict:
     leave = {}
     lv = sess.get("leave") or {}
     if sess.get("screen") == "brief":
-        rid = (sess.get("dig") or {}).get("report_id", "")
-        doc = _lc.leave_doc(sess, _lv_answers(sess), people, labels, {l["k"]: l for l in lines},
-                            brief_url=_lv_abs_url("view=overview&report=" + urllib.parse.quote(rid, safe=""))
-                            if rid else "", when=_lv_now())
-        name = re.sub(r"[^a-z0-9]+", "-", str(doc.get("client") or "session").lower()).strip("-") or "session"
-        leave = {"html": _lc.leave_html(doc, standalone=False), "fname": f"lighthouse-{name}-leave-behind.html"}
-        n_pdf = int(st.session_state.get("_lv_pdf") or 0)
-        if n_pdf and n_pdf != st.session_state.get("_lv_pdf_sent"):
-            st.session_state["_lv_pdf_sent"] = n_pdf
-            leave.update(file=_lc.leave_html(doc, font_css=_sv_font_css(), print_on_open=True), pdf_n=n_pdf)
+        doc = _lv_report(sess)
+        name = _lv_slug(doc.get("client"))
+        # On screen: the leave-behind; the session in full only when asked.
+        leave = {"html": _lc.leave_html(doc, standalone=False, with_full=False),
+                 "fname": f"lighthouse-{name}-final-report.html", "txt_fname": f"lighthouse-{name}-transcript.txt",
+                 "opts": _lc.report_opts(sess), "counts": _lc.report_counts(doc)}
+
+        def once(kind):
+            n = int(st.session_state.get(f"_lv_{kind}") or 0)
+            if n and n != st.session_state.get(f"_lv_{kind}_sent"):
+                st.session_state[f"_lv_{kind}_sent"] = n
+                return n
+            return 0
+        n = once("pdf")
+        if n:
+            leave.update(file=_lc.leave_html(doc, font_css=_sv_font_css(), print_on_open=True), pdf_n=n)
+        n = once("full")
+        if n:
+            leave.update(full_html=_lc.full_html(doc), full_n=n)
+        n = once("txt")
+        if n:
+            leave.update(txt=_lc.transcript_text(sess, lines, people, labels, DISPLAY_TZ), txt_n=n)
     if lv.get("token"):
         leave.update(url=_lv_abs_url("view=leave&k=" + lv["token"]), saved_at=_rm_clock(lv.get("saved_at", "")))
     if lv.get("err"):
@@ -14681,6 +14951,11 @@ def _lv_css() -> str:
 .lv-list .lv {{ color:#ff383c; font-weight:700; font-size:11px; letter-spacing:.12em; text-transform:uppercase; }}
 .st-key-lv_go button, .st-key-lv_go2 button {{ min-height:48px !important; padding:10px 26px !important; }}
 .st-key-lv_go button p, .st-key-lv_go2 button p {{ font-size:15px !important; }}
+/* the final report's two switches: blue, as everything that is "on" here (red means a negative) */
+[class*="st-key-lv_opt_"] label[data-baseweb="checkbox"] > span:first-child {{ border-color:#000 !important; border-radius:4px !important; }}
+[class*="st-key-lv_opt_"] label[data-baseweb="checkbox"]:has(input:checked) > span:first-child {{
+  background-color:#0000ff !important; border-color:#0000ff !important; }}
+[class*="st-key-lv_opt_"] label p {{ font-family:{s}; font-size:14px; font-weight:700; color:#000; }}
 </style>"""
 
 
@@ -14865,6 +15140,71 @@ def _lv_dig_panel(sid: str) -> None:
                     f'<div class="s">{e(_lc.SECTIONS[i]["head"])}</div></div>', unsafe_allow_html=True)
 
 
+def _lv_opt_changed(sid: str, k: str) -> None:
+    """A switch of the final report, ticked on the preparation page."""
+    sess = st.session_state.get("lv_sess")
+    if isinstance(sess, dict) and sess.get("id") == sid:
+        sess.setdefault("leave_opts", {})[k] = bool(st.session_state.get(f"lv_opt_{k}_{sid}"))
+        _lv_save(sess, force=True)
+
+
+def _lv_report_panel(sess: dict) -> None:
+    """The final report, after (or during) the session: the PDF, the
+    transcript as text, the link — and what goes in them."""
+    st.markdown('<div class="lv-h"><span>5</span>After the session: the final report</div>',
+                unsafe_allow_html=True)
+    sid = sess["id"]
+    o = _lc.report_opts(sess)
+    for k in _lc.REPORT_OPTS:
+        # The page follows the session (the screen in the room can change them too).
+        st.session_state[f"lv_opt_{k}_{sid}"] = o[k]
+    doc = _lv_report(sess)
+    ov = (doc.get("full") or {}).get("overview") or {}
+    cnt = _lc.report_counts(doc)
+    lv = sess.get("leave") or {}
+    span = " – ".join(x for x in (ov.get("start"), ov.get("end")) if x)
+    st.markdown('<div class="lv-meta">The leave-behind and, under it, the whole session: what the client told '
+                'us, what Lighthouse looked for, every current and who decided it, every question, every round '
+                'of territories, every interaction with its time — and the full transcript. Nothing in it is '
+                'written by a model.<br><b>'
+                + e(" · ".join(x for x in (ov.get("day"), span,
+                                           f"{ov['minutes']} min" if ov.get("minutes") else "",
+                                           f"{cnt['lines']} lines", f"{cnt['events']} interactions",
+                                           "" if ov.get("ended") else "the session has not ended") if x))
+                + "</b></div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    c1.checkbox(f"The full transcript · {cnt['lines']} lines", key=f"lv_opt_transcript_{sid}",
+                on_change=_lv_opt_changed, args=(sid, "transcript"))
+    c2.checkbox(f"Every interaction, in order · {cnt['events']}", key=f"lv_opt_timeline_{sid}",
+                on_change=_lv_opt_changed, args=(sid, "timeline"))
+    st.caption("What is ticked goes into the PDF and the link. The link changes only when it is saved again.")
+    slug = _lv_slug(doc.get("client"))
+    a, b, c3 = st.columns(3)
+    with a:
+        st.download_button("⬇  The final report (PDF)", key=f"lv_rep_pdf_{sid}", use_container_width=True,
+                           data=_lc.leave_html(doc, font_css=_sv_font_css_safe(), print_on_open=True),
+                           file_name=f"lighthouse-{slug}-final-report.html", mime="text/html",
+                           help="Open it and choose Print → Save as PDF (the print dialog opens by itself).")
+    with b:
+        st.download_button("⬇  The transcript (.txt)", key=f"lv_rep_txt_{sid}", use_container_width=True,
+                           data=_lv_transcript_txt(sess), file_name=f"lighthouse-{slug}-transcript.txt",
+                           mime="text/plain", help="Every line, with its time, speaker and part — always the "
+                                                   "whole transcript, whatever is ticked above.")
+    with c3:
+        if st.button("Update the link" if lv.get("token") else "Save it and get a link", key=f"lv_rep_link_{sid}",
+                     use_container_width=True):
+            _lv_make_leave(sess)
+            _lv_save(sess, force=True)
+            st.rerun()
+    if lv.get("token"):
+        st.markdown(f'<div class="lv-meta">Its own link, without the team login'
+                    + (f' · saved {e(_rm_clock(lv.get("saved_at", "")))}' if lv.get("saved_at") else "")
+                    + "</div>", unsafe_allow_html=True)
+        st.code(_lv_abs_url("view=leave&k=" + lv["token"]), language=None)
+    if lv.get("err"):
+        st.markdown(f'<div class="rm-warn">{e(lv["err"])}</div>', unsafe_allow_html=True)
+
+
 def _lv_prep(sess: dict, user: str) -> None:
     """Before the meeting."""
     c = next((x for x in _rm_load_clients() if x["folder_id"] == sess.get("client_id")), None) \
@@ -14999,6 +15339,7 @@ def _lv_prep(sess: dict, user: str) -> None:
         rid = d.get("report_id", "")
         st.markdown(f'<div class="lv-meta">Dug {e(_sv_fmt_date(d.get("at", "")))} · {d.get("n", 0)} posts · '
                     f'{d.get("n_trade", 0)} articles · {d.get("n_figs", 0)} figures'
+                    + (f' · {d.get("n_pins", 0)} Pinterest searches' if d.get("n_pins") else "")
                     + (f' · <a href="{e(_rm_report_url(rid))}" target="_blank" rel="noopener">the full brief ↗</a>'
                        if rid else "") + '. Cut what is weak: nothing goes on the screen that the team has '
                     'not looked at.</div>', unsafe_allow_html=True)
@@ -15084,9 +15425,12 @@ def _lv_prep(sess: dict, user: str) -> None:
             _lv_save(sess, force=True)
             _lv_set_mode("run")
             st.rerun()
+    # ── 5 · After the session: the final report ─────────────────────────
+    if sess.get("went_live") or sess.get("chunks") or sess.get("log"):
+        _lv_report_panel(sess)
     with st.expander("Delete this session"):
         st.markdown('<div class="lv-note">Removes the session, the client\'s link to the questions and the '
-                    'leave-behind\'s link. The brief the dig filed in the Archive stays.</div>',
+                    'final report\'s link. The brief the dig filed in the Archive stays.</div>',
                     unsafe_allow_html=True)
         sure = st.checkbox("Yes, delete it for good", key=f"lv_del_ok_{sess['id']}")
         if st.button("Delete the session", key=f"lv_del_{sess['id']}", disabled=not sure):

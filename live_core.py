@@ -31,7 +31,7 @@ import re
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 # ══════════════════════════════════════════════════════════════════════════════
 # The intake — the client's ten questions, on a link of their own
@@ -350,7 +350,8 @@ def setup_defaults(client: dict, answers: list, markets=(), default_market: str 
 _NET = {"reddit": "Reddit", "tiktok": "TikTok", "instagram": "Instagram", "twitter": "X",
         "youtube": "YouTube", "web": "Web", "gdelt": "News", "hacker_news": "Hacker News",
         "rss": "News", "db": "Archive", "trade": "Trade press", "letter": "Newsletter",
-        "figure": "Figure", "room": "The room"}
+        "figure": "Figure", "room": "The room", "pinterest": "Pinterest",
+        "pinterest trends": "Pinterest Trends"}
 
 
 def net_label(src: str) -> str:
@@ -712,15 +713,64 @@ def sec_at(sess: dict, n: int) -> int:
 
 
 def mark_screen(sess: dict, screen: str, sec: int) -> None:
+    """Note where the meeting is, against the transcript: from chunk n on, the
+    part (or -1) and the screen — so every line can be put under the part, or
+    the screen, it was said on."""
     n = len(sess.get("chunks") or [])
     s = sec if screen == "sec" else -1
+    scr = screen if screen in SCREENS else "setup"
     marks = sess.setdefault("sec_marks", [])
-    if marks and marks[-1][1] == s:
+    last = marks[-1] if marks else None
+    if last and last[1] == s and (len(last) < 3 or last[2] == scr):
         return
-    if marks and marks[-1][0] == n:
-        marks[-1] = [n, s]
+    if last and last[0] == n:
+        marks[-1] = [n, s, scr]
     else:
-        marks.append([n, s])
+        marks.append([n, s, scr])
+
+
+_SCREEN_LABEL = {"setup": "Opening", "selects": "The selects", "terr": "Countercurrent",
+                 "brief": "The leave-behind"}
+
+
+def part_at(sess: dict, n: int) -> str:
+    """'Company' · 'Opening' · 'The selects' … — what was on screen when chunk n was said."""
+    lab = "Opening"
+    for m in sess.get("sec_marks") or []:
+        try:
+            at, sec = int(m[0]), int(m[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if at > n:
+            break
+        if 0 <= sec < N_SEC:
+            lab = SECTIONS[sec]["key"]
+        else:
+            lab = _SCREEN_LABEL.get(m[2] if len(m) > 2 else "", "Between the parts")
+    return lab
+
+
+# ── Every interaction, as it happens ─────────────────────────────────────────
+# The final report tells the meeting back in order — every decision, rewrite,
+# question, pick and change of part, with its time — so each one is written
+# down the moment it is applied. Times are UTC like everything else here.
+
+LOG_MAX = 4000
+
+
+def log_event(sess: dict, k: str, when: Optional[str] = None, **data) -> None:
+    lg = sess.setdefault("log", [])
+    ev = {"t": when or now_iso(), "k": k}
+    for kk, v in data.items():
+        if v not in (None, "", [], {}):
+            ev[kk] = v
+    # A note typed in a territory is one event, however many pauses it took.
+    if k == "tnote" and lg and lg[-1].get("k") == "tnote" and lg[-1].get("id") == ev.get("id"):
+        lg[-1] = ev
+    else:
+        lg.append(ev)
+    if len(lg) > LOG_MAX:
+        del lg[: len(lg) - LOG_MAX]
 
 
 def utc_ts(iso) -> Optional[float]:
@@ -962,6 +1012,8 @@ def reading(sess: dict, sec: int, by_key: dict, people: dict, labels: dict,
             c = {"id": cid, "t": nt["t"], "b": nt.get("b", ""), "ev": [], "src": "talk",
                  "cut": False, "at": now or now_iso()}
             cur.append(c)
+            log_event(sess, "new_topic", now, screen="sec", sec=sec, id=cid, title=c["t"],
+                      who=list(st["who"]), m=st["m"])
         if not c or c.get("cut"):
             continue
         if sess["human"].get(cid) or sess["locked"].get(cid):
@@ -975,6 +1027,8 @@ def reading(sess: dict, sec: int, by_key: dict, people: dict, labels: dict,
         else:
             sess["dec"][cid] = lv
             sess["ai"][cid] = mark
+        log_event(sess, "ai", now, screen="sec", sec=sec, id=cid, d=lv, title=title_of(sess, c),
+                  who=list(st["who"]), m=st["m"], mode=sess.get("mode", "auto"), ret=bool(st.get("ret")))
         picked.append({"lv": lv, "t": title_of(sess, c)})
     seen = flagged_before if flagged_before is not None else set(sess.get("flag_seen") or [])
     for cid in list(sess["flag"].keys()):
@@ -982,6 +1036,9 @@ def reading(sess: dict, sec: int, by_key: dict, people: dict, labels: dict,
         if c and i == sec and cid not in seen:
             seen.add(cid)
             flagged.append(title_of(sess, c))
+            fl = sess["flag"].get(cid) or {}
+            log_event(sess, "flag", now, screen="sec", sec=sec, id=cid, title=title_of(sess, c),
+                      w=fl.get("w", ""), text=fl.get("x", ""))
     sess["flag_seen"] = sorted(seen)
     reads = sess["reads"].setdefault(s, [])
     entry = {"t": now or now_iso(), "n": len(reads) + 1, "picked": picked, "flagged": flagged,
@@ -1140,9 +1197,18 @@ def parse_terr(obj, sels: list) -> list:
 
 
 def apply_terr(sess: dict, found: list, now: Optional[str] = None) -> int:
-    """The new round: ripe territories stay (with their notes); the rest is replaced."""
+    """The new round: ripe territories stay (with their notes); the rest is
+    replaced — and kept in the history, with the notes the room wrote on them,
+    because the final report tells every round, not only the last."""
     terr = sess.setdefault("terr", {"status": "none", "round": 0, "items": [], "err": ""})
-    keep = [t for t in terr.get("items") or [] if t.get("ripe")]
+    old = list(terr.get("items") or [])
+    keep = [t for t in old if t.get("ripe")]
+    gone = [t for t in old if not t.get("ripe")]
+    if old:
+        hist = terr.setdefault("history", [])
+        hist.append({"round": int(terr.get("round") or 0), "at": terr.get("at", ""),
+                     "items": [dict(t) for t in old], "replaced": [t.get("id") for t in gone]})
+        del hist[:-12]
     n0 = int(terr.get("n") or 0)
     items = list(keep)
     for t in found or []:
@@ -1150,6 +1216,8 @@ def apply_terr(sess: dict, found: list, now: Optional[str] = None) -> int:
         items.append(dict(t, id=f"t{n0}", ripe=False, notes=""))
     terr.update(items=items[:6], n=n0, status="done", err="", at=now or now_iso(),
                 round=int(terr.get("round") or 0) + 1)
+    log_event(sess, "terr_done", now, screen="terr", sec=int(sess.get("sec") or 0),
+              n=len(found or []), kept=len(keep), round=terr["round"])
     return len(found or [])
 
 
@@ -1162,7 +1230,8 @@ def leave_record_id(token: str) -> str:
 
 
 def _e(s) -> str:
-    return html.escape(str(s or ""), quote=True)
+    # "$" too: on the shared page Streamlit's Markdown would read "$5 … $9" as maths.
+    return html.escape(str(s or ""), quote=True).replace("$", "&#36;")
 
 
 def leave_doc(sess: dict, answers: list, people: dict, labels: dict, by_key: dict,
@@ -1200,12 +1269,628 @@ def _fmt_day(iso: str) -> str:
         return str(iso or "")[:10]
 
 
+# ── The final report: the leave-behind, then the whole session ───────────────
+# The leave-behind stays the first page. Under it, the session in full: what
+# the client told us before, what Lighthouse looked for, every part with every
+# current and what happened to it (and who decided), what else the room talked
+# about, every question put to Lighthouse, every round of territories, every
+# interaction with its time, and the transcript. Nothing in it is written by a
+# model — it is the record, told back. The transcript and the timeline can
+# each be left out (sess["leave_opts"]), for a copy that travels further.
+
+REPORT_OPTS = ("transcript", "timeline")
+_RECORDED = {"auto": "Voices told apart by AssemblyAI (EU servers)",
+             "tap": "Chrome speech recognition; speakers tapped by the facilitator"}
+_OUTCOME = {"keep": "Kept", "star": "Starred", "kill": "Killed"}
+_SRC_LABEL = {"talk": "From the conversation", "room": "Added by the room", "team": "Added by Atlantic",
+              "ask": "Asked by the room", "dig": "Dug by Lighthouse"}
+
+
+def recorded_with(sess: dict) -> str:
+    """How the room was heard, read from the lines themselves — the setting
+    can change later (a server without the key falls back to Chrome)."""
+    voice = [c for c in sess.get("chunks") or [] if isinstance(c, dict) and c.get("source") == "voice"]
+    if not voice:
+        return ""
+    told_apart = sum(1 for c in voice if c.get("spk") or c.get("ep"))
+    if told_apart == len(voice):
+        return _RECORDED["auto"]
+    if not told_apart:
+        return _RECORDED["tap"]
+    return _RECORDED["auto"] + "; part of it with " + _RECORDED["tap"][0].lower() + _RECORDED["tap"][1:]
+
+
+def report_opts(sess: dict, opts: Optional[dict] = None) -> dict:
+    """What goes in beyond the record itself — both, unless switched off."""
+    o = {k: True for k in REPORT_OPTS}
+    src = opts if isinstance(opts, dict) else (sess or {}).get("leave_opts")
+    for k, v in (src if isinstance(src, dict) else {}).items():
+        if k in o:
+            o[k] = bool(v)
+    return o
+
+
+def _local(iso, tz_name: str = "") -> Optional[datetime]:
+    """One of our UTC times, on the team's clock (DISPLAY_TZ) when given."""
+    try:
+        d = datetime.fromisoformat(str(iso or "").replace("Z", "")[:19])
+    except (TypeError, ValueError):
+        return None
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+            d = d.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(tz_name))
+        except Exception:
+            pass                        # a bad zone name must not cost the time
+    return d
+
+
+def fmt_clock(iso, tz_name: str = "") -> str:
+    d = _local(iso, tz_name)
+    return d.strftime("%H:%M") if d else ""
+
+
+def fmt_day(iso, tz_name: str = "") -> str:
+    d = _local(iso, tz_name)
+    return f"{d.day} {d.strftime('%B %Y')}" if d else ""
+
+
+def _plural(n: int, one: str, many: str = "") -> str:
+    return f"{n} {one if n == 1 else (many or one + 's')}"
+
+
+def report_labels(people: dict, labels: dict) -> dict:
+    """Names for a reader who was not there: 'You' is the facilitator."""
+    out = {}
+    for pid, p in (people or {}).items():
+        lab = (labels or {}).get(pid) or ""
+        if (p or {}).get("you") and not (p or {}).get("name"):
+            lab = "The facilitator"
+        out[pid] = lab or "Unnamed voice"
+    return out
+
+
+def _names(ids, labels: dict) -> str:
+    return ", ".join(labels.get(w) or "someone" for w in ids or [])
+
+
+def _where(ev: dict) -> str:
+    """The part (or screen) an interaction happened on."""
+    if ev.get("screen") == "sec":
+        try:
+            return SECTIONS[max(0, min(N_SEC - 1, int(ev.get("sec") or 0)))]["key"]
+        except (TypeError, ValueError):
+            return ""
+    return _SCREEN_LABEL.get(ev.get("screen", ""), "")
+
+
+def time_on_parts(sess: dict, until: Optional[str] = None) -> dict:
+    """Seconds spent on each part and screen, from the moves in the log —
+    counted from the moment the session went live."""
+    evs = sorted((e for e in sess.get("log") or [] if e.get("k") in ("go", "golive", "end")),
+                 key=lambda e: str(e.get("t", "")))
+    first = next((j for j, e in enumerate(evs) if e.get("k") == "golive"), None)
+    if first is not None:
+        evs = evs[first:]
+    spent: dict = {}
+    cur, since = None, None
+    for e in evs:
+        t = utc_ts(e.get("t"))
+        if t is None:
+            continue
+        if cur and since is not None:
+            spent[cur] = spent.get(cur, 0.0) + max(0.0, t - since)
+        if e.get("k") == "end":
+            cur, since = None, None
+            continue
+        cur, since = _where(e) or "Opening", t
+    u = utc_ts(until) if until else None
+    if cur and since is not None and u and u > since:
+        spent[cur] = spent.get(cur, 0.0) + (u - since)
+    return spent
+
+
+def _mins(sec: Optional[float]) -> str:
+    if not sec or sec < 20:
+        return ""
+    return f"{max(1, int(round(sec / 60)))} min"
+
+
+def event_text(ev: dict, labels: dict) -> str:
+    """One interaction, as a sentence."""
+    k, t = ev.get("k", ""), ev.get("title", "")
+    q = lambda x: f"“{x}”"
+    if k == "go":
+        if ev.get("screen") == "sec":
+            return f"Moved to {SECTIONS[max(0, min(N_SEC - 1, int(ev.get('sec') or 0)))]['head']}"
+        return {"setup": "Back to the opening", "selects": "Opened the selects",
+                "terr": "Opened the countercurrents", "brief": "Opened the leave-behind"}.get(
+            ev.get("screen", ""), "Moved on")
+    if k in ("decide", "set"):
+        d = ev.get("d", "")
+        if not d:
+            return f"Took {q(t)} out of the selects" if k == "set" else f"Cleared the decision on {q(t)}"
+        return {"keep": f"Kept {q(t)}", "star": f"Starred {q(t)}", "kill": f"Killed {q(t)}"}.get(d, q(t))
+    if k == "tweak":
+        return f"Rewrote {q(ev.get('frm', ''))} as {q(t)}"
+    if k == "add":
+        return f"Added a current: {q(t)}"
+    if k == "ask":
+        return f"Asked Lighthouse: {q(ev.get('q', ''))}"
+    if k == "ask_done":
+        return f"Lighthouse answered {q(ev.get('q', ''))} with a new current: {q(t)}"
+    if k == "ask_none":
+        return f"Lighthouse found nothing for {q(ev.get('q', ''))}" + (f" — {ev['note']}" if ev.get("note") else "")
+    if k == "back":
+        return (f"Lighthouse found {_plural(int(ev.get('n') or 0), 'post')} behind {q(t)}" if ev.get("n")
+                else f"Nothing Lighthouse collected backs {q(t)} yet")
+    if k == "ai":
+        lv = "★ Star" if ev.get("d") == "star" else "✓ Keep"
+        verb = "suggested" if ev.get("mode") == "suggest" else "picked"
+        return (f"Lighthouse {verb} {lv} for {q(t)}, from the conversation — {_names(ev.get('who'), labels)}; "
+                f"{_plural(int(ev.get('m') or 0), 'mention')}{'; the room came back to it' if ev.get('ret') else ''}")
+    if k == "new_topic":
+        return f"A topic from the conversation became a current: {q(t)} — {_names(ev.get('who'), labels)}"
+    if k == "flag":
+        return f"{q(t)} was contested — {labels.get(ev.get('w')) or 'someone'}: {q(ev.get('text', ''))}"
+    if k == "undo":
+        return f"Undid Lighthouse's pick of {q(t)}"
+    if k == "confirm":
+        return f"Confirmed Lighthouse's suggestion on {q(t)}"
+    if k == "dismiss":
+        return f"Dismissed Lighthouse's suggestion on {q(t)}"
+    if k == "mode":
+        return "Lighthouse set to suggest only" if ev.get("m") == "suggest" else "Lighthouse set to pick on its own"
+    if k == "read":
+        return "Asked Lighthouse to read the room now"
+    if k == "terr":
+        return ("Asked for the countercurrents again, with the room's notes" if ev.get("again")
+                else f"Asked for the countercurrents, from {_plural(int(ev.get('n') or 0), 'select')}")
+    if k == "terr_done":
+        kept = int(ev.get("kept") or 0)
+        return (f"Lighthouse found {_plural(int(ev.get('n') or 0), 'territory', 'territories')} — round "
+                f"{ev.get('round', 1)}{f', {kept} ripe kept' if kept else ''}")
+    if k == "terr_fail":
+        return "Lighthouse could not find territories" + (f" — {ev['note']}" if ev.get("note") else "")
+    if k == "ripe":
+        return f"Marked {q(t)} ripe" if ev.get("on") else f"Unmarked {q(t)} as ripe"
+    if k == "tnote":
+        return f"Note on {q(t)}: {q(ev.get('text', ''))}"
+    if k == "leave":
+        return "Saved the leave-behind to its link"
+    if k == "consent":
+        return "Told the room the conversation is transcribed"
+    if k == "golive":
+        return "The session started"
+    if k == "end":
+        return "The session ended"
+    if k == "intro":
+        return "The round of introductions started" if ev.get("on") else "The round of introductions ended"
+    if k == "name":
+        return f"A voice was named: {ev.get('name', '')}" + (f", {ev['role']}" if ev.get("role") else "")
+    if k == "fac":
+        who = labels.get(ev.get("id")) or ev.get("name") or "A person"
+        return (f"{who} marked as Atlantic — their words are not counted" if ev.get("on")
+                else f"{who} no longer marked as Atlantic")
+    if k == "merge":
+        return "Two voices joined into one person"
+    if k == "person_add":
+        return "A person was added"
+    if k == "person_del":
+        return "A person was removed"
+    if k == "lang":
+        return f"Language set to {ev.get('lang', '')}"
+    if k == "engine":
+        return ("Voices: tapped by the facilitator (Chrome)" if ev.get("engine") == "tap"
+                else "Voices: told apart (AssemblyAI)")
+    return k
+
+
+def transcript_rows(sess: dict, lines: list, people: dict, labels: dict, tz_name: str = "") -> list:
+    """Every line, under the part it was said in, with its time and speaker."""
+    out = []
+    for l in lines or []:
+        p = (people or {}).get(l.get("w")) or {}
+        note = bool(l.get("note"))
+        out.append({"t": fmt_clock(l.get("t", ""), tz_name), "part": part_at(sess, int(l.get("n") or 0)),
+                    "who": "Typed note" if note else (labels.get(l.get("w")) or "Unidentified voice"),
+                    "role": "" if note else p.get("role", ""), "atlantic": (not note) and is_fac(p),
+                    "note": note, "intro": bool(l.get("intro")), "x": str(l.get("x") or "").strip()})
+    return [r for r in out if r["x"]]
+
+
+def _decided_how(sess: dict, cid: str, labels: dict, by_log: dict) -> str:
+    d = (sess.get("dec") or {}).get(cid, "")
+    ai = (sess.get("ai") or {}).get(cid)
+    if d and ai:
+        basis = f"{_names(ai.get('who'), labels)} · {_plural(int(ai.get('m') or 0), 'mention')}"
+        if "confirm" in by_log.get(cid, ()):
+            return f"Suggested by Lighthouse from the conversation, confirmed by the room — {basis}"
+        return f"Picked by Lighthouse from the conversation — {basis}"
+    if d and (sess.get("human") or {}).get(cid):
+        return "Decided by the room"
+    if "undo" in by_log.get(cid, ()):
+        return "Lighthouse picked it; the room undid the pick"
+    if "dismiss" in by_log.get(cid, ()):
+        return "Lighthouse suggested it; the room dismissed the suggestion"
+    if (sess.get("locked") or {}).get(cid):
+        return "Lighthouse's pick or suggestion was turned down by the room"
+    g = (sess.get("sugg") or {}).get(cid)
+    if g:
+        return f"Lighthouse suggested {'★ Star' if g.get('lv') == 'star' else '✓ Keep'} — not confirmed"
+    return ""
+
+
+def _quotes(stt: Optional[dict], people: dict, labels: dict) -> list:
+    return [{"who": labels.get(q.get("w")) or "Someone in the room",
+             "role": ((people or {}).get(q.get("w")) or {}).get("role", ""), "x": q.get("x", "")}
+            for q in (stt or {}).get("quotes", [])]
+
+
+def report_doc(sess: dict, answers: list, lines: list, people: dict, labels: dict,
+               brief_url: str = "", when: Optional[str] = None, tz_name: str = "",
+               opts: Optional[dict] = None) -> dict:
+    """The leave-behind (leave_doc) with the whole session under "full".
+    `lines` are keyed_lines; `labels` person id → name; `tz_name` the team's
+    clock. Everything here is what was said, kept, found or done."""
+    labels = report_labels(people, labels)
+    by_key = {l["k"]: l for l in lines or [] if l.get("k")}
+    doc = leave_doc(sess, answers, people, labels, by_key, brief_url=brief_url, when=when)
+    o = report_opts(sess, opts)
+    log = sorted([e for e in sess.get("log") or [] if isinstance(e, dict)], key=lambda e: str(e.get("t", "")))
+    by_log: dict = {}
+    for e in log:
+        if e.get("id"):
+            by_log.setdefault(e["id"], set()).add(e.get("k"))
+    clock = lambda iso: fmt_clock(iso, tz_name)
+    spoken = [l for l in lines or [] if not l.get("note") and str(l.get("x") or "").strip()]
+    start = sess.get("went_live") or sess.get("started_at") or ""
+    end = sess.get("ended_at") or (spoken[-1].get("t") if spoken else "") or when or now_iso()
+    t0, t1 = utc_ts(start), utc_ts(end)
+    spent = time_on_parts(sess, until=end)
+
+    # the room: everyone who spoke or was named, with the role they gave
+    said_by = {l.get("w") for l in spoken}
+    room = [{"name": labels.get(pid, ""), "role": p.get("role", ""), "atlantic": is_fac(p)}
+            for pid, p in (people or {}).items() if pid in said_by or p.get("name")]
+
+    parts, n_dec = [], {"keep": 0, "star": 0, "kill": 0, "": 0}
+    for i, base in enumerate(SECTIONS):
+        curs, on_screen = [], set()
+        for c in all_currents(sess, i):
+            cid = c["id"]
+            on_screen.add(cid)
+            d = (sess.get("dec") or {}).get(cid, "")
+            n_dec[d if d in n_dec else ""] += 1
+            stt = topic_stats(sess, i, cid, by_key, people)
+            fl = (sess.get("flag") or {}).get(cid)
+            title = title_of(sess, c)
+            curs.append({"t": title, "was": c.get("t", "") if title != c.get("t", "") else "",
+                         "b": c.get("b", ""), "src": c.get("src") or "dig", "q": c.get("q", ""),
+                         "outcome": _OUTCOME.get(d, "Not decided"), "d": d,
+                         "how": _decided_how(sess, cid, labels, by_log),
+                         "ev": [e for e in c.get("ev") or [] if e.get("url")][:8],
+                         "evline": evidence_line(c.get("ev") or []),
+                         "talk": ({"m": stt["m"], "n": len(stt["who"]), "ret": stt["ret"]} if stt else None),
+                         "quotes": _quotes(stt, people, labels),
+                         "contested": ({"who": labels.get(fl.get("w")) or "Someone", "x": fl.get("x", "")}
+                                       if fl else None)})
+        # what the room talked about that never became a current
+        other = []
+        for k, nt in ((sess.get("newt") or {}).get(str(i)) or {}).items():
+            tid = f"n{i}-{k}"
+            if tid in on_screen:
+                continue
+            stt = topic_stats(sess, i, tid, by_key, people)
+            if stt:
+                other.append({"t": nt.get("t", ""), "m": stt["m"], "n": len(stt["who"]),
+                              "quotes": _quotes(stt, people, labels)})
+        asks = [{"t": clock(a.get("at", "")), "q": a.get("q", ""), "status": a.get("status", ""),
+                 "note": a.get("note", "")} for a in (sess.get("chat") or {}).get(str(i)) or []]
+        reads = []
+        for r in (sess.get("reads") or {}).get(str(i)) or []:
+            bits = []
+            if r.get("picked"):
+                bits.append(("suggested " if r.get("mode") == "suggest" else "picked ")
+                            + " · ".join(("★ " if p.get("lv") == "star" else "✓ ") + str(p.get("t", ""))
+                                         for p in r["picked"]))
+            if r.get("flagged"):
+                bits.append("contested: " + " · ".join(str(x) for x in r["flagged"]))
+            reads.append({"t": clock(r.get("t", "")),
+                          "text": r.get("err") or ("; ".join(bits) if bits else "nothing strong enough yet")})
+        st0 = (sess.get("sec_start") or {}).get(str(i))
+        parts.append({"key": base["key"], "head": base["head"], "q": base["q"],
+                      "started": clock(st0) if st0 else "", "time": _mins(spent.get(base["key"])),
+                      "currents": curs, "other": other, "asks": asks, "reads": reads})
+
+    sels = [{"t": c["t"], "part": SECTIONS[c["sec"]]["key"], "star": c["star"]} for c in selects(sess)]
+    terr = sess.get("terr") or {}
+
+    def _terr_items(items, replaced=()):
+        return [{"t": x.get("t", ""), "a": x.get("a", ""), "b": x.get("b", ""), "why": x.get("why", ""),
+                 "ripe": bool(x.get("ripe")), "notes": x.get("notes", ""),
+                 "replaced": x.get("id") in replaced} for x in items or []]
+    rounds = [{"round": h.get("round"), "t": clock(h.get("at", "")),
+               "items": _terr_items(h.get("items"), set(h.get("replaced") or []))}
+              for h in terr.get("history") or []]
+    if terr.get("items"):
+        rounds.append({"round": terr.get("round"), "t": clock(terr.get("at", "")), "final": True,
+                       "items": _terr_items(terr.get("items"))})
+
+    timeline = ([{"t": clock(e.get("t", "")), "part": _where(e), "text": event_text(e, labels)}
+                 for e in log] if o["timeline"] else [])
+    transcript = transcript_rows(sess, lines, people, labels, tz_name) if o["transcript"] else []
+    st, dig = sess.get("setup") or {}, sess.get("dig") or {}
+    order = ["Opening"] + [b["key"] for b in SECTIONS] + ["The selects", "Countercurrent", "The leave-behind"]
+    time_line = " · ".join(f"{k} {_mins(v)}" for k, v in sorted(
+        spent.items(), key=lambda kv: (order.index(kv[0]) if kv[0] in order else 99)) if _mins(v))
+    asks_all = [a for p_ in parts for a in p_["asks"]]
+    doc["day"] = fmt_day(start or when or now_iso(), tz_name)
+    doc["full"] = {
+        "opts": o,
+        "overview": {
+            "day": doc["day"], "start": clock(start), "end": clock(end) if sess.get("ended_at") else "",
+            "minutes": int(round((t1 - t0) / 60)) if (t0 and t1 and t1 >= t0) else None,
+            "ended": bool(sess.get("ended_at")),
+            "recorded": recorded_with(sess),
+            "lang": sess.get("lang", ""), "consent": clock(sess.get("consent")) if sess.get("consent") else "",
+            "lines": len(spoken), "words": sum(len(str(l.get("x", "")).split()) for l in spoken),
+            "notes": sum(1 for l in lines or [] if l.get("note")),
+            "kept": n_dec["keep"] + n_dec["star"], "starred": n_dec["star"], "killed": n_dec["kill"],
+            "open": n_dec[""], "picks": sum(1 for e in log if e.get("k") == "ai"),
+            "topics": sum(1 for e in log if e.get("k") == "new_topic"),
+            "asks": len(asks_all), "answered": sum(1 for a in asks_all if a["status"] == "done"),
+            "rounds": len(rounds), "events": len(log), "time": time_line},
+        "room": room,
+        "intake": [{"label": lab, "q": qq, "a": (answers or [])[j] if j < len(answers or []) else ""}
+                   for j, (qq, _h, lab) in enumerate(QUESTIONS)],
+        "setup": {k: st.get(k) for k in ("brand", "category", "product", "market", "window", "competitors",
+                                         "focus", "question") if st.get(k)},
+        "dig": {"day": fmt_day(dig.get("at", ""), tz_name) if dig.get("at") else "",
+                "posts": int(dig.get("n") or 0), "articles": int(dig.get("n_trade") or 0),
+                "figures": int(dig.get("n_figs") or 0), "pins": int(dig.get("n_pins") or 0)},
+        "parts": parts, "selects": sels, "rounds": rounds, "timeline": timeline, "transcript": transcript,
+        "made": fmt_day(when or now_iso(), tz_name) + " " + clock(when or now_iso()),
+    }
+    return doc
+
+
+def tension(a, b) -> str:
+    """Side A and side B as one sentence: "tired of performing… but still…"."""
+    a, b = str(a or "").strip(), str(b or "").strip()
+    if a.endswith(("…", "...")) and b.startswith(("…", "...")):
+        b = b.lstrip(".…").lstrip()
+    return f"{a} {b}".strip()
+
+
+def _x(s) -> str:
+    """Text for the report: escaped, its line breaks kept as <br> — a blank
+    line must never reach the page, where Markdown would end the HTML."""
+    return re.sub(r"(?:\r?\n\s*)+", "<br>", _e(str(s or "").strip()))
+
+
+def _full_html(f: dict, brief_url: str = "") -> str:
+    """The session in full, under the leave-behind. One line of HTML; every
+    piece of text escaped."""
+    ov = f.get("overview") or {}
+    o = f.get("opts") or {}
+    toc, out = [], []
+
+    def sec_open(anchor, label, head="", quiet="", entry=""):
+        toc.append((anchor, entry or head or label))
+        return (f'<section class="lb-part" id="{anchor}"><div class="lb-lbl">{_x(label)}</div>'
+                + (f'<div class="lb-h2" role="heading" aria-level="2">{_x(head)}</div>' if head else "")
+                + (f'<p class="lb-quiet">{_x(quiet)}</p>' if quiet else ""))
+
+    # who was there
+    room = f.get("room") or []
+    if room:
+        out.append(sec_open("lb-room", "In the room")
+                   + '<ul class="lb-people">' + "".join(
+                       f'<li><b>{_x(p.get("name") or "Unnamed voice")}</b>'
+                       + ('<i>Atlantic</i>' if p.get("atlantic") else "")
+                       + (f'<span>{_x(p["role"])}</span>' if p.get("role") else "") + "</li>" for p in room)
+                   + "</ul></section>")
+    # what the client said before
+    qa = [x for x in f.get("intake") or [] if str(x.get("a") or "").strip()]
+    out.append(sec_open("lb-intake", "Before the session", "What the client told us",
+                        f"{len(qa)} of {len(f.get('intake') or [])} questions answered on the client's link."
+                        if qa else "The client's questions were not answered before the session.")
+               + "".join(f'<div class="lb-qa"><div class="lb-q">{_x(x["q"])}</div><p>{_x(x["a"])}</p></div>'
+                         for x in qa) + "</section>")
+    # what Lighthouse looked for
+    stp, dg = f.get("setup") or {}, f.get("dig") or {}
+    if stp or dg.get("posts"):
+        rows = [("Brand", stp.get("brand")), ("Category", stp.get("category")), ("Product", stp.get("product")),
+                ("Market", stp.get("market")),
+                ("Looked back", f"{stp['window']} months" if stp.get("window") else ""),
+                ("Competitors", stp.get("competitors")), ("Must mention", stp.get("focus")),
+                ("The question", stp.get("question"))]
+        dug = " · ".join(x for x in (f"Dug on {dg['day']}" if dg.get("day") else "",
+                                     _plural(dg["posts"], "post") if dg.get("posts") else "",
+                                     _plural(dg["articles"], "article") if dg.get("articles") else "",
+                                     _plural(dg["figures"], "figure") if dg.get("figures") else "",
+                                     _plural(dg["pins"], "Pinterest search", "Pinterest searches")
+                                     if dg.get("pins") else "") if x)
+        out.append(sec_open("lb-looked", "Before the session", "What Lighthouse looked for", dug)
+                   + '<div class="lb-facts">' + "".join(
+                       f'<div><b>{_x(k)}</b><span>{_x(v)}</span></div>' for k, v in rows if v) + "</div>"
+                   + (f'<p class="lb-quiet"><a href="{_e(brief_url)}" target="_blank" rel="noopener">'
+                      f'The full Lighthouse brief behind the session ↗</a></p>' if brief_url else "")
+                   + "</section>")
+    # the four parts
+    for j, p in enumerate(f.get("parts") or []):
+        meta = " · ".join(x for x in (f"started {p['started']}" if p.get("started") else "", p.get("time", ""))
+                          if x)
+        h = [sec_open(f"lb-part-{j}", f"Part {j + 1} of 4 · {p['key']}" + (f" · {meta}" if meta else ""),
+                      p["head"], p.get("q", ""), entry=p["head"] + (f" · {p['time']}" if p.get("time") else ""))]
+        if not p.get("currents"):
+            h.append('<p class="lb-quiet">No current was on screen in this part.</p>')
+        for c in p.get("currents") or []:
+            links = " · ".join(f'<a href="{_e(e["url"])}" target="_blank" rel="noopener">{_x(clip(e.get("ti"), 70))} ↗</a>'
+                               for e in c.get("ev") or [])
+            tk = c.get("talk")
+            h.append(
+                f'<div class="lb-cur o-{_e(c.get("d") or "open")}">'
+                f'<div class="lb-cur-h"><span class="lb-out">{_x(c["outcome"])}</span>'
+                f'<span class="lb-src">{_x(_SRC_LABEL.get(c.get("src"), "Dug by Lighthouse"))}'
+                + (f' · “{_x(c["q"])}”' if c.get("q") else "") + "</span></div>"
+                f'<div class="lb-cur-t">{_x(c["t"])}</div>'
+                + (f'<div class="lb-was">Rewritten in the room. It was: “{_x(c["was"])}”</div>' if c.get("was") else "")
+                + (f'<p>{_x(c["b"])}</p>' if c.get("b") else "")
+                + (f'<div class="lb-how">{_x(c["how"])}</div>' if c.get("how") else "")
+                + (f'<div class="lb-evl">{_x(c.get("evline"))}' + (f"<br>{links}" if links else "") + "</div>"
+                   if (links or c.get("evline")) else "")
+                + (f'<div class="lb-talk">In the room · {_plural(tk["m"], "mention")} · '
+                   f'{_plural(tk["n"], "person", "people")}{" · came back to it" if tk.get("ret") else ""}</div>'
+                   if tk else "")
+                + "".join(f'<div class="lb-said"><b>{_x(x["who"])}</b>' + (f", {_x(x['role'])}" if x.get("role") else "")
+                          + f': “{_x(x["x"])}”</div>' for x in c.get("quotes") or [])
+                + (f'<div class="lb-contest"><b>Contested</b> — {_x(c["contested"]["who"])}: “{_x(c["contested"]["x"])}”</div>'
+                   if c.get("contested") else "") + "</div>")
+        if p.get("other"):
+            h.append('<div class="lb-sub">Also talked about — not enough to become a current</div>'
+                     + "".join(f'<div class="lb-cur o-other"><div class="lb-cur-t sm">{_x(x["t"])}</div>'
+                               f'<div class="lb-talk">{_plural(x["m"], "mention")} · {_plural(x["n"], "person", "people")}</div>'
+                               + "".join(f'<div class="lb-said"><b>{_x(y["who"])}</b>'
+                                         + (f", {_x(y['role'])}" if y.get("role") else "")
+                                         + f': “{_x(y["x"])}”</div>' for y in x.get("quotes") or [])
+                               + "</div>" for x in p["other"]))
+        if p.get("asks"):
+            h.append('<div class="lb-sub">Questions put to Lighthouse</div><ul class="lb-list">' + "".join(
+                f'<li><span class="lb-time">{_x(a["t"])}</span>“{_x(a["q"])}” — '
+                + ({"done": f"a new current: “{_x(a['note'])}”", "running": "still looking when the record was made"}
+                   .get(a.get("status"), _x(a.get("note") or "nothing found"))) + "</li>" for a in p["asks"]) + "</ul>")
+        if p.get("reads"):
+            h.append('<div class="lb-sub">Lighthouse listening — each reading of the room</div><ul class="lb-list">'
+                     + "".join(f'<li><span class="lb-time">{_x(r["t"])}</span>{_x(r["text"])}</li>' for r in p["reads"])
+                     + "</ul>")
+        out.append("".join(h) + "</section>")
+    # the selects
+    sels = f.get("selects") or []
+    out.append(sec_open("lb-selects", "The selects", "What the room kept",
+                        f"{_plural(len(sels), 'current')} kept across the four parts"
+                        + (f", {sum(1 for s in sels if s.get('star'))} starred." if sels else "."))
+               + ('<ol class="lb-list lb-ol">' + "".join(
+                   f'<li>{"★ " if s.get("star") else ""}{_x(s["t"])} <span class="lb-sec">{_x(s["part"])}</span></li>'
+                   for s in sels) + "</ol>" if sels else "") + "</section>")
+    # every round of territories
+    rounds = f.get("rounds") or []
+    if rounds:
+        h = [sec_open("lb-rounds", "Countercurrent", "The territories, round by round",
+                      "Every round Lighthouse wrote, with the room's notes — ripe ones stayed when it looked again.")]
+        for r in rounds:
+            h.append(f'<div class="lb-sub">Round {_x(r.get("round"))}' + (f' · {_x(r["t"])}' if r.get("t") else "")
+                     + (" · the final round" if r.get("final") else "") + "</div>")
+            for x in r.get("items") or []:
+                h.append(f'<div class="lb-cur o-terr{" ripe" if x.get("ripe") else ""}">'
+                         f'<div class="lb-cur-h"><span class="lb-out">{"★ Ripe" if x.get("ripe") else ("Replaced" if x.get("replaced") else "Territory")}</span></div>'
+                         f'<div class="lb-cur-t">{_x(x["t"])}</div>'
+                         f'<p><b>The tension:</b> {_x(tension(x.get("a"), x.get("b")))}</p>'
+                         + (f'<p>{_x(x["why"])}</p>' if x.get("why") else "")
+                         + (f'<div class="lb-said"><b>Notes from the room</b>: {_x(x["notes"])}</div>' if x.get("notes") else "")
+                         + "</div>")
+        out.append("".join(h) + "</section>")
+    # every interaction
+    tl = f.get("timeline") or []
+    if tl:
+        out.append(sec_open("lb-timeline", "Every interaction, in order", "",
+                            "Every decision, rewrite, question, pick and move, with the time it happened.",
+                            entry=f"Every interaction, in order · {len(tl)}")
+                   + '<table class="lb-tl"><tbody>' + "".join(
+                       f'<tr><td class="lb-time">{_x(x["t"])}</td><td class="lb-tpart">{_x(x.get("part"))}</td>'
+                       f'<td>{_x(x["text"])}</td></tr>' for x in tl) + "</tbody></table></section>")
+    # the transcript
+    tx = f.get("transcript") or []
+    if tx:
+        rows, last = [], None
+        for x in tx:
+            if x.get("part") != last:
+                rows.append(f'<tr class="lb-txh"><td colspan="3">{_x(x.get("part"))}</td></tr>')
+                last = x.get("part")
+            cls = " note" if x.get("note") else (" atl" if x.get("atlantic") else "")
+            who = _x(x["who"]) + (f'<span>{_x(x["role"])}</span>' if x.get("role") else "")
+            rows.append(f'<tr class="lb-txr{cls}"><td class="lb-time">{_x(x["t"])}</td><td class="lb-who">{who}</td>'
+                        f'<td>{_x(x["x"])}{" <em>introductions</em>" if x.get("intro") else ""}</td></tr>')
+        out.append(sec_open("lb-transcript", "The full transcript", "", entry=f"The full transcript · {_plural(len(tx), 'line')}", quiet=
+                            (f"{_plural(len(tx), 'line')}, transcribed by machine as the session happened"
+                            + (f", with the room's consent (given at {ov['consent']})" if ov.get("consent") else "")
+                            + ". Names as the room gave them; a machine mishears, so check a quote before using it."))
+                   + '<table class="lb-tx"><tbody>' + "".join(rows) + "</tbody></table></section>")
+
+    # the band on top: the session at a glance, and the contents
+    facts = [("Date", ov.get("day")),
+             ("Time", " – ".join(x for x in (ov.get("start"), ov.get("end")) if x)
+              + ("" if ov.get("ended") else " (not ended)") if ov.get("start") else ""),
+             ("Length", f"{ov['minutes']} min" if ov.get("minutes") is not None else ""),
+             ("Recorded", ov.get("recorded") + (f" · {ov['lang']}" if ov.get("lang") else "") if ov.get("recorded") else ""),
+             ("Said", f"{_plural(ov.get('lines', 0), 'line')} · {ov.get('words', 0):,} words"
+              + (f" · {_plural(ov['notes'], 'typed note')}" if ov.get("notes") else "")),
+             ("Decided", f"{ov.get('kept', 0)} kept ({ov.get('starred', 0)} starred) · {ov.get('killed', 0)} killed"
+              + (f" · {ov['open']} left open" if ov.get("open") else "")),
+             ("Lighthouse", f"{_plural(ov.get('picks', 0), 'pick')} from the conversation · "
+              f"{_plural(ov.get('topics', 0), 'new topic')} · {ov.get('answered', 0)} of "
+              f"{_plural(ov.get('asks', 0), 'question')} answered"),
+             ("Countercurrent", _plural(ov.get("rounds", 0), "round")),
+             ("Time on each part", ov.get("time"))]
+    band = ('<section class="lb-band" id="lb-full"><div class="lb-lbl">The final report · the session in full</div>'
+            '<div class="lb-h2" role="heading" aria-level="2">Everything that happened in the room</div>'
+            '<p>The record of the session, told back — what was said, kept, found and done. Nothing below was '
+            'written by a model.</p><div class="lb-facts">' + "".join(
+                f'<div><b>{_x(k)}</b><span>{_x(v)}</span></div>' for k, v in facts if v) + "</div>"
+            '<ol class="lb-toc">' + "".join(f'<li><a href="#{a}">{_x(lab)}</a></li>' for a, lab in toc)
+            + "</ol></section>")
+    left = [k for k in REPORT_OPTS if o and not o.get(k)]
+    tail = (f'<p class="lb-quiet lb-end">Made by Lighthouse · {_x(f.get("made", ""))}'
+            + (" · this copy leaves out " + " and ".join({"transcript": "the transcript",
+                                                          "timeline": "the timeline"}[k] for k in left) if left else "")
+            + "</p>")
+    return '<div class="lb-full">' + band + "".join(out) + tail + "</div>"
+
+
+def full_html(doc: dict) -> str:
+    """The session in full on its own — the session screen shows it under the
+    leave-behind when asked. Carries its own styles."""
+    if not isinstance((doc or {}).get("full"), dict):
+        return ""
+    return (f'<style>{LEAVE_CSS}</style><div class="lb-doc">'
+            f'{_full_html(doc["full"], doc.get("brief_url", ""))}</div>')
+
+
+def report_counts(doc: dict) -> dict:
+    """What the two switches would leave out: lines of transcript, interactions."""
+    ov = ((doc or {}).get("full") or {}).get("overview") or {}
+    return {"lines": int(ov.get("lines") or 0) + int(ov.get("notes") or 0), "events": int(ov.get("events") or 0)}
+
+
+def transcript_text(sess: dict, lines: list, people: dict, labels: dict, tz_name: str = "") -> str:
+    """The transcript as plain text — for the team to keep, search or paste."""
+    labels = report_labels(people, labels)
+    start = sess.get("went_live") or sess.get("started_at") or ""
+    head = [f"{sess.get('client_name') or 'Live session'} — Lighthouse live session",
+            " · ".join(x for x in (fmt_day(start, tz_name),
+                                   " – ".join(y for y in (fmt_clock(start, tz_name),
+                                                          fmt_clock(sess.get("ended_at"), tz_name)) if y),
+                                   recorded_with(sess)) if x),
+            "Transcribed by machine as the session happened. Names as the room gave them."]
+    out, last = head, None
+    for x in transcript_rows(sess, lines, people, labels, tz_name):
+        if x["part"] != last:
+            out += ["", f"== {x['part']} ==", ""]
+            last = x["part"]
+        who = x["who"] + (f" ({x['role']})" if x.get("role") else "") + (" [Atlantic]" if x.get("atlantic") else "")
+        said = re.sub(r"\s+", " ", x["x"])
+        out.append(f"[{x['t']}] {who}: {said}")
+    return "\n".join(out).strip() + "\n"
+
+
 def leave_html(doc: dict, font_css: str = "", standalone: bool = True,
-               print_on_open: bool = False) -> str:
+               print_on_open: bool = False, with_full: bool = True) -> str:
     """The leave-behind as a page — the same markup on the shared link, in the
     PDF and on the session screen. Everything inserted is escaped.
     `print_on_open`: the downloaded file opens the print dialog by itself
-    (Print → Save as PDF), like the brief's export."""
+    (Print → Save as PDF), like the brief's export. A report_doc carries the
+    whole session under it (`with_full=False` leaves it out)."""
     name = doc.get("client") or doc.get("brand") or "The client"
     terr = doc.get("territories") or []
     t_html = []
@@ -1213,7 +1898,7 @@ def leave_html(doc: dict, font_css: str = "", standalone: bool = True,
         frm = "".join(f"<li>{_e(x)}</li>" for x in t.get("from") or [])
         t_html.append(
             f'<div class="lb-t{" ripe" if t.get("ripe") else ""}"><div class="lb-h2" role="heading" aria-level="2">{"★ " if t.get("ripe") else ""}{_e(t["t"])}</div>'
-            f'<p><b>The tension:</b> {_e(t.get("a"))} {_e(t.get("b"))}</p>'
+            f'<p><b>The tension:</b> {_e(tension(t.get("a"), t.get("b")))}</p>'
             f'<p>{_e(t.get("why"))}</p>'
             + (f'<p class="lb-room"><b>From the room:</b> {_e(t["notes"])}</p>' if t.get("notes") else "")
             + (f'<div class="lb-from">Built from<ul>{frm}</ul></div>' if frm else "") + "</div>")
@@ -1232,20 +1917,20 @@ def leave_html(doc: dict, font_css: str = "", standalone: bool = True,
     body = f"""<article class="lb-doc">
 <div class="lb-lbl">Leave-behind · Lighthouse live session</div>
 <div class="lb-h1" role="heading" aria-level="1">{_e(name)}: the brief we built together</div>
-<p class="lb-quiet">{_e(_fmt_day(doc.get("date")))} · Atlantic New York</p>
+<p class="lb-quiet">{_e(doc.get("day") or _fmt_day(doc.get("date")))} · Atlantic New York</p>
 <section class="lb-part"><div class="lb-lbl">The business challenge</div><p>{_e(doc.get("goal")) or "—"}</p></section>
 <section class="lb-part"><div class="lb-lbl">The marketing challenge underneath it</div><p>{_e(doc.get("problem")) or "—"}</p></section>
 <section class="lb-part"><div class="lb-lbl">The territories</div>{"".join(t_html) or "<p>No territories yet.</p>"}</section>
 <section class="lb-part"><div class="lb-lbl">The evidence — from Lighthouse and from the room</div><ul class="lb-ev">{"".join(ev_html) or "<li>No selects yet.</li>"}</ul></section>
 <section class="lb-part"><div class="lb-lbl">Next</div><p>The strategic rigour and the creative development — the work after the hypothesis.</p>
-{f'<p class="lb-quiet"><a href="{_e(doc["brief_url"])}" target="_blank" rel="noopener">The full Lighthouse brief behind this session ↗</a></p>' if doc.get("brief_url") else ""}</section>
+{f'<p class="lb-quiet"><a href="{_e(doc["brief_url"])}" target="_blank" rel="noopener">The full Lighthouse brief behind this session ↗</a></p>' if doc.get("brief_url") else ""}</section>{_full_html(doc["full"], doc.get("brief_url", "")) if with_full and isinstance(doc.get("full"), dict) else ""}
 </article>"""
     css = LEAVE_CSS
     if not standalone:
         return f"<style>{css}</style>{body}"
     return (f'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<title>{_e(name)} · Leave-behind · Lighthouse</title><style>{font_css}{css}'
+            f'<title>{_e(name)} · {"Final report" if with_full and doc.get("full") else "Leave-behind"} · Lighthouse</title><style>{font_css}{css}'
             f'body{{margin:0;padding:48px max(28px,calc((100% - 860px)/2)) 64px;background:#fff}}'
             f'@media print{{body{{padding:0}}}}</style></head><body>{body}'
             + ('<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},400)})</script>'
@@ -1269,6 +1954,63 @@ LEAVE_CSS = """
 .lb-doc .lb-sec{font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:#0000ff;margin-left:4px}
 .lb-doc a{color:#0000ff}
 @media (max-width:820px){.lb-doc .lb-h1{font-size:34px}}
+.lb-doc .lb-full{margin-top:56px}
+.lb-doc .lb-band{background:#0000ff;color:#fff;padding:30px 30px 26px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.lb-doc .lb-band .lb-lbl{color:#fff}
+.lb-doc .lb-band .lb-h2{color:#fff;font-size:40px;letter-spacing:-.025em;line-height:1.04;margin:12px 0 10px}
+.lb-doc .lb-band p{color:#fff;opacity:.92}
+.lb-doc .lb-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));border-top:1.5px solid #000;margin-top:14px}
+.lb-doc .lb-band .lb-facts{border-top-color:#fff}
+.lb-doc .lb-facts>div{padding:9px 14px 9px 0;border-bottom:1px solid rgba(0,0,0,.14)}
+.lb-doc .lb-band .lb-facts>div{border-bottom-color:rgba(255,255,255,.4)}
+.lb-doc .lb-facts b{display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#0000ff;margin-bottom:3px}
+.lb-doc .lb-band .lb-facts b{color:#fff;opacity:.85}
+.lb-doc .lb-facts span{font-size:14px;line-height:1.4}
+.lb-doc ol.lb-toc{columns:2;column-gap:28px;margin:18px 0 0;padding:0 0 0 20px;font-size:13.5px;line-height:1.9}
+.lb-doc ol.lb-toc a{color:#fff;text-decoration:none;border-bottom:1px solid rgba(255,255,255,.55)}
+.lb-doc ul.lb-people{list-style:none;margin:10px 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:0}
+.lb-doc ul.lb-people li{padding:9px 12px 9px 0;border-bottom:1px solid rgba(0,0,0,.14);font-size:14px}
+.lb-doc ul.lb-people span{display:block;font-size:12.5px;color:#666}
+.lb-doc ul.lb-people i{display:inline-block;font-style:normal;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:#0000ff;margin-left:6px}
+.lb-doc .lb-qa{margin:14px 0 0}
+.lb-doc .lb-q{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:#000}
+.lb-doc .lb-cur{border-top:1.5px solid #000;padding:12px 0 14px;margin-top:12px;break-inside:avoid}
+.lb-doc .lb-cur-h{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.lb-doc .lb-out{font-size:10px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;padding:3px 8px;border:1.5px solid #000;border-radius:999px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.lb-doc .o-keep .lb-out{background:#000;color:#fff}
+.lb-doc .o-star .lb-out,.lb-doc .o-terr.ripe .lb-out{background:#0000ff;border-color:#0000ff;color:#fff}
+.lb-doc .o-kill .lb-out{border-color:#e00000;color:#e00000}
+.lb-doc .o-kill .lb-cur-t{text-decoration:line-through;text-decoration-thickness:1.5px;color:#555}
+.lb-doc .o-open .lb-out,.lb-doc .o-terr .lb-out{color:#666;border-color:#bbb}
+.lb-doc .lb-src{font-size:11.5px;color:#666}
+.lb-doc .lb-cur-t{font-size:19px;font-weight:700;letter-spacing:-.01em;line-height:1.25;margin:8px 0 4px}
+.lb-doc .lb-cur-t.sm{font-size:15.5px;margin-top:0}
+.lb-doc .o-other{border-top-width:1px;border-top-color:rgba(0,0,0,.25)}
+.lb-doc .lb-was{font-size:12.5px;color:#666;font-style:italic;margin-bottom:4px}
+.lb-doc .lb-how{font-size:12.5px;color:#0000ff;font-weight:700;margin-top:6px}
+.lb-doc .lb-evl{font-size:12.5px;color:#444;line-height:1.6;margin-top:6px}
+.lb-doc .lb-talk{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:#000;margin-top:8px}
+.lb-doc .lb-said{font-size:13.5px;line-height:1.5;color:#222;border-left:3px solid #0000ff;padding:2px 0 2px 10px;margin-top:6px}
+.lb-doc .lb-contest{font-size:13.5px;line-height:1.5;color:#222;border-left:3px solid #000;padding:2px 0 2px 10px;margin-top:6px}
+.lb-doc .lb-sub{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#0000ff;margin:22px 0 4px}
+.lb-doc ul.lb-list,.lb-doc ol.lb-list{margin:6px 0 0 18px;padding:0;font-size:13.5px;line-height:1.6;color:#222}
+.lb-doc ul.lb-list li,.lb-doc ol.lb-list li{margin-bottom:5px}
+.lb-doc .lb-time{font-variant-numeric:tabular-nums;color:#666;font-size:12px;margin-right:8px;white-space:nowrap}
+.lb-doc table.lb-tl,.lb-doc table.lb-tx{width:100%;border-collapse:collapse;border:0;margin:10px 0 0;font-size:13px;line-height:1.5;background:transparent}
+.lb-doc table.lb-tl tr,.lb-doc table.lb-tx tr{border:0;background:transparent}
+.lb-doc table.lb-tl td,.lb-doc table.lb-tx td{padding:5px 10px 5px 0;border:0;border-bottom:1px solid rgba(0,0,0,.1);vertical-align:top;background:transparent}
+.lb-doc table.lb-tl tr,.lb-doc table.lb-tx tr{break-inside:avoid}
+.lb-doc td.lb-time{width:46px}
+.lb-doc td.lb-tpart{width:120px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:#0000ff;padding-top:7px}
+.lb-doc td.lb-who{width:150px;font-weight:700}
+.lb-doc td.lb-who span{display:block;font-weight:400;font-size:11.5px;color:#666}
+.lb-doc tr.lb-txh td{border:0;border-bottom:1.5px solid #000;padding-top:18px;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#0000ff}
+.lb-doc tr.lb-txr.atl td.lb-who{color:#0000ff}
+.lb-doc tr.lb-txr.note td{color:#666;font-style:italic}
+.lb-doc tr.lb-txr em{font-style:normal;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:#999;margin-left:6px}
+.lb-doc .lb-end{margin-top:34px;border-top:1.5px solid #000;padding-top:10px}
+@media (max-width:820px){.lb-doc ol.lb-toc{columns:1}.lb-doc .lb-band .lb-h2{font-size:30px}.lb-doc td.lb-who{width:96px}.lb-doc td.lb-tpart{display:none}}
+@media print{.lb-doc .lb-full{break-before:page;margin-top:0}.lb-doc .lb-part{break-inside:auto}.lb-doc .lb-sub,.lb-doc .lb-lbl{break-after:avoid}}
 """
 
 
@@ -1285,6 +2027,7 @@ def live_apply(sess: dict, value, now: Optional[str] = None) -> list:
     reruns. Returns the EFFECTS the app must carry out — the ones that need the
     model or the database: ("ask", sec, qid) ("back", cid) ("terr",) ("leave",)
     ("read",) ("people",) ("golive",) ("end",) ("prep",) ("lang",) ("engine",)
+    ("pdf",) ("full",) ("txt",) — the final report's files, sent to the screen once —
     ("who", message) — names, taps and the round of introductions (apply_who).
     """
     live_defaults(sess)
@@ -1308,6 +2051,15 @@ def live_apply(sess: dict, value, now: Optional[str] = None) -> list:
     def eff(x):
         if x not in effects:
             effects.append(x)
+    def tt(cid):
+        i_, c_ = find_current(sess, cid)
+        return title_of(sess, c_) if c_ else ""
+
+    def where():
+        return {"screen": sess.get("screen", "setup"), "sec": int(sess.get("sec") or 0)}
+
+    def lg(k, **data):
+        log_event(sess, k, when, **dict(where(), **data))
     for s, m in sorted(fresh, key=lambda x: x[0]):
         t = str(m.get("type") or "")
         cid = str(m.get("id") or "")
@@ -1319,22 +2071,30 @@ def live_apply(sess: dict, value, now: Optional[str] = None) -> list:
                 except (TypeError, ValueError):
                     sec = int(sess.get("sec") or 0)
                 left = sess.get("screen") == "sec" and (scr != "sec" or sec != sess.get("sec"))
+                moved = scr != sess.get("screen") or (scr == "sec" and sec != sess.get("sec"))
                 sess["screen"], sess["sec"] = scr, sec
                 if scr == "sec" and not sess["sec_start"].get(str(sec)):
                     sess["sec_start"][str(sec)] = when
                 mark_screen(sess, scr, sec)
+                if moved:
+                    lg("go")
                 if left:
                     eff(("read",))           # what was said in the part just left is read now
         elif t == "decide":
-            decide(sess, cid, str(m.get("d") or ""))
+            if decide(sess, cid, str(m.get("d") or "")):
+                lg("decide", id=cid, d=sess["dec"].get(cid, ""), title=tt(cid))
         elif t == "set":
-            set_decision(sess, cid, str(m.get("d") or ""))
+            if set_decision(sess, cid, str(m.get("d") or "")):
+                lg("set", id=cid, d=sess["dec"].get(cid, ""), title=tt(cid))
         elif t == "tweak":
-            tweak(sess, cid, m.get("text"))
+            before = tt(cid)
+            if tweak(sess, cid, m.get("text")):
+                lg("tweak", id=cid, frm=before, title=tt(cid))
         elif t == "add":
             new = add_current(sess, m.get("sec", sess.get("sec", 0)), m.get("text"), "room",
                               body="Added in the session.", now=when)
             if new:
+                lg("add", id=new, title=tt(new))
                 eff(("back", new))
         elif t == "ask":
             q = clip(m.get("q"), 300)
@@ -1346,62 +2106,96 @@ def live_apply(sess: dict, value, now: Optional[str] = None) -> list:
                 ch = sess["chat"].setdefault(str(sec), [])
                 ch.append({"id": f"q{s}", "q": q, "status": "running", "note": "", "cid": "", "at": when})
                 del ch[:-12]
+                lg("ask", q=q, part=SECTIONS[sec]["key"])
                 eff(("ask", sec, f"q{s}"))
         elif t == "undo":
-            undo_ai(sess, cid)
+            if undo_ai(sess, cid):
+                lg("undo", id=cid, title=tt(cid))
         elif t == "confirm":
-            confirm_sugg(sess, cid)
+            lv_ = (sess["sugg"].get(cid) or {}).get("lv", "")
+            if confirm_sugg(sess, cid):
+                lg("confirm", id=cid, d=lv_, title=tt(cid))
         elif t == "dismiss":
-            dismiss_sugg(sess, cid)
+            if dismiss_sugg(sess, cid):
+                lg("dismiss", id=cid, title=tt(cid))
         elif t == "mode":
-            sess["mode"] = "suggest" if m.get("m") == "suggest" else "auto"
+            new_m = "suggest" if m.get("m") == "suggest" else "auto"
+            if new_m != sess.get("mode"):
+                sess["mode"] = new_m
+                lg("mode", m=new_m)
         elif t == "read":
+            lg("read")
             eff(("read",))
         elif t == "terr":
             if len(selects(sess)) >= MIN_SELECTS and (sess.get("terr") or {}).get("status") != "running":
                 sess["terr"]["status"] = "running"
                 sess["terr"]["err"] = ""
+                lg("terr", n=len(selects(sess)), again=bool((sess.get("terr") or {}).get("items")))
                 eff(("terr",))
         elif t == "ripe":
             for it in sess["terr"].get("items") or []:
                 if it.get("id") == cid:
                     it["ripe"] = bool(m.get("on"))
+                    lg("ripe", id=cid, on=it["ripe"], title=it.get("t", ""))
         elif t == "tnote":
             for it in sess["terr"].get("items") or []:
                 if it.get("id") == cid:
                     it["notes"] = clean_answer(m.get("text"))[:600]
+                    lg("tnote", id=cid, text=clip(it["notes"], 300), title=it.get("t", ""))
         elif t == "leave":
+            lg("leave")
             eff(("leave",))
         elif t == "pdf":
             eff(("pdf",))
+        elif t == "full":
+            eff(("full",))
+        elif t == "txt":
+            eff(("txt",))
+        elif t == "leave_opt":
+            k_ = str(m.get("k") or "")
+            if k_ in ("transcript", "timeline"):
+                sess.setdefault("leave_opts", {})[k_] = bool(m.get("on"))
         elif t == "consent":
             if not sess.get("consent"):
                 sess["consent"] = when
+                lg("consent")
         elif t == "golive":
             if not sess.get("went_live"):
                 sess["went_live"] = when
                 sess["started_at"] = when
                 sess["status"] = "live"
+                lg("golive")
                 eff(("golive",))
         elif t == "end":
             sess["status"] = "ended"
             sess["ended_at"] = when
+            lg("end")
             eff(("end",))
         elif t == "prep":
             eff(("prep",))
         elif t == "lang":
             sess["lang"] = clip(m.get("lang"), 8)
+            lg("lang", lang=sess["lang"])
             eff(("lang",))
         elif t == "engine":
             sess["engine"] = "tap" if m.get("engine") == "tap" else "auto"
+            lg("engine", engine=sess["engine"])
             eff(("engine",))
         elif t == "fac":
             for p in sess.get("people") or []:
                 if p.get("id") == cid:
                     p["fac"] = not p.get("fac")
+                    lg("fac", id=cid, on=p["fac"], name=p.get("name", ""))
                     eff(("people",))
         elif t in ("tap", "person_add", "name", "merge", "you", "person_del", "assign", "intro"):
-            # who is who — session_core's own vocabulary, applied there
+            # who is who — session_core's own vocabulary, applied there. Taps
+            # are the facilitator's pointing, many a minute: not interactions.
+            if t == "intro":
+                lg("intro", on=bool(m.get("on")))
+            elif t == "name":
+                lg("name", id=cid, name=clip(m.get("name"), 60), role=clip(m.get("role"), 60))
+            elif t in ("merge", "person_add", "person_del"):
+                lg(t, id=cid)
             eff(("who", m))
         sess["live_ack"] = s
     return effects
