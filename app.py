@@ -315,7 +315,6 @@ Return ONLY valid JSON (no markdown fences):
     msg = _ant_client.messages.create(
         model=CLAUDE_MODEL_FAST,
         max_tokens=512,
-        temperature=0.3,
         system="Extract webpage content as a structured current. Return only raw JSON.",
         messages=[{"role": "user", "content": extraction_prompt}],
     )
@@ -2168,7 +2167,6 @@ For the "url" field in each voice: use the exact URL from the SIGNAL context abo
         msg = claude.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=4096,
-            temperature=0.75,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -12664,7 +12662,7 @@ def _rm_ear_worker(jid: str, prompt: str, board: list, n_problems: int = 0) -> N
         import anthropic
         client = anthropic.Anthropic(api_key=key, timeout=45.0, max_retries=1)
         resp = client.messages.create(
-            model=CLAUDE_MODEL_FAST, max_tokens=900, temperature=0.3,
+            model=CLAUDE_MODEL_FAST, max_tokens=900,
             system=("You are the quiet second listener in a client workshop. You only ever "
                     "answer with the JSON object you are asked for."),
             messages=[{"role": "user", "content": prompt}])
@@ -12676,8 +12674,8 @@ def _rm_ear_worker(jid: str, prompt: str, board: list, n_problems: int = 0) -> N
 
 
 def _rm_intro_worker(jid: str, prompt: str, entries: dict) -> None:
-    """Names and roles from the round of introductions. Haiku, temperature 0:
-    the job is to copy what was said, and session_core drops any name that is
+    """Names and roles from the round of introductions. The fast model: the
+    job is to copy what was said, and session_core drops any name that is
     not in the person's own words."""
     try:
         key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -12686,7 +12684,7 @@ def _rm_intro_worker(jid: str, prompt: str, entries: dict) -> None:
         import anthropic
         client = anthropic.Anthropic(api_key=key, timeout=30.0, max_retries=1)
         resp = client.messages.create(
-            model=CLAUDE_MODEL_FAST, max_tokens=500, temperature=0,
+            model=CLAUDE_MODEL_FAST, max_tokens=500,
             system="You read people's introductions and answer only with the JSON asked for.",
             messages=[{"role": "user", "content": prompt}])
         _sc.JOBS.finish(jid, {"found": _sc.parse_intro(_extract_json(_msg_text(resp)), entries)})
@@ -12734,7 +12732,7 @@ def _rm_people_notes(sess: dict, client: dict) -> str:
         import anthropic
         api = anthropic.Anthropic(api_key=key, timeout=45.0, max_retries=1)
         resp = api.messages.create(
-            model=CLAUDE_MODEL_FAST, max_tokens=900, temperature=0.2,
+            model=CLAUDE_MODEL_FAST, max_tokens=900,
             system="You sum up what each person in a meeting cared about, from their own words "
                    "only, and answer only with the JSON asked for.",
             messages=[{"role": "user", "content": _sc.build_people_prompt(client, entries, labels)}])
@@ -14256,15 +14254,16 @@ def _lv_set_mode(m: str) -> None:
 # ── Work done in threads ─────────────────────────────────────────────────────
 # No st.* in here: everything arrives as arguments and leaves through JOBS.
 
-def _lv_ai(prompt: str, model: str, max_tokens: int, temperature: float = 0.3,
-           timeout: float = 90.0) -> dict:
+def _lv_ai(prompt: str, model: str, max_tokens: int, timeout: float = 90.0) -> dict:
+    # No `temperature`: the anthropic SDK 2.x took it out of messages.create
+    # (passing it is a TypeError), and the newest models set their own sampling.
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
     import anthropic
     cl = anthropic.Anthropic(api_key=key, timeout=timeout, max_retries=1)
     r = cl.messages.create(
-        model=model, max_tokens=max_tokens, temperature=temperature,
+        model=model, max_tokens=max_tokens,
         system="You work inside Lighthouse, Atlantic New York's cultural-intelligence tool, during "
                "a live client workshop. You answer only with the JSON object you are asked for.",
         messages=[{"role": "user", "content": prompt}])
@@ -14279,17 +14278,17 @@ def _lv_job_error(exc: Exception) -> str:
 
 
 def _lv_label_worker(jid: str, prompt: str) -> None:
-    """Which current each line is about. The fast model, at temperature 0: the
-    job is to sort, and live_core does the counting."""
+    """Which current each line is about. The fast model: the job is to sort,
+    and live_core does the counting."""
     try:
-        _sc.JOBS.finish(jid, {"obj": _lv_ai(prompt, CLAUDE_MODEL_FAST, 1500, 0.0, 45.0)})
+        _sc.JOBS.finish(jid, {"obj": _lv_ai(prompt, CLAUDE_MODEL_FAST, 1500, timeout=45.0)})
     except Exception as exc:
         _sc.JOBS.finish(jid, error=_lv_job_error(exc))
 
 
 def _lv_ask_worker(jid: str, prompt: str, cand: list, back: bool) -> None:
     try:
-        obj = _lv_ai(prompt, CLAUDE_MODEL, 900, 0.4, 60.0)
+        obj = _lv_ai(prompt, CLAUDE_MODEL, 900, timeout=60.0)
         _sc.JOBS.finish(jid, {"res": _lc.parse_ask(obj, cand, back=back)})
     except Exception as exc:
         _sc.JOBS.finish(jid, error=_lv_job_error(exc))
@@ -14297,7 +14296,7 @@ def _lv_ask_worker(jid: str, prompt: str, cand: list, back: bool) -> None:
 
 def _lv_terr_worker(jid: str, prompt: str, sels: list) -> None:
     try:
-        obj = _lv_ai(prompt, CLAUDE_MODEL, 2500, 0.7, 120.0)
+        obj = _lv_ai(prompt, CLAUDE_MODEL, 2500, timeout=120.0)
         _sc.JOBS.finish(jid, {"found": _lc.parse_terr(obj, sels)})
     except Exception as exc:
         _sc.JOBS.finish(jid, error=_lv_job_error(exc))
@@ -14306,7 +14305,7 @@ def _lv_terr_worker(jid: str, prompt: str, sels: list) -> None:
 def _lv_redig_worker(jid: str, prompt: str, pool: list, trade: list, figs: list,
                      only: int, avoid: list) -> None:
     try:
-        obj = _lv_ai(prompt, CLAUDE_MODEL, 2500, 0.5, 120.0)
+        obj = _lv_ai(prompt, CLAUDE_MODEL, 2500, timeout=120.0)
         _sc.JOBS.finish(jid, {"parts": _lc.parse_dig(obj, pool, trade, figs, only=only, avoid=avoid)})
     except Exception as exc:
         _sc.JOBS.finish(jid, error=_lv_job_error(exc))
@@ -14393,7 +14392,7 @@ def _lv_dig_worker(jid: str, p: dict, outlets: list, lets: list, archive: list) 
             f_brief = pool.submit(_sv_synthesize, sigs, cat or search, comp_list, brand,
                                   trade=trade_sigs, letters=let_sigs, numbers=figs, months=months,
                                   question=q, focus=focus, pinterest=pin)
-            f_lens = pool.submit(_lv_ai, lens_prompt, CLAUDE_MODEL, 4500, 0.5, 240.0)
+            f_lens = pool.submit(_lv_ai, lens_prompt, CLAUDE_MODEL, 4500, timeout=240.0)
             lens = f_lens.result(timeout=300)
             try:
                 res = f_brief.result(timeout=420) or {}
@@ -16432,7 +16431,6 @@ Return ONLY valid JSON with this exact structure:
                             _tp_msg = _ant_tp_client.messages.create(
                                 model=CLAUDE_MODEL,
                                 max_tokens=2048,
-                                temperature=0.85,
                                 system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
                                 messages=[{"role": "user", "content": _tp_prompt}],
                             )
@@ -16495,7 +16493,6 @@ Return ONLY valid JSON with this exact structure:
                             _ask_msg = _ask_client.messages.create(
                                 model=CLAUDE_MODEL,
                                 max_tokens=512,
-                                temperature=0.7,
                                 system="You are a Socratic thought partner. Answer the question by posing more open questions and surfacing tensions — never close down the thinking or give definitive recommendations.",
                                 messages=[{"role": "user", "content": f"Project: {_sel_proj_name}\n\nCollected currents:\n{_ask_ctx}\n\nQuestion from team: {_ask_q}"}],
                             )
@@ -16651,7 +16648,6 @@ Write a tight, actionable creative brief. Return ONLY valid JSON with this exact
                             msg = _client.messages.create(
                                 model=CLAUDE_MODEL,
                                 max_tokens=2048,
-                                temperature=0.7,
                                 system="You are an elite advertising strategist. Return only raw JSON, no markdown fences.",
                                 messages=[{"role": "user", "content": brief_prompt}],
                             )
@@ -16797,7 +16793,6 @@ Return ONLY valid JSON with this exact structure:
                             msg = _client.messages.create(
                                 model=CLAUDE_MODEL,
                                 max_tokens=2048,
-                                temperature=0.85,
                                 system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
                                 messages=[{"role": "user", "content": tp_prompt}],
                             )
@@ -16945,7 +16940,6 @@ Return ONLY valid JSON with this exact structure:
                                 msg = _client.messages.create(
                                     model=CLAUDE_MODEL,
                                     max_tokens=2048,
-                                    temperature=0.85,
                                     system="You are a Socratic thought partner. Return only raw JSON, no markdown fences. Never give final recommendations — only tensions, angles and questions.",
                                     messages=[{"role": "user", "content": tp_prompt}],
                                 )
