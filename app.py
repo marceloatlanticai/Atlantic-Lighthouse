@@ -5218,6 +5218,98 @@ def _sv_gather_pinterest(brand: str, category: str, product: str, market: str,
         return {"items": [], "error": f"Pinterest Trends failed ({type(exc).__name__})"}
 
 
+# ── IS THIS POST ABOUT THE SUBJECT? ──────────────────────────────────────────
+# The word gates ask whether a post CONTAINS the category's words, and in a
+# Rambler brief (5 Nov) these all did: "I spilled mineral water on my laptop",
+# "Blue skies, sparkling water and a baby blue swimsuit (AI-inspired tribute)",
+# a spam thread that happened to name sparkling water. They name the drink and
+# say nothing about it. Only reading tells the difference, so the fast model
+# reads every social post once per scan — one call, in parallel with the
+# brief — and names the ones that are not about the subject. The decks leave
+# those out; nothing else changes. It fails OPEN: no answer, no drops.
+_SV_VOICE_NETS = ("twitter", "tiktok", "instagram", "youtube", "reddit", "hacker_news", "pinterest")
+_SV_VOICE_MAX = 180          # posts read per scan — more than any deck could use
+
+
+def _sv_voice_on() -> bool:
+    return str(os.environ.get("LH_VOICE_CHECK", "on")).strip().lower() not in ("off", "0", "false", "no")
+
+
+def _sv_voice_prompt(rows: list, brand: str, category: str, product: str = "") -> str:
+    topic = (product or category or "the category").strip()
+    subj = f"{brand} ({category})" if brand and category else (brand or category or topic)
+    listing = "\n".join(f"[{i}] {net}: {txt}" for i, net, txt in rows)
+    return f"""SCREENING POSTS for a brand-strategy brief about {subj}.
+
+For each post below, decide whether it is really ABOUT {topic}: someone's experience, opinion, habit, question, recipe, review, joke or cultural moment that involves {topic} itself, or a brand of it.
+List only the posts that MENTION it in passing and say nothing about it: an accident or a spill, an AI image caption or a mood-board line, song lyrics, spam, a giveaway, a shop listing, a story that is really about something else.
+Keep anything that says something, however small, about how people buy, drink, use, judge or talk about {topic}. When in doubt, keep it.
+
+POSTS:
+{listing}
+
+Answer only with JSON: {{"off": [{{"i": 3, "why": "at most six words"}}]}}"""
+
+
+def _sv_voice_parse(obj, ids: set) -> dict:
+    """{"3": "a spill on a laptop"} — only posts that were sent."""
+    out = {}
+    rows = obj.get("off") if isinstance(obj, dict) else None
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            i = int(r.get("i"))
+        except (TypeError, ValueError):
+            continue
+        if i in ids:
+            out[str(i)] = re.sub(r"\s+", " ", str(r.get("why") or "not about it")).strip()[:80]
+    return out
+
+
+def _sv_voice_check(signals: list, brand: str, category: str, product: str = "") -> dict:
+    """Which social posts are not about the subject. Thread-safe (no st.*);
+    never raises. {"checked", "drop": {index: why}, "secs", "model", "error",
+    "skipped"} — indexes point into `signals`, the list the brief is built on."""
+    if not _sv_voice_on():
+        return {"skipped": "switched off by LH_VOICE_CHECK=off", "drop": {}}
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {"error": "no ANTHROPIC_API_KEY", "drop": {}}
+    rows = []
+    for i, sg in enumerate(signals or []):
+        net = str((sg or {}).get("source") or "").lower()
+        if net not in _SV_VOICE_NETS:
+            continue
+        txt = _sv_dehash(_sv_body(sg)) or str(sg.get("title") or "")
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if txt:
+            rows.append((i, net, txt[:280]))
+        if len(rows) >= _SV_VOICE_MAX:
+            break
+    if not rows:
+        return {"checked": 0, "drop": {}}
+    import time as _t
+    t0 = _t.time()
+    try:
+        import anthropic
+        cl = anthropic.Anthropic(api_key=key, timeout=40.0, max_retries=1)
+        r = cl.messages.create(
+            model=CLAUDE_MODEL_FAST, max_tokens=1500,
+            system="You screen social posts for relevance and answer only with the JSON asked for.",
+            messages=[{"role": "user", "content": _sv_voice_prompt(rows, brand, category, product)}])
+        drop = _sv_voice_parse(_extract_json(_msg_text(r)), {i for i, _n, _x in rows})
+    except Exception as exc:
+        return {"checked": len(rows), "drop": {}, "error": f"{type(exc).__name__}: {str(exc)[:120]}",
+                "secs": round(_t.time() - t0, 1)}
+    # A model that throws out most of the room has misread the brief, not the posts.
+    if len(drop) > max(8, int(len(rows) * 0.6)):
+        return {"checked": len(rows), "drop": {}, "secs": round(_t.time() - t0, 1),
+                "error": f"ignored: it would have dropped {len(drop)} of {len(rows)}"}
+    return {"checked": len(rows), "drop": drop, "secs": round(_t.time() - t0, 1),
+            "model": CLAUDE_MODEL_FAST}
+
+
 def _sv_gather_numbers(brand: str, category: str, product: str, market: str,
                        months: int, competitors: str = "", focus: str = "") -> dict:
     """Figures for the brief, checked. Runs in a worker thread; never raises
@@ -5680,8 +5772,16 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             elif scrape_pinterest is None:
                 tally["pinterest"] = "skipped (ingestion.py on the server has no Pinterest yet)"
             else:
+                # 24 pins, not 12 (5 Nov): most of what Pinterest returns for a
+                # drink is recipes, shops and brand pages, and the gates keep
+                # only the voices — they need a deeper pool to keep any.
+                # PINTEREST_PINS changes it (6–60).
+                try:
+                    _pin_depth = max(6, min(60, int(os.environ.get("PINTEREST_PINS", "24") or 24)))
+                except ValueError:
+                    _pin_depth = 24
                 jobs["pinterest"] = lambda: _across(
-                    lambda q, n: scrape_pinterest(q, api_token=apify, n=n), 12)
+                    lambda q, n: scrape_pinterest(q, api_token=apify, n=n), _pin_depth)
         elif _lhpin:
             # Off by default (Pinterest's terms; Apify credits) — and saying so
             # here, or a missing network reads as a broken one.
@@ -6506,6 +6606,16 @@ def _sv_in_language(txt: str, lang: str) -> bool:
     words = _SV_LANG_WORDS.get(lang)
     if not words:
         return True
+    # THE ALPHABET FIRST. A US Rambler brief (5 Nov) showed an Instagram post in
+    # Arabic — "…مع VIA Sparkling Water by Tannourine…": the brand name in Latin
+    # letters brought an English "by" with it, and that was enough. Every market
+    # we serve writes in Latin letters, so a post mostly in another script is
+    # not in the market's language, whatever loanwords it carries.
+    letters = [ch for ch in (txt or "") if ch.isalpha()]
+    if letters:
+        latin = sum(1 for ch in letters if ch.isascii() or "\u00c0" <= ch <= "\u024f")
+        if latin < len(letters) * 0.6:
+            return False
     seen = re.findall(r"[\w\u00c0-\u024f']+", (txt or "").lower())[:14]
     if not seen:
         return False
@@ -8106,6 +8216,18 @@ def _sv_diagnostics(res: dict):
                     elif _pd.get("error"):
                         _pv = f"ERROR {_pd['error']}"
                     _rows.append(f"{'pinterest api':14} {_pv}")
+                # Which posts the fast model read as not about the subject.
+                _vc = (_result or {}).get("_voice")
+                if isinstance(_vc, dict) and _vc:
+                    if _vc.get("skipped"):
+                        _vv = f"skipped ({_vc['skipped']})"
+                    elif _vc.get("error"):
+                        _vv = f"{_vc.get('checked', 0)} read · nothing dropped ({_vc['error']})"
+                    else:
+                        _dd = _vc.get("drop") or {}
+                        _vv = (f"{_vc.get('checked', 0)} read · {len(_dd)} not about the subject"
+                               + (f" · {_vc['secs']}s" if _vc.get("secs") is not None else ""))
+                    _rows.append(f"{'voice check':14} {_vv}")
                 _wm = ((_result or {}).get("_meta") or {}).get("window")
                 st.code("\n".join(_rows) or "no data")
                 if _wm and _lhsrc:
@@ -9131,6 +9253,8 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         curated, used = {}, set()
         _dropped_curated = 0
         _cur_rej: dict = {}            # why a pick of the model's was not shown (reported with the gates)
+        # Posts the fast model read as not about the subject (_sv_voice_check).
+        _vdrop = {str(k_): v_ for k_, v_ in (((res or {}).get("_voice") or {}).get("drop") or {}).items()}
         for q in (res.get("insight_quotes") or [])[:6]:
             s_ = sig(q.get("signal_index"))
             if not s_:
@@ -9157,6 +9281,12 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             _ctext = _sv_dehash(_sv_body(s_))
             if _sv_is_listing(_ctext) or _sv_is_job(_ctext) or _sv_is_explicit(_ctext):
                 _dropped_curated += 1
+                continue
+            # …nor a post that only names the subject (read by the fast model).
+            if str(q.get("signal_index")) in _vdrop:
+                _dropped_curated += 1
+                _cur_rej.setdefault(_k0, {}).setdefault("not about the subject (Lighthouse's pick)", 0)
+                _cur_rej[_k0]["not about the subject (Lighthouse's pick)"] += 1
                 continue
             # …nor a pin of a shop listing or of the brand's own site.
             _pno = _sv_pin_not_voice(s_.get("meta") or {}, set(_sv_terms(str(_mt.get("brand", ""))))) \
@@ -9238,6 +9368,9 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 continue
             if k == "reddit" and _sv_reddit_thin(sg, _clean):
                 _no(k, "a title with no post behind it")
+                continue
+            if str(i2) in _vdrop:
+                _no(k, "names the subject, says nothing about it (read by the fast model)")
                 continue
             cands.setdefault(k, []).append((i2, sg, _clean))
         for k, lst in cands.items():
@@ -9375,6 +9508,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         if mode == "screen":
             rest = [(i2, sg) for i2, sg in enumerate(sigs)
                     if i2 not in shown and str(sg.get("source", "")).lower() in VOICE
+                    and str(i2) not in _vdrop
                     and (sg.get("title") or sg.get("content"))]
             if rest:
                 rows = ""
@@ -11594,6 +11728,11 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             # pasted with a trailing space; this deserves a sentence, not a
             # stack trace.
             _result, _api_err = {}, ""
+            # Is each post about the subject? Read while the brief is written.
+            from concurrent.futures import ThreadPoolExecutor as _VoiceTP
+            _voice_ex = _VoiceTP(max_workers=1)
+            _f_voice = _voice_ex.submit(_sv_voice_check, _signals, _in_brand or _active,
+                                        _in_cat or _prof["category"], _in_prod) if _signals else None
             if _signals:
                 try:
                     # The competitors ON SCREEN, not the sidebar client's.
@@ -11649,6 +11788,13 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                     f"signals were collected; only the synthesis failed. "
                                     f"Press Run Lighthouse again.")
                     print(f"[lighthouse] synthesis failed: {_name}: {_exc}")
+            _voice = {}
+            if _f_voice is not None:
+                try:
+                    _voice = _f_voice.result(timeout=45) or {}
+                except Exception as _vexc:
+                    _voice = {"drop": {}, "error": f"the check did not arrive ({type(_vexc).__name__})"}
+            _voice_ex.shutdown(wait=False)
             _mark("brief written")
         _loader.empty()
         _status.empty()
@@ -11705,6 +11851,8 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 question=_in_q, qq=_qq, numbers=_numbers, trade_sigs=_trade_sigs,
                 trade_outs=_trade_outs, let_sigs=_let_sigs, let_outs=_let_outs,
                 pinterest=_pin)
+            if _voice:
+                _result["_voice"] = _voice
             st.session_state["sv_result"]   = _result
             # Trade signals are appended so trade_moves' signal_index can resolve
             # to a real URL in the renderer and in the archive.
@@ -14459,7 +14607,11 @@ def _lv_dig_worker(jid: str, p: dict, outlets: list, lets: list, archive: list) 
         figs = numbers.get("items") or []
         # Pinterest's searches join the figures the four parts may stand on.
         lens_figs = list(figs) + (_lhpin.as_figures(pin) if (_lhpin and pin) else [])
-        pool_s = _lc.interleave(_lv_clean_pool(sigs), 160)
+        # Posts that only name the category never become a part's evidence.
+        _stage("Reading which posts are really about it…")
+        voice = _sv_voice_check(sigs, brand, cat, prod)
+        _vd = (voice or {}).get("drop") or {}
+        pool_s = _lc.interleave(_lv_clean_pool([s_ for i_, s_ in enumerate(sigs) if str(i_) not in _vd]), 160)
         trade_all = list(trade_sigs or []) + list(let_sigs or [])
         _stage("Writing the four parts — and the brief behind them…")
         lens_prompt = _lc.dig_prompt(p, p.get("answers") or [], pool_s, trade_all[:40], lens_figs, _lv_today())
@@ -14486,6 +14638,8 @@ def _lv_dig_worker(jid: str, p: dict, outlets: list, lets: list, archive: list) 
                                     pinterest=pin)
             res["_diag"] = {"tally": tally, "origin": f"live session · {p.get('session_id', '')}",
                             "n_trade": len(trade_sigs or []), "n_letters": len(let_sigs or [])}
+            if voice:
+                res["_voice"] = voice
             rid = _sv_save_brief(brand, res, sigs)
         _sc.JOBS.finish(jid, {"parts": parts, "report_id": rid, "n": len(sigs),
                               "n_trade": len(trade_all), "n_figs": len(figs),
@@ -14558,6 +14712,11 @@ def _lv_brief_bits(sess: dict) -> tuple:
             one = {}
         sigs = one.get("signals") or []
         res = one.get("result") or {}
+        # The posts the fast model read as not about the subject stay out of
+        # Ask Lighthouse and Re-dig too (indexes point into the saved list).
+        _vd = ((res.get("_voice") or {}).get("drop") or {}) if isinstance(res.get("_voice"), dict) else {}
+        if _vd:
+            sigs = [s_ for i_, s_ in enumerate(sigs) if str(i_) not in _vd]
         trade = ([{"title": t.get("title", ""), "content": "", "source": t.get("outlet") or "Trade press",
                    "url": t.get("url", "")} for t in res.get("_trade_sigs") or []] +
                  [{"title": t.get("title", ""), "content": "", "source": t.get("letter") or "Newsletter",
