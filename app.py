@@ -6440,6 +6440,12 @@ def _sv_body(sig: dict) -> str:
     than showing an empty quotation mark.
     """
     txt = (sig.get("content") or "").strip()
+    if str(sig.get("source") or "").lower() == "pinterest":
+        # A pin is "title\ndescription\n\nSaved 3 times · from site · on the
+        # board “…”" (ingestion.parse_pinterest_items). The quote is the first
+        # part, read as one line; where it came from goes on the card's own
+        # line (_sv_pin_context), not inside the quotation marks.
+        txt = txt.split("\n\n")[0].replace("\n", " \u2014 ")
     txt = _SV_FOOTER.sub(" ", txt)
     if not txt.strip(" |\u00b7\n\t-"):
         txt = _SV_FOOTER.sub(" ", (sig.get("title") or ""))
@@ -6863,6 +6869,38 @@ def _sv_handle(src: str, meta: dict) -> str:
     return ""
 
 
+# A PIN THAT IS A SHOP WINDOW IS NOT A VOICE. The first Rambler scan with pins
+# (5 Nov) showed a Redbubble "Topo Chico sticker" listing and Rambler's own
+# homepage saved to a board — neither is what people say. Pins carry the site
+# they link to, so the shops are known by name.
+_SV_PIN_SHOPS = ("redbubble.", "etsy.", "amazon.", "amzn.", "ebay.", "walmart.", "target.com", "aliexpress.",
+                 "alibaba.", "temu.", "shein.", "zazzle.", "teepublic.", "society6.", "spreadshirt.",
+                 "cafepress.", "wish.com", "shopee.", "mercadolivre.", "mercadolibre.", "instacart.",
+                 "heb.com", "costco.", "samsclub.", "kroger.", "wholefoodsmarket.", "poshmark.", "depop.")
+
+
+def _sv_pin_not_voice(meta: dict, own: set) -> str:
+    """Why a pin is not a voice ("" when it is one): a shop listing, or the
+    brand's own page."""
+    d = str((meta or {}).get("domain") or "").lower().strip()
+    if not d:
+        return ""
+    if any(x in d for x in _SV_PIN_SHOPS):
+        return "a shop listing, not a voice"
+    flat = re.sub(r"[^a-z0-9]", "", d.rsplit(".", 1)[0])
+    if any(len(o) >= 4 and re.sub(r"[^a-z0-9]", "", o) in flat for o in own or ()):
+        return "the brand's own page, not a voice"
+    return ""
+
+
+def _sv_pin_context(meta: dict) -> str:
+    """'from midwexican.com · board “Blog Recipes”' — under the pin's words."""
+    m = meta or {}
+    bits = [f"from {m['domain']}" if m.get("domain") else "",
+            f"board \u201c{m['board']}\u201d" if m.get("board") else ""]
+    return " \u00b7 ".join(b for b in bits if b)
+
+
 def _sv_weight(meta: dict) -> int:
     """A single number to sort candidates by. Views dominate likes dominate
     comments, roughly mirroring how platforms themselves rank."""
@@ -6976,6 +7014,7 @@ def _sv_engagement(meta: dict) -> str:
 
     seen, bits = set(), []
     for label, keys in (("views", ("plays", "views")), ("likes", ("likes",)),
+                        ("saves", ("saves",)),
                         ("points", ("points",)), ("upvotes", ("score",)),
                         ("reposts", ("retweets",)),
                         ("comments", ("num_comments", "comments"))):
@@ -7927,7 +7966,26 @@ def _sv_board_section(search_key: str, disp: str) -> list:
     return items
 
 
-def _sv_diagnostics(res: dict) -> None:
+def _sv_gates_panel(slot, res) -> None:
+    """Consumer Insight — why signals did not become cards, into its slot (an
+    st.empty() made by _sv_diagnostics: drawn again, it replaces itself)."""
+    _g = (res or {}).get("_gates") if isinstance(res, dict) else None
+    if slot is None or not _g:
+        return
+    with slot.container():
+        with st.expander("Consumer Insight — why signals did not become cards", expanded=False):
+            for _net, _reasons in sorted(_g.items()):
+                st.code(f"{_net}\n" + "\n".join(
+                    f"   {v:>3}  {why}" for why, v in sorted(
+                        _reasons.items(), key=lambda x: -x[1])))
+            st.caption("Gates run in order: text left after cleaning → on topic "
+                       "→ market language → not an advert, a job or a shop listing "
+                       "→ engagement floor. The floor ranks rather than erases: a "
+                       "network that cleared the gates keeps its best two whatever "
+                       "the numbers.")
+
+
+def _sv_diagnostics(res: dict):
     """The engineering panels, rendered from a brief's stashed diagnostic.
 
     THEY USED TO BE DRAWN INSIDE THE SCAN, and the scan ends with st.rerun() —
@@ -7942,8 +8000,9 @@ def _sv_diagnostics(res: dict) -> None:
     days later instead of only in the seconds before a rerun wipes it.
     """
     _d = (res or {}).get("_diag") or {}
+    gates_slot = None
     if not _d:
-        return
+        return None
     _stage      = _d.get("stage") or {}
     _src_tally  = _d.get("tally") or {}
     _trade_diag = _d.get("trade") or {}
@@ -8135,18 +8194,12 @@ def _sv_diagnostics(res: dict) -> None:
             # says how many survived the four display gates and where the rest
             # died. Without it, "tiktok 8" on the progress line and one card on
             # screen look like a bug with no visible cause.
-            _g = (_result or {}).get("_gates") or {}
-            if _g:
-                with st.expander("Consumer Insight — why signals did not become cards",
-                                 expanded=False):
-                    for _net, _reasons in sorted(_g.items()):
-                        st.code(f"{_net}\n" + "\n".join(
-                            f"   {v:>3}  {why}" for why, v in sorted(
-                                _reasons.items(), key=lambda x: -x[1])))
-                    st.caption("Gates run in order: text left after cleaning → on topic "
-                               "→ market language → engagement floor. The floor now ranks "
-                               "rather than erases: a network that cleared the first three "
-                               "keeps its best two whatever the numbers.")
+            # The gates are counted while the brief's sections are drawn, which
+            # is AFTER this panel — so on the first view of a fresh scan they did
+            # not exist yet and the box only appeared after some later click.
+            # A slot here, filled again once the sections have run.
+            gates_slot = st.empty()
+            _sv_gates_panel(gates_slot, _result)
 
             _d = _trade_diag or {}
             _n_sigs = len(_trade_sigs or [])
@@ -8247,6 +8300,7 @@ def _sv_diagnostics(res: dict) -> None:
                     else:
                         st.warning("Issues were collected but the model returned no "
                                    "newsletter fields. Press Run Lighthouse again.")
+    return gates_slot
 
 
 # Every timestamp is STORED in UTC, which is right — it is the only clock that
@@ -9076,6 +9130,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         #    model's picks as well, and the deck refills from the top-ups.
         curated, used = {}, set()
         _dropped_curated = 0
+        _cur_rej: dict = {}            # why a pick of the model's was not shown (reported with the gates)
         for q in (res.get("insight_quotes") or [])[:6]:
             s_ = sig(q.get("signal_index"))
             if not s_:
@@ -9102,6 +9157,14 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             _ctext = _sv_dehash(_sv_body(s_))
             if _sv_is_listing(_ctext) or _sv_is_job(_ctext) or _sv_is_explicit(_ctext):
                 _dropped_curated += 1
+                continue
+            # …nor a pin of a shop listing or of the brand's own site.
+            _pno = _sv_pin_not_voice(s_.get("meta") or {}, set(_sv_terms(str(_mt.get("brand", ""))))) \
+                if _k0 == "pinterest" else ""
+            if _pno:
+                _dropped_curated += 1
+                _cur_rej.setdefault(_k0, {}).setdefault(f"{_pno} (Lighthouse's pick)", 0)
+                _cur_rej[_k0][f"{_pno} (Lighthouse's pick)"] += 1
                 continue
             k = str(s_.get("source", "") or "").lower() or "other"
             # The LABEL comes from the source, not from the model. It wrote
@@ -9138,7 +9201,7 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
         # Four gates run in sequence and the result looks identical whichever
         # one fired, so the counts are recorded per network and reported in the
         # diagnostic. Guessing at this cost us several rounds already.
-        _rej: dict = {}
+        _rej: dict = {k_: dict(v_) for k_, v_ in _cur_rej.items()}
 
         def _no(k, why):
             _rej.setdefault(k, {}).setdefault(why, 0)
@@ -9162,6 +9225,11 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
             if _sv_is_listing(_clean):
                 _no(k, "a listing, not a voice")
                 continue
+            if k == "pinterest":
+                _pin_no = _sv_pin_not_voice(sg.get("meta") or {}, _own)
+                if _pin_no:
+                    _no(k, _pin_no)
+                    continue
             if _sv_is_job(_clean):
                 _no(k, "a job ad, not a voice")
                 continue
@@ -9218,7 +9286,8 @@ def _sv_sections(res: dict, sigs: list, category: str, which: tuple, mode: str =
                 _m = sg.get("meta") or {}
                 pools.setdefault(k, []).append(
                     {"sig": sg, "net": SRC.get(k, k.replace("_", " ").title()),
-                     "handle": _sv_handle(k, _m), "context": "", "body": _clean,
+                     "handle": _sv_handle(k, _m),
+                     "context": _sv_pin_context(_m) if k == "pinterest" else "", "body": _clean,
                      "eng": _sv_engagement(_m), "idx": i2})
 
         # 3. the All deck: one at a time around the networks until six. Round
@@ -11748,8 +11817,9 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
 
     # The engineering panels, drawn where they survive the rerun. See
     # _sv_diagnostics for why they never appeared before.
+    _gates_slot = None
     if _show_diag and isinstance(_res, dict):
-        _sv_diagnostics(_res)
+        _gates_slot = _sv_diagnostics(_res)
 
     _inc = (_res or {}).get("_incomplete") if isinstance(_res, dict) else None
     if _inc:
@@ -11810,6 +11880,7 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                      letter_sigs=_res.get("_letters_sigs") or [])
         with st.container(key="svfullA"):
             _sv_embed(_html_a, _h_a)
+        _sv_gates_panel(_gates_slot, _res)   # the gates exist now (see _sv_diagnostics)
     else:
         # Empty state: no fake section header, no scaffolding. Whoever opens the
         # page gets a clean sheet and one instruction — never someone else's run.
