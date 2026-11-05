@@ -5239,11 +5239,15 @@ def _sv_voice_prompt(rows: list, brand: str, category: str, product: str = "") -
     topic = (product or category or "the category").strip()
     subj = f"{brand} ({category})" if brand and category else (brand or category or topic)
     listing = "\n".join(f"[{i}] {net}: {txt}" for i, net, txt in rows)
-    return f"""SCREENING POSTS for a brand-strategy brief about {subj}.
+    return f"""SCREENING POSTS for the section of a brand-strategy brief called "What people are actually saying", about {subj}.
 
-For each post below, decide whether it is really ABOUT {topic}: someone's experience, opinion, habit, question, recipe, review, joke or cultural moment that involves {topic} itself, or a brand of it.
-List only the posts that MENTION it in passing and say nothing about it: an accident or a spill, an AI image caption or a mood-board line, song lyrics, spam, a giveaway, a shop listing, a story that is really about something else.
-Keep anything that says something, however small, about how people buy, drink, use, judge or talk about {topic}. When in doubt, keep it.
+A post belongs there when a PERSON says something about {topic}: their experience, opinion, habit, question, recipe, review, joke, complaint — or a creator, a reviewer or a news outlet reporting on it.
+List the posts that do NOT belong:
+- a passing mention: {topic} named in a story about something else (an accident or a spill, a party where it was not served, a song lyric);
+- an AI image caption or a mood-board line;
+- spam or a giveaway;
+- COPY RATHER THAN A VOICE, even when it is all about {topic}: a product page or retailer listing ("12 fl oz cans", "infused with bright lemon and lime flavors for a crisp finish"), a brand's own ad line ("crafted to elevate every conversation"), a "link in bio" promotion, a press release.
+Keep everything else. When in doubt, keep it.
 
 POSTS:
 {listing}
@@ -5844,7 +5848,7 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                                      ("subreddit", "author", "owner", "handle", "channel",
                                       "likes", "plays", "views", "score", "points",
                                       "retweets", "comments", "num_comments", "q",
-                                      "saves", "board", "domain")
+                                      "saves", "board", "domain", "link")
                                      if k in _rm}})
             tally[name] = len(sigs)
             if progress:
@@ -6986,20 +6990,41 @@ def _sv_handle(src: str, meta: dict) -> str:
 _SV_PIN_SHOPS = ("redbubble.", "etsy.", "amazon.", "amzn.", "ebay.", "walmart.", "target.com", "aliexpress.",
                  "alibaba.", "temu.", "shein.", "zazzle.", "teepublic.", "society6.", "spreadshirt.",
                  "cafepress.", "wish.com", "shopee.", "mercadolivre.", "mercadolibre.", "instacart.",
-                 "heb.com", "costco.", "samsclub.", "kroger.", "wholefoodsmarket.", "poshmark.", "depop.")
+                 "heb.com", "costco.", "samsclub.", "wholefoodsmarket.", "poshmark.", "depop.",
+                 # grocery and drinks retailers — and Kroger's own banners (the second
+                 # Rambler scan with pins, 5 Nov: Total Wine and Fred Meyer product pages)
+                 "totalwine.", "kroger.", "fredmeyer.", "ralphs.", "kingsoopers.", "frysfood.", "smithsfoodanddrug.",
+                 "harristeeter.", "marianos.", "qfc.com", "dillons.", "picknsave.", "safeway.", "albertsons.",
+                 "vons.", "jewelosco.", "publix.", "wegmans.", "meijer.", "hy-vee.", "giantfood.", "stopandshop.",
+                 "foodlion.", "centralmarket.", "sprouts.", "traderjoes.", "aldi.", "cvs.", "walgreens.",
+                 "gopuff.", "drizly.", "thrivemarket.", "vitacost.", "iherb.", "boxed.", "webstaurantstore.",
+                 "bevmo.", "specsonline.", "binnys.", "shipt.", "doordash.", "ubereats.", "freshdirect.")
+# A product page, whoever sells it: /p/123, /dp/B0…, /ip/…, /product/…, ?sku=
+_SV_PIN_PRODUCT_PATH = re.compile(
+    r"(?i)/(?:p|dp|gp/product|ip|itm|product|products|prod|shop|store|item|items|buy|sku)/"
+    r"|[?&](?:sku|pid|productid|product_id|item_id)=")
+# Boards a shop pins its catalogue to.
+_SV_PIN_SHOP_BOARDS = {"products", "product", "shop", "store", "shop now", "our products", "shop the look",
+                       "catalog", "catalogue", "new arrivals", "for sale"}
 
 
 def _sv_pin_not_voice(meta: dict, own: set) -> str:
     """Why a pin is not a voice ("" when it is one): a shop listing, or the
     brand's own page."""
-    d = str((meta or {}).get("domain") or "").lower().strip()
-    if not d:
-        return ""
-    if any(x in d for x in _SV_PIN_SHOPS):
+    m = meta or {}
+    d = str(m.get("domain") or "").lower().strip()
+    link = str(m.get("link") or "")
+    board = re.sub(r"\s+", " ", str(m.get("board") or "")).strip().lower()
+    if d and any(x in d for x in _SV_PIN_SHOPS):
         return "a shop listing, not a voice"
-    flat = re.sub(r"[^a-z0-9]", "", d.rsplit(".", 1)[0])
-    if any(len(o) >= 4 and re.sub(r"[^a-z0-9]", "", o) in flat for o in own or ()):
-        return "the brand's own page, not a voice"
+    if link and _SV_PIN_PRODUCT_PATH.search(urllib.parse.urlparse(link).path + "?" + urllib.parse.urlparse(link).query):
+        return "a product page, not a voice"
+    if board in _SV_PIN_SHOP_BOARDS:
+        return "a shop's catalogue board, not a voice"
+    if d:
+        flat = re.sub(r"[^a-z0-9]", "", d.rsplit(".", 1)[0])
+        if any(len(o) >= 4 and re.sub(r"[^a-z0-9]", "", o) in flat for o in own or ()):
+            return "the brand's own page, not a voice"
     return ""
 
 
