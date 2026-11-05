@@ -5210,7 +5210,8 @@ def _sv_gather_pinterest(brand: str, category: str, product: str, market: str,
     like By the numbers. Off — an empty answer with the reason — until a token
     is in the secrets. Thread-safe: no st.* in here."""
     if not _lhpin:
-        return {}
+        # Said, not silent: the brief's "Sources" panel shows why there is no Pinterest.
+        return {"items": [], "skipped": "pinterest.py is not on the server"}
     try:
         return _lhpin.gather(brand or "", category or "", product or "", focus or "", market or "")
     except Exception as exc:
@@ -5681,6 +5682,10 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
             else:
                 jobs["pinterest"] = lambda: _across(
                     lambda q, n: scrape_pinterest(q, api_token=apify, n=n), 12)
+        elif _lhpin:
+            # Off by default (Pinterest's terms; Apify credits) — and saying so
+            # here, or a missing network reads as a broken one.
+            tally["pinterest"] = 'off (PINTEREST_SCRAPE = "1" in the secrets scrapes pins)'
     else:
         tally["apify"] = "skipped (no APIFY_API_TOKEN)"
     if fckey:
