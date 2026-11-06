@@ -5254,23 +5254,48 @@ Keep everything else. When in doubt, keep it.
 POSTS:
 {listing}
 
-Answer only with JSON: {{"off": [{{"i": 3, "why": "at most six words"}}]}}"""
+Answer only with JSON, one short pair per post that does not belong (reason in two to four words): {{"off": [[3, "other drink"], [12, "brand ad copy"]]}}"""
 
 
 def _sv_voice_parse(obj, ids: set) -> dict:
-    """{"3": "a spill on a laptop"} — only posts that were sent."""
+    """{"3": "a spill on a laptop"} — only posts that were sent. Takes
+    [[3, "why"], …] pairs (what is asked for) or {"i": 3, "why": …} objects."""
     out = {}
     rows = obj.get("off") if isinstance(obj, dict) else None
     for r in rows if isinstance(rows, list) else []:
-        if not isinstance(r, dict):
-            continue
+        if isinstance(r, dict):
+            i, why = r.get("i"), r.get("why")
+        elif isinstance(r, (list, tuple)) and r:
+            i, why = r[0], (r[1] if len(r) > 1 else "")
+        else:
+            i, why = r, ""
         try:
-            i = int(r.get("i"))
+            i = int(i)
         except (TypeError, ValueError):
             continue
         if i in ids:
-            out[str(i)] = re.sub(r"\s+", " ", str(r.get("why") or "not about it")).strip()[:80]
+            out[str(i)] = re.sub(r"\s+", " ", str(why or "not about it")).strip()[:80]
     return out
+
+
+def _sv_voice_read(raw: str, ids: set) -> tuple:
+    """(drops, how) from the model's text. A noisy search makes a long answer,
+    and a long answer can be cut off: whatever pairs arrived whole still count,
+    instead of a parse error silently counting none (Zing Zang, 6 Nov)."""
+    try:
+        got = _sv_voice_parse(_extract_json(raw), ids)
+        if got:
+            return got, "json"
+    except Exception:
+        pass
+    out = {}
+    for i, why in re.findall(r'\[\s*(\d+)\s*,\s*"([^"\]]{0,80})"\s*\]', raw or ""):
+        if int(i) in ids:
+            out[str(int(i))] = why.strip() or "not about it"
+    for i, why in re.findall(r'"i"\s*:\s*(\d+)\s*,\s*"why"\s*:\s*"([^"]{0,80})"', raw or ""):
+        if int(i) in ids:
+            out.setdefault(str(int(i)), why.strip() or "not about it")
+    return out, ("salvaged" if out else "none")
 
 
 def _sv_voice_check(signals: list, brand: str, category: str, product: str = "") -> dict:
@@ -5301,19 +5326,23 @@ def _sv_voice_check(signals: list, brand: str, category: str, product: str = "")
         import anthropic
         cl = anthropic.Anthropic(api_key=key, timeout=40.0, max_retries=1)
         r = cl.messages.create(
-            model=CLAUDE_MODEL_FAST, max_tokens=1500,
+            model=CLAUDE_MODEL_FAST, max_tokens=4000,
             system="You screen social posts for relevance and answer only with the JSON asked for.",
             messages=[{"role": "user", "content": _sv_voice_prompt(rows, brand, category, product)}])
-        drop = _sv_voice_parse(_extract_json(_msg_text(r)), {i for i, _n, _x in rows})
+        drop, how = _sv_voice_read(_msg_text(r), {i for i, _n, _x in rows})
     except Exception as exc:
         return {"checked": len(rows), "drop": {}, "error": f"{type(exc).__name__}: {str(exc)[:120]}",
                 "secs": round(_t.time() - t0, 1)}
-    # A model that throws out most of the room has misread the brief, not the posts.
-    if len(drop) > max(8, int(len(rows) * 0.6)):
+    # ONLY A MISREADING IS OVERRULED. This used to throw the whole answer away
+    # past 60% — and a search on a broad word is exactly where most posts are
+    # noise: "cocktail mixers" brought Molotov cocktails, prawn-cocktail crisps
+    # and energy drinks (Zing Zang, 6 Nov), the check named them, and the guard
+    # put every one of them back. Everything but a handful is a misreading.
+    if len(rows) >= 10 and len(drop) >= len(rows) * 0.95:
         return {"checked": len(rows), "drop": {}, "secs": round(_t.time() - t0, 1),
                 "error": f"ignored: it would have dropped {len(drop)} of {len(rows)}"}
     return {"checked": len(rows), "drop": drop, "secs": round(_t.time() - t0, 1),
-            "model": CLAUDE_MODEL_FAST}
+            "model": CLAUDE_MODEL_FAST, "read": how}
 
 
 def _sv_gather_numbers(brand: str, category: str, product: str, market: str,
@@ -6564,6 +6593,7 @@ def _sv_body(sig: dict) -> str:
         if _u == txt:
             break
         txt = _u
+    txt = re.sub(r"<[^<>]{0,400}>", " ", txt)        # HN and RSS hand over HTML
     if str(sig.get("source") or "").lower() == "pinterest":
         # A pin is "title\ndescription\n\nSaved 3 times · from site · on the
         # board “…”" (ingestion.parse_pinterest_items). The quote is the first
@@ -8275,7 +8305,8 @@ def _sv_diagnostics(res: dict):
                     else:
                         _dd = _vc.get("drop") or {}
                         _vv = (f"{_vc.get('checked', 0)} read · {len(_dd)} not about the subject"
-                               + (f" · {_vc['secs']}s" if _vc.get("secs") is not None else ""))
+                               + (f" · {_vc['secs']}s" if _vc.get("secs") is not None else "")
+                               + (" · answer cut off, pairs salvaged" if _vc.get("read") == "salvaged" else ""))
                     _rows.append(f"{'voice check':14} {_vv}")
                 _wm = ((_result or {}).get("_meta") or {}).get("window")
                 st.code("\n".join(_rows) or "no data")
