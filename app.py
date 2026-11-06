@@ -5241,8 +5241,10 @@ def _sv_voice_prompt(rows: list, brand: str, category: str, product: str = "") -
     listing = "\n".join(f"[{i}] {net}: {txt}" for i, net, txt in rows)
     return f"""SCREENING POSTS for the section of a brand-strategy brief called "What people are actually saying", about {subj}.
 
+{topic} here means what {brand or "the brand"} sells, and the brands that compete with it.
 A post belongs there when a PERSON says something about {topic}: their experience, opinion, habit, question, recipe, review, joke, complaint — or a creator, a reviewer or a news outlet reporting on it.
 List the posts that do NOT belong:
+- a post about something else altogether that does not involve {topic}: another drink or product, a recipe that does not use it, an app feature, a wedding venue, a server invitation;
 - a passing mention: {topic} named in a story about something else (an accident or a spill, a party where it was not served, a song lyric);
 - an AI image caption or a mood-board line;
 - spam or a giveaway;
@@ -5938,6 +5940,16 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
         out = _keep
 
     _terms = _sv_terms(search_terms)
+    # THE ARCHIVE IS THE SELECTED CLIENT'S, NOT THE TYPED BRAND'S. A Zing Zang
+    # scan run with the selector on Rambler (6 Nov) took Rambler's saved posts
+    # that mention "mixer" or "cocktail" — and the brief listed Rambler among
+    # Zing Zang's competitors. A typed brand that is not the selected client is
+    # an exploratory scan: it gets no saved posts at all.
+    _ab = re.sub(r"[^a-z0-9]", "", str(brand or "").lower())
+    _aa = re.sub(r"[^a-z0-9]", "", str(active or "").lower())
+    if _ab and _aa and _ab not in _aa and _aa not in _ab:
+        tally["archive"] = f"skipped (saved posts are {active}'s; this search is for {brand})"
+        return out, tally
     try:
         n = skipped = old = 0
         # `archive` lets a caller hand in signals it loaded itself. The session
@@ -6544,6 +6556,14 @@ def _sv_body(sig: dict) -> str:
     than showing an empty quotation mark.
     """
     txt = (sig.get("content") or "").strip()
+    # Reddit's feed sends "we&#39;d" and "submitted by &#32;": the hashtag
+    # remover saw "#39" and "#32" and the Zing Zang brief (6 Nov) printed
+    # "we& ;d". Decoded first, twice for the doubly escaped.
+    for _ in range(2):
+        _u = html_mod.unescape(txt)
+        if _u == txt:
+            break
+        txt = _u
     if str(sig.get("source") or "").lower() == "pinterest":
         # A pin is "title\ndescription\n\nSaved 3 times · from site · on the
         # board “…”" (ingestion.parse_pinterest_items). The quote is the first
@@ -6552,7 +6572,7 @@ def _sv_body(sig: dict) -> str:
         txt = txt.split("\n\n")[0].replace("\n", " \u2014 ")
     txt = _SV_FOOTER.sub(" ", txt)
     if not txt.strip(" |\u00b7\n\t-"):
-        txt = _SV_FOOTER.sub(" ", (sig.get("title") or ""))
+        txt = _SV_FOOTER.sub(" ", html_mod.unescape(sig.get("title") or ""))
     txt = _SV_TRANSCRIPT.sub("", txt)
     txt = _SV_URL.sub("", txt)                  # bare t.co links read as noise
     return " ".join(txt.split()).strip(" |\u00b7-\u2014")
@@ -6643,13 +6663,17 @@ def _sv_in_language(txt: str, lang: str) -> bool:
 _SV_SELLING = re.compile(
     r"(?i)\b(for\s*sale|dm\s*(?:me\s*)?to\s*(?:buy|order)|shop\s*now|buy\s*now"
     r"|link\s*in\s*bio|order\s*(?:now|here)|in\s*stock|free\s*shipping"
-    r"|bolt\s*pattern|shipping\s*available|price\s*:|asking\s*\$|obo"
+    r"|bolt\s*pattern|shipping\s*available|obo"
     # The Puma brief (Oct 23) printed "Puma Speedcat Red 36//37//38… Call or
     # WhatsApp 07… We deliver countrywide" and a Myntra ad at "₹799!" as voices.
     r"|call\s*(?:or|/|&)\s*(?:text|whats\s?app)|whats\s?app\s*(?:me|us|\+?\d)"
     r"|we\s*deliver|delivery\s*available|cash\s*on\s*delivery|dm\s*for\s*(?:price|orders?)"
     r"|pre-?order\s*now|place\s*(?:your\s*)?orders?|pack\s*of\s*\d+|\d+(?:\.\d+)?\s*fl\.?\s*oz"
     r"|call\s*\+?\(?\d[\d\s().-]{6,}\d)\b"
+    # Outside the \b(…)\b group: they end on a symbol, where \b never matches.
+    # "Price: 17,600 … Carton price: 136,576 Visit www.mysnackbag.com" (6 Nov)
+    # went through as a voice because "price\s*:" sat inside it.
+    r"|\bprice\s*:|\basking\s*\$|\bvisit\s+www\."
     r"|[$£€₹]\s?\d{3,}|\bR\$\s?\d{2,}"
     # a run of shoe or clothing sizes: 36//37//38//39, 7/8/9/10
     r"|\b\d{1,2}(?:\s*/{1,2}\s*\d{1,2}){3,}\b")

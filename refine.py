@@ -214,8 +214,18 @@ def question_stats(batch: list, touched: list, label: Optional[Callable] = None,
     if len(dated) >= 8 and (dated[-1][0] - dated[0][0]).days >= 14:
         half = len(dated) // 2
         old, new = [i for _, i in dated[:half]], [i for _, i in dated[half:]]
-        s_old = sum(1 for i in old if i in seen) / len(old)
-        s_new = sum(1 for i in new if i in seen) / len(new)
+        # LIKE FOR LIKE: only the networks heard in BOTH halves. Pinterest and
+        # Instagram hand back what is recent, Reddit and Hacker News reach back
+        # months — so a Zing Zang brief (6 Nov) read "0% → 64%": the older half
+        # was all Reddit and HN threads about other drinks, the newer half the
+        # recent pins that name the brand. That is the networks changing, not
+        # the conversation.
+        both = {label(batch[i]) for i in old} & {label(batch[i]) for i in new}
+        old = [i for i in old if label(batch[i]) in both]
+        new = [i for i in new if label(batch[i]) in both]
+        if len(old) >= 4 and len(new) >= 4:
+            s_old = sum(1 for i in old if i in seen) / len(old)
+            s_new = sum(1 for i in new if i in seen) / len(new)
     enough = n >= min_posts
     direction = ""
     if enough and s_old is not None:
