@@ -50,6 +50,18 @@ USERS = {
     "Stacia":  os.environ.get("PASS_STACIA",   "Stacia123"),
 }
 
+# ── Team login switch ──────────────────────────────────────────────────────────
+# ON by default: every team page asks for a name and password. During testing
+# it can be switched off, and then every page opens straight in, as the team —
+# no code change, add to the secrets:   TEAM_LOGIN = "off"
+# (TEAM_NAME = "…" changes the name it signs as; "Team" otherwise.)
+# OFF MEANS OPEN TO ANYONE WITH THE ADDRESS — including a client who received an
+# intake or leave-behind link and trims it to the home page: every client's
+# briefs, sessions and transcripts, and the scans that cost credits. Switch it
+# back on before client links go out.
+TEAM_LOGIN = os.environ.get("TEAM_LOGIN", "on").strip().lower() not in ("off", "0", "false", "no")
+TEAM_NAME = (os.environ.get("TEAM_NAME", "") or "Team").strip()[:30] or "Team"
+
 # ── Scanning kill switch ───────────────────────────────────────────────────────
 # The Apify credits are exhausted while the paid plan is being arranged. With
 # this ON the Run Lighthouse button is disabled, so nobody burns credits we do
@@ -1342,8 +1354,13 @@ if IS_LEAVE:
 
 if "logged_in_user" not in st.session_state:
     # Public share link (?view=overview) skips the team login and runs as a
-    # read-only guest. Every other route still requires a password.
-    if st.query_params.get("view") == "overview":
+    # read-only guest. Every other route still requires a password — unless the
+    # login is switched off (TEAM_LOGIN = "off"), and then every route opens as
+    # the team: the Live session button no longer lands on a password screen.
+    if not TEAM_LOGIN:
+        st.session_state.logged_in_user = TEAM_NAME
+        st.session_state.user_role = "internal"
+    elif st.query_params.get("view") == "overview":
         if not _overview_gate():
             st.stop()
         st.session_state.logged_in_user = "guest"
@@ -1533,7 +1550,7 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
-    if st.button("Sign out", use_container_width=True, key="logout_btn"):
+    if TEAM_LOGIN and st.button("Sign out", use_container_width=True, key="logout_btn"):
         for _k in ("logged_in_user", "user_role", "client_label", "client_perms"):
             st.session_state.pop(_k, None)
         st.rerun()
@@ -14441,6 +14458,28 @@ def _lv_sid() -> str:
     return st.session_state["_lv_sid"]
 
 
+def _lv_browser() -> str:
+    """The same browser across reloads (a reload is a new Streamlit session):
+    a hash of the XSRF cookie Streamlit keeps for it. "" when unreadable. With
+    the login switched off everyone signs as the team, so this — not the name —
+    tells "me, after a reload" from "someone else"."""
+    import hashlib
+    try:
+        ck = st.context.cookies.get("_streamlit_xsrf") or ""
+    except Exception:
+        ck = ""
+    # Tornado re-masks the token on every page load ("2|mask|masked|time"): the
+    # cookie string changes, the token under the mask does not.
+    parts = ck.split("|")
+    if len(parts) == 4 and parts[0] == "2":
+        try:
+            m, d = bytes.fromhex(parts[1]), bytes.fromhex(parts[2])
+            ck = bytes(b ^ m[i % 4] for i, b in enumerate(d)).hex()
+        except ValueError:
+            pass
+    return hashlib.sha1(ck.encode()).hexdigest()[:12] if ck else ""
+
+
 def _lv_save(sess: dict, force: bool = False) -> bool:
     """Persist the session — at most every few seconds unless forced, like the
     room's log: speech arrives every few seconds and the record grows with the
@@ -14449,7 +14488,8 @@ def _lv_save(sess: dict, force: bool = False) -> bool:
     if not force and now - float(sess.get("_saved_t") or 0) < _LV_SAVE_EVERY:
         sess["_dirty"] = True
         return False
-    sess["driver"] = {"sid": _lv_sid(), "user": st.session_state.get("logged_in_user", ""), "t": int(now)}
+    sess["driver"] = {"sid": _lv_sid(), "user": st.session_state.get("logged_in_user", ""), "t": int(now),
+                      "browser": _lv_browser()}
     ok = _db.upsert_record(sess["id"], _LV_TOPIC, _lv_strip(sess),
                            label=f"Live · {sess.get('client_name', '')} · "
                                  f"{str(sess.get('created_at', ''))[:16]}")
@@ -14518,8 +14558,12 @@ def _lv_open(sid: str) -> Optional[dict]:
     # A reload is a new browser session for Streamlit, so the same person coming
     # back is told apart from someone else by name, not by session.
     ago = _rm_time.time() - float(drv.get("t") or 0)
-    if drv.get("sid") and drv.get("sid") != _lv_sid() and ago < 60 \
-            and drv.get("user") != st.session_state.get("logged_in_user", ""):
+    if TEAM_LOGIN:
+        _someone_else = drv.get("user") != st.session_state.get("logged_in_user", "")
+    else:
+        # Everyone is "Team": the browser tells a reload from another person.
+        _someone_else = not (drv.get("browser") and drv.get("browser") == _lv_browser())
+    if drv.get("sid") and drv.get("sid") != _lv_sid() and ago < 60 and _someone_else:
         sess["_other"] = {"user": drv.get("user", ""), "ago": int(ago)}
     # Work "running" in a record whose job this server does not know was cut
     # off by a restart: said, so nobody waits for it.
