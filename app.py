@@ -8250,7 +8250,9 @@ def _sv_diagnostics(res: dict):
                 # the bug preserved, not a crash.
                 _pairs = (list(_stage.items()) if isinstance(_stage, dict)
                           else [(str(a), float(b)) for a, b in _stage])
-                with st.expander(f"Timing — {_pairs[-1][1]}s total", expanded=True):
+                # Closed like the others: at the foot of the page it is a row
+                # to open, not a block of numbers above the Archive.
+                with st.expander(f"Timing — {_pairs[-1][1]}s total", expanded=False):
                     _prev, _rows = 0.0, []
                     for _k, _v in _pairs:
                         _rows.append(f"{_v - _prev:6.1f}s   {_k}")
@@ -11252,14 +11254,71 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
    curation panel and the board sat flush against the window while everything
    above and below them held the 1120px measure. Same rule, same measure — they
    are ordinary light-page sections like the Archive, not full-bleed bands. */
-.st-key-svtop, .st-key-svbot, .st-key-svcur, .st-key-svboard, .lh-footer {{
+.st-key-svtop, .st-key-svbot, .st-key-svcur, .st-key-svboard, .st-key-svedit, .lh-footer {{
   padding-left:max(60px, calc((100% - 1120px) / 2)) !important;
   padding-right:max(60px, calc((100% - 1120px) / 2)) !important;
 }}
 @media (max-width: 820px) {{
-  .st-key-svtop, .st-key-svbot, .st-key-svcur, .st-key-svboard, .lh-footer {{
+  .st-key-svtop, .st-key-svbot, .st-key-svcur, .st-key-svboard, .st-key-svedit, .lh-footer {{
     padding-left:20px !important; padding-right:20px !important; }}
 }}
+
+/* ══ Team panels: Edit the currents · Behind this brief ═══════════════════
+   They were Streamlit's pale-blue rounded boxes — the app's legacy palette —
+   so they read as another product inside the brief (9 Nov). Now content
+   rows like the rest: square, between black rules, the label in Telegraf,
+   blue only where something can be opened. */
+.st-key-svedit {{ margin-top:28px !important; }}
+.st-key-svedit [data-testid="stExpander"], .st-key-svdiag [data-testid="stExpander"], .st-key-svcur [data-testid="stExpander"] {{
+  border:0 !important; border-radius:0 !important; background:transparent !important; box-shadow:none !important;
+  border-top:1.5px solid {_ink} !important; margin:0 !important; }}
+/* Edit the currents + Keep something: two rows of one group, closed by one rule */
+.st-key-svcur [data-testid="stExpander"] {{ border-bottom:1.5px solid {_ink} !important; }}
+.st-key-svedit {{ gap:0 !important; margin-bottom:-16px !important; }}
+.st-key-svdiag [data-testid="stExpander"] details, .st-key-svedit [data-testid="stExpander"] details, .st-key-svcur [data-testid="stExpander"] details {{
+  border:0 !important; border-radius:0 !important; background:transparent !important; }}
+.st-key-svedit [data-testid="stExpander"] summary, .st-key-svdiag [data-testid="stExpander"] summary, .st-key-svcur [data-testid="stExpander"] summary {{
+  padding:14px 0 !important; border-radius:0 !important; background:transparent !important; }}
+.st-key-svedit [data-testid="stExpander"] summary p, .st-key-svdiag [data-testid="stExpander"] summary p, .st-key-svcur [data-testid="stExpander"] summary p {{
+  font-family:{_sans} !important; font-size:14px !important; font-weight:700 !important;
+  color:{_ink} !important; letter-spacing:0 !important; }}
+.st-key-svedit [data-testid="stExpander"] summary svg, .st-key-svdiag [data-testid="stExpander"] summary svg, .st-key-svcur [data-testid="stExpander"] summary svg {{
+  color:#0000ff !important; fill:#0000ff !important; }}
+.st-key-svedit [data-testid="stExpander"] summary:hover p, .st-key-svdiag [data-testid="stExpander"] summary:hover p, .st-key-svcur [data-testid="stExpander"] summary:hover p {{
+  color:#0000ff !important; }}
+.st-key-svedit [data-testid="stExpander"] summary:focus, .st-key-svdiag [data-testid="stExpander"] summary:focus, .st-key-svcur [data-testid="stExpander"] summary:focus,
+.st-key-svedit [data-testid="stExpander"] details:focus-within, .st-key-svdiag [data-testid="stExpander"] details:focus-within {{
+  box-shadow:none !important; border-color:transparent !important; outline:none !important; }}
+.st-key-svedit [data-testid="stExpander"] summary:focus-visible, .st-key-svdiag [data-testid="stExpander"] summary:focus-visible, .st-key-svcur [data-testid="stExpander"] summary:focus-visible {{
+  outline:2px solid #0000ff !important; outline-offset:2px !important; }}
+.st-key-svedit [data-testid="stExpanderDetails"], .st-key-svdiag [data-testid="stExpanderDetails"], .st-key-svcur [data-testid="stExpanderDetails"] {{
+  background:transparent !important; padding:0 0 18px !important; border:0 !important; }}
+.st-key-svedit [data-testid="stExpanderDetails"] p, .st-key-svdiag [data-testid="stExpanderDetails"] p,
+.st-key-svdiag [data-testid="stExpanderDetails"] li {{ color:#222222 !important; font-family:{_sans} !important; }}
+.st-key-svdiag [data-testid="stCode"] pre, .st-key-svdiag [data-testid="stCode"] {{
+  background:#ffffff !important; border-radius:0 !important; }}
+.st-key-svdiag [data-testid="stCode"] pre {{ border:1px solid #dddddd !important; }}
+.st-key-svdiag [data-testid="stCode"] code {{ color:{_ink} !important; font-size:12px !important; }}
+.st-key-svdiag [data-testid="stCaptionContainer"] p {{ color:#666666 !important; font-size:12px !important; }}
+/* "Behind this brief" closes the brief: a 3px rule, a label that names, a line that tells */
+.st-key-svdiag {{ margin-top:56px !important; border-top:3px solid {_ink}; padding-top:20px !important;
+  border-bottom:1.5px solid {_ink}; gap:0 !important; }}
+.sv-diag-head .lbl {{ font-family:{_sans}; font-size:11px; font-weight:700; letter-spacing:.16em;
+  text-transform:uppercase; color:#0000ff; }}
+.sv-diag-head .h {{ font-family:{_sans}; font-size:22px; font-weight:700; letter-spacing:-.01em;
+  line-height:1.2; color:{_ink}; margin:10px 0 6px; }}
+/* The export is a control: rounded, 1.5px ink, Telegraf — the outline button, not the app's legacy pale one */
+.st-key-sv_export button {{ border:1.5px solid {_ink} !important; border-radius:10.5px !important;
+  background:#ffffff !important; min-height:44px !important; box-shadow:none !important; }}
+.st-key-sv_export button p {{ font-family:{_sans} !important; font-size:14px !important; font-weight:700 !important;
+  color:{_ink} !important; -webkit-text-fill-color:{_ink} !important; letter-spacing:0 !important; }}
+.st-key-sv_export button:hover {{ background:{_ink} !important; }}
+.st-key-sv_export button:hover p {{ color:#ffffff !important; -webkit-text-fill-color:#ffffff !important; }}
+.st-key-sv_export button:focus-visible {{ outline:2px solid #0000ff !important; outline-offset:2px !important; }}
+.sv-diag-head {{ padding-bottom:18px; }}
+.st-key-svdiag [data-testid="stMarkdownContainer"] {{ margin-bottom:0 !important; }}
+.sv-diag-head .sub {{ font-family:{_sans}; font-size:12.5px; line-height:1.45; color:#666666;
+  max-width:780px; }}
 
 /* ══ Section 07 · Test the currents ═══════════════════════════════════════
    Built from Figma "Lighthouse-Brief-Mockup 4": a full-bleed blue band, the
@@ -12079,11 +12138,9 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
             print(f"[overview] tideline unavailable: {_texc3}")
             _res["_tideline"] = {}
 
-    # The engineering panels, drawn where they survive the rerun. See
-    # _sv_diagnostics for why they never appeared before.
-    _gates_slot = None
-    if _show_diag and isinstance(_res, dict):
-        _gates_slot = _sv_diagnostics(_res)
+    # The engineering panels are drawn at the FOOT of the page now, under
+    # "Behind this brief" (see below): they are for the team, not the reader,
+    # and above the brief they were the first thing anyone saw (9 Nov).
 
     _inc = (_res or {}).get("_incomplete") if isinstance(_res, dict) else None
     if _inc:
@@ -12134,8 +12191,6 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                           unsafe_allow_html=True)
             _an2.button("Use this question", key="sv_asknext", on_click=_sv_set_q,
                         args=(_qn,), use_container_width=True)
-        # ── EDIT THE CURRENTS ────────────────────────────────────────────────
-        _sv_edit_panel(_res, _sigs, _active, _saved_at)
         _html_a, _h_a = _sv_sections(_res, _sigs, _disp_cat,
                                      ("00Q", "01", "01N", "01P", "02", "09", "02T", "02N", "03", "04", "05", "06"),
                                      "screen",
@@ -12144,7 +12199,12 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                                      letter_sigs=_res.get("_letters_sigs") or [])
         with st.container(key="svfullA"):
             _sv_embed(_html_a, _h_a)
-        _sv_gates_panel(_gates_slot, _res)   # the gates exist now (see _sv_diagnostics)
+        # ── EDIT THE CURRENTS — after reading them, with the curation below ──
+        # It used to sit above the brief, a pale rounded box before the reader
+        # had seen a single current. An edit reruns the page (_sv_commit_edit),
+        # so the brief above shows it straight away.
+        with st.container(key="svedit"):
+            _sv_edit_panel(_res, _sigs, _active, _saved_at)
     else:
         # Empty state: no fake section header, no scaffolding. Whoever opens the
         # page gets a clean sheet and one instruction — never someone else's run.
@@ -12390,6 +12450,20 @@ button[kind="primary"], [data-testid="stBaseButton-primary"],
                 help="Downloads the full brief. Open it and choose Print → Save as PDF (it opens the print dialog automatically).",
             )
 
+
+    # ── Behind this brief — the engineering panels, for the team ──────────
+    # Timings, what each source returned, what the filters left out. They
+    # report on THIS brief, so they close it, before the Archive of all briefs;
+    # never in the PDF, never on the guest link (?debug=1 shows them there).
+    if _show_diag and isinstance(_res, dict) and _res.get("_diag"):
+        with st.container(key="svdiag"):
+            st.markdown('<div class="sv-diag-head"><div class="lbl">Behind this brief</div>'
+                        '<div class="h">How it was made</div>'
+                        '<div class="sub">For the team: the timings, what each source returned and what '
+                        'the filters left out. Not part of the brief, and never in the PDF.</div></div>',
+                        unsafe_allow_html=True)
+            _gslot = _sv_diagnostics(_res)
+            _sv_gates_panel(_gslot, _res)
 
     # ── Section 09 — Archive (every past report, reopenable at zero cost) ──
     st.markdown(_sv_header("09", "Report Archive", "Every brief we've run"),
