@@ -1918,7 +1918,7 @@ def transcript_text(sess: dict, lines: list, people: dict, labels: dict, tz_name
 
 
 def leave_html(doc: dict, font_css: str = "", standalone: bool = True,
-               print_on_open: bool = False, with_full: bool = True) -> str:
+               print_on_open: bool = False, with_full: bool = True, logo: str = "") -> str:
     """The leave-behind as a page — the same markup on the shared link, in the
     PDF and on the session screen. Everything inserted is escaped.
     `print_on_open`: the downloaded file opens the print dialog by itself
@@ -1947,7 +1947,10 @@ def leave_html(doc: dict, font_css: str = "", standalone: bool = True,
                         for x in c.get("quotes") or [])
         ev_html.append(f'<li><b>{"★ " if c.get("star") else ""}{_e(c["t"])}</b> <span class="lb-sec">{_e(c["sec"])}</span>'
                        f' — {src}{("<br>" + links) if links else ""}{("<br>" + q) if q else ""}</li>')
-    body = f"""<article class="lb-doc">
+    # The wordmark is our own artwork (the app passes assets/lighthouse.svg), never
+    # text from a session — and only an <svg> is taken.
+    mark = f'<div class="lb-logo">{logo}</div>' if str(logo or "").lstrip().startswith("<svg") else ""
+    body = f"""<article class="lb-doc">{mark}
 <div class="lb-lbl">Leave-behind · Lighthouse live session</div>
 <div class="lb-h1" role="heading" aria-level="1">{_e(name)}: the brief we built together</div>
 <p class="lb-quiet">{_e(doc.get("day") or _fmt_day(doc.get("date")))} · Atlantic New York</p>
@@ -1987,6 +1990,8 @@ LEAVE_CSS = """
 .lb-doc .lb-sec{font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:#0000ff;margin-left:4px}
 .lb-doc a{color:#0000ff}
 @media (max-width:820px){.lb-doc .lb-h1{font-size:34px}}
+.lb-doc .lb-logo{width:170px;margin:0 0 26px;line-height:0}
+.lb-doc .lb-logo svg{width:100%;height:auto;display:block}
 .lb-doc .lb-full{margin-top:56px}
 .lb-doc .lb-band{background:#0000ff;color:#fff;padding:30px 30px 26px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .lb-doc .lb-band .lb-lbl{color:#fff}

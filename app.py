@@ -1254,7 +1254,8 @@ def _lv_public_css() -> str:
 .stApp [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] { gap:0 !important; }
 .lv-pub { font-family:'Telegraf','Space Grotesk','Helvetica Neue',Helvetica,Arial,sans-serif;
   max-width:860px; margin:0 auto; padding:16vh 28px 0; color:#000; }
-.lv-pub .wm { font-size:20px; font-weight:700; letter-spacing:-.01em; margin-bottom:28px; }
+.lv-pub .wm { font-size:20px; font-weight:700; letter-spacing:-.01em; margin-bottom:28px; width:170px; line-height:0; }
+.lv-pub .wm svg { width:100%; height:auto; display:block; }
 .lv-pub .wm i { font-style:normal; color:#0000ff; }
 .lv-pub h1 { font-size:40px; font-weight:700; letter-spacing:-.022em; line-height:1.08; margin:0 0 12px; }
 .lv-pub p { font-size:15px; line-height:1.55; color:#666; margin:0; }
@@ -1276,8 +1277,26 @@ def _sv_font_css_safe() -> str:
 
 
 def _lv_public_note(title: str, text: str) -> None:
-    st.markdown(_lv_public_css() + f'<div class="lv-pub"><div class="wm">LIGHT<i>HOUSE</i></div>'
+    st.markdown(_lv_public_css() + f'<div class="lv-pub"><div class="wm">{_lh_wordmark() or "LIGHT<i>HOUSE</i>"}</div>'
                 f'<h1>{e(title)}</h1><p>{e(text)}</p></div>', unsafe_allow_html=True)
+
+
+def _lh_wordmark() -> str:
+    """The LIGHTHOUSE wordmark of the internal area (assets/lighthouse.svg),
+    cropped to the letters, for the live session's pages and its leave-behind.
+    No ids inside, so two copies on one page cannot clash. Up here: the public
+    pages run before the rest of the file has been read."""
+    try:
+        svg = open("assets/lighthouse.svg", encoding="utf-8").read()
+    except Exception:
+        return ""
+    svg = re.sub(r"<\?xml.*?\?>", "", svg, flags=re.S)
+    svg = re.sub(r'\s(width|height)="[^"]*"', "", svg, count=2)
+    svg = svg.replace('viewBox="0 0 757 68"', 'viewBox="79 0 664 68"')
+    svg = re.sub(r'\sclip-path="url\(#[^)]+\)"', "", svg)
+    svg = re.sub(r"<defs>.*?</defs>", "", svg, flags=re.S)
+    svg = svg.replace("<svg ", '<svg role="img" aria-label="Lighthouse" ', 1)
+    return re.sub(r">\s+<", "><", svg).strip()
 
 
 def _lv_slug(name) -> str:
@@ -1330,12 +1349,12 @@ def _lv_public_leave() -> None:
         return
     st.markdown(_lv_public_css(), unsafe_allow_html=True)
     doc = rec.get("doc") or {}
-    st.markdown('<div class="lv-leave">' + _lc.leave_html(doc, standalone=False) + "</div>",
+    st.markdown('<div class="lv-leave">' + _lc.leave_html(doc, standalone=False, logo=_lh_wordmark()) + "</div>",
                 unsafe_allow_html=True)
     _l, _m, _r = st.columns([1, 2, 1])
     with _m, st.container(key="lv_pdf_box"):
         st.download_button("⬇  Export as PDF", data=_lc.leave_html(doc, font_css=_sv_font_css_safe(),
-                                                                    print_on_open=True),
+                                                                    print_on_open=True, logo=_lh_wordmark()),
                            file_name=f"lighthouse-{_lv_slug(doc.get('client'))}-"
                                      f"{'final-report' if doc.get('full') else 'leave-behind'}.html",
                            mime="text/html", use_container_width=True, key="lv_leave_pdf",
@@ -15155,7 +15174,7 @@ def _lv_state(sess: dict) -> dict:
         doc = _lv_report(sess)
         name = _lv_slug(doc.get("client"))
         # On screen: the leave-behind; the session in full only when asked.
-        leave = {"html": _lc.leave_html(doc, standalone=False, with_full=False),
+        leave = {"html": _lc.leave_html(doc, standalone=False, with_full=False, logo=_lh_wordmark()),
                  "fname": f"lighthouse-{name}-final-report.html", "txt_fname": f"lighthouse-{name}-transcript.txt",
                  "opts": _lc.report_opts(sess), "counts": _lc.report_counts(doc)}
 
@@ -15167,7 +15186,8 @@ def _lv_state(sess: dict) -> dict:
             return 0
         n = once("pdf")
         if n:
-            leave.update(file=_lc.leave_html(doc, font_css=_sv_font_css(), print_on_open=True), pdf_n=n)
+            leave.update(file=_lc.leave_html(doc, font_css=_sv_font_css(), print_on_open=True, logo=_lh_wordmark()),
+                         pdf_n=n)
         n = once("full")
         if n:
             leave.update(full_html=_lc.full_html(doc), full_n=n)
@@ -15314,11 +15334,19 @@ def _lv_css() -> str:
 [class*="st-key-lv_opt_"] label[data-baseweb="checkbox"]:has(input:checked) > span:first-child {{
   background-color:#0000ff !important; border-color:#0000ff !important; }}
 [class*="st-key-lv_opt_"] label p {{ font-family:{s}; font-size:14px; font-weight:700; color:#000; }}
+/* the live session's header: the internal area's wordmark, then where you are */
+.lv-brand {{ display:flex; align-items:center; gap:14px; }}
+.lv-brand svg {{ width:170px; height:auto; display:block; }}
+.lv-brand span {{ font-family:{s}; font-size:11px; letter-spacing:.16em; text-transform:uppercase; font-weight:700;
+  color:#0000ff; border-left:1.5px solid #000; padding-left:14px; }}
 </style>"""
 
 
 def _lv_top(back_label: str = "", back_params: Optional[dict] = None) -> None:
-    st.markdown(f'<div class="rm-top"><div class="rm-eyebrow">The Lighthouse · Live session</div>'
+    _wm = _lh_wordmark()
+    _brand = (f'<div class="lv-brand">{_wm}<span>Live session</span></div>' if _wm
+              else '<div class="rm-eyebrow">The Lighthouse · Live session</div>')
+    st.markdown(f'<div class="rm-top">{_brand}'
                 f'<a class="rm-back" href="{_public_url("")}" target="_blank" rel="noopener">'
                 f'The Lighthouse ↗</a></div>', unsafe_allow_html=True)
     if back_label and st.button(back_label, key="lv_back"):
@@ -15540,7 +15568,8 @@ def _lv_report_panel(sess: dict) -> None:
     a, b, c3 = st.columns(3)
     with a:
         st.download_button("⬇  The final report (PDF)", key=f"lv_rep_pdf_{sid}", use_container_width=True,
-                           data=_lc.leave_html(doc, font_css=_sv_font_css_safe(), print_on_open=True),
+                           data=_lc.leave_html(doc, font_css=_sv_font_css_safe(), print_on_open=True,
+                                               logo=_lh_wordmark()),
                            file_name=f"lighthouse-{slug}-final-report.html", mime="text/html",
                            help="Open it and choose Print → Save as PDF (the print dialog opens by itself).")
     with b:
