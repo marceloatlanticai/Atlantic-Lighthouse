@@ -14673,6 +14673,55 @@ def _lv_sessions_for(fid: str) -> list:
     return [r for r in recs if r.get("kind") == "live" and r.get("client_id") == fid]
 
 
+def _lv_client_footprint(c: dict) -> dict:
+    """Everything that hangs on a client, counted before anyone is asked to
+    delete it: its live sessions, its session-room sessions, and the board
+    items filed in its folder (those are NOT deleted — they only keep the
+    folder alive)."""
+    fid = c.get("folder_id") or ""
+    lives = [r for r in _db.load_records(_LV_TOPIC, limit=1000, id_prefix=f"live:{fid}:")
+             if r.get("client_id") == fid and r.get("id")]
+    rooms = [r for r in _db.load_records(_RM_SESSION_TOPIC, limit=1000, id_prefix=f"session:{fid}:")
+             if r.get("client_id") == fid and r.get("id")]
+    return {"lives": lives, "rooms": rooms, "items": _rm_client_items(c, _rm_all_items())}
+
+
+def _lv_delete_client(c: dict, user: str) -> str:
+    """Delete a client and what the live sessions made for it. "" when done,
+    otherwise what went wrong.
+
+    Goes: each live session's public links (the client's questions and the
+    leave-behind — the pages a stranger could still open), the sessions
+    themselves, the session room's sessions, the project folder when nothing
+    is filed in it, and the client's profile LAST — so a failure half-way
+    leaves the client on the list, where deleting can simply be tried again.
+    Briefs in the Archive and board items stay where they are."""
+    fid = c.get("folder_id") or ""
+    if not fid:
+        return "This client has no id, so nothing was deleted."
+    try:
+        fp = _lv_client_footprint(c)
+        for s in fp["lives"]:
+            for tok, rid_of in ((s.get("intake_token"), _lc.intake_record_id),
+                                ((s.get("leave") or {}).get("token"), _lc.leave_record_id)):
+                if _lc.valid_token(str(tok or "")):
+                    _db.delete_record(rid_of(tok))
+            _db.delete_record(s["id"])
+        for s in fp["rooms"]:
+            _db.delete_record(s["id"])
+        if not fp["items"]:
+            delete_project_folder(fid)
+        _db.delete_record(_sc.client_record_id(fid))
+    except Exception as exc:
+        print(f"[live] deleting client {fid}: {exc}")
+        return "Could not finish deleting: the database did not answer. Try again."
+    if _db.load_record(_sc.client_record_id(fid)):
+        return "Could not delete the client: the database did not answer. Try again."
+    print(f"[live] client {fid} ({c.get('name')!r}) deleted by {user}: "
+          f"{len(fp['lives'])} live session(s), {len(fp['rooms'])} room session(s)")
+    return ""
+
+
 def _lv_open(sid: str) -> Optional[dict]:
     """The session in this browser, or loaded from the database."""
     cur = st.session_state.get("lv_sess")
@@ -15456,6 +15505,28 @@ def _lv_css() -> str:
 .lv-brand span {{ font-family:{s}; font-size:11px; letter-spacing:.16em; text-transform:uppercase; font-weight:700;
   color:#0000ff; border-left:1.5px solid #000; padding-left:14px; }}
 .lv-links {{ display:flex; gap:20px; align-items:baseline; flex-wrap:wrap; justify-content:flex-end; }}
+/* deleting a client: a quiet way in at the foot of the page, then a red-ruled warning */
+.st-key-lv_del {{ margin-top:60px; border-top:1.5px solid #000; padding-top:12px; }}
+.block-container .st-key-lv_del_open button[kind="secondary"] {{ background:none !important; border:none !important;
+  padding:2px 0 !important; min-height:0 !important; box-shadow:none !important; }}
+.block-container .st-key-lv_del_open button[kind="secondary"] p {{ font-size:12px !important; color:#666 !important;
+  -webkit-text-fill-color:#666 !important; text-decoration:underline; }}
+.block-container .st-key-lv_del_open button[kind="secondary"]:hover p {{ color:#ed0005 !important;
+  -webkit-text-fill-color:#ed0005 !important; }}
+.lv-del {{ font-family:{s}; border-left:3px solid #ff383c; padding:4px 0 4px 16px; margin:4px 0 14px; max-width:720px; }}
+.lv-del .h {{ font-size:22px; font-weight:700; letter-spacing:-.01em; line-height:1.2; color:#000; margin-bottom:8px; }}
+.lv-del p {{ font-size:14px; line-height:1.55; color:#222; margin:0; }}
+.lv-del b {{ color:#000; }}
+.block-container .st-key-lv_del_go [data-testid="stFormSubmitButton"] > button {{ background:#ffffff !important;
+  border:1.5px solid #ff383c !important; color:#ed0005 !important; border-radius:10.5px !important; width:100%; }}
+.block-container .st-key-lv_del_go [data-testid="stFormSubmitButton"] > button p {{ color:#ed0005 !important;
+  -webkit-text-fill-color:#ed0005 !important; }}
+.block-container .st-key-lv_del_go [data-testid="stFormSubmitButton"] > button:hover {{ background:#ff383c !important;
+  border-color:#ff383c !important; }}
+.block-container .st-key-lv_del_go [data-testid="stFormSubmitButton"] > button:hover p {{ color:#ffffff !important;
+  -webkit-text-fill-color:#ffffff !important; }}
+.block-container .st-key-lv_del_no [data-testid="stFormSubmitButton"] > button {{ width:100%; }}
+.lv-flash {{ font-family:{s}; font-size:13px; font-weight:700; color:#0000ff; margin:-8px 0 18px; }}
 </style>"""
 
 
@@ -15498,6 +15569,8 @@ def _lv_home(user: str) -> None:
     """Who are we meeting — then that client's live sessions."""
     clients = _rm_load_clients()
     by_id = {c["folder_id"]: c for c in clients}
+    flash = st.session_state.pop("lv_flash", None)
+    flash_html = f'<div class="lv-flash">✓ {e(flash)}</div>' if flash else ""
     pick = str(st.query_params.get("client", "") or "")
     if pick and pick != "__new__" and pick not in by_id:
         pick = ""
@@ -15510,6 +15583,8 @@ def _lv_home(user: str) -> None:
                     'questions before; Lighthouse digs four parts; the room keeps what is true, and '
                     'Lighthouse listens for what the room keeps coming back to. Choose the client.</div>',
                     unsafe_allow_html=True)
+        if flash_html:
+            st.markdown(flash_html, unsafe_allow_html=True)
         cards = [("__new__", None)] + [(c["folder_id"], c) for c in clients]
         for r0 in range(0, len(cards), 3):
             cols = st.columns(3, gap="medium")
@@ -15539,7 +15614,7 @@ def _lv_home(user: str) -> None:
         st.markdown('<div class="rm-title">New client</div>'
                     '<div class="rm-stand">What Lighthouse needs to know to dig: the brand, the '
                     'category and the market. Everything else can come from the client\'s own '
-                    'answers.</div>', unsafe_allow_html=True)
+                    'answers.</div>' + flash_html, unsafe_allow_html=True)
         prof = _rm_client_form(None, user, "lv_new_client")
         if prof:
             st.query_params["client"] = prof["folder_id"]
@@ -15580,6 +15655,68 @@ def _lv_home(user: str) -> None:
                     del st.query_params["client"]
                 st.session_state.pop("lv_sess", None)
                 st.rerun()
+    _lv_delete_panel(c, user)
+
+
+def _lv_delete_panel(c: dict, user: str) -> None:
+    """The client page's last line: delete the client, in two deliberate steps —
+    open the panel, then type the client's name. Nothing is counted (no
+    transcripts downloaded) until the panel is opened."""
+    fid, name = c["folder_id"], (c["name"] or c["brand"] or "this client")
+    flag = f"lv_del_{fid}"
+    with st.container(key="lv_del"):
+        if not st.session_state.get(flag):
+            if st.button("Delete this client…", key="lv_del_open"):
+                st.session_state[flag] = True
+                st.rerun()
+            return
+        try:
+            fp = _lv_client_footprint(c)
+        except Exception as exc:
+            print(f"[live] footprint of {fid}: {exc}")
+            fp = None
+        if fp is None:
+            st.markdown('<div class="rm-warn">Could not read what this client holds: the database did not '
+                        'answer. Reload the page and try again.</div>', unsafe_allow_html=True)
+            return
+        n, nr, ni = len(fp["lives"]), len(fp["rooms"]), len(fp["items"])
+        what = [f"{n} live session{'' if n == 1 else 's'}" + (" (their answers, transcripts and reports)" if n else "")]
+        if nr:
+            what.append(f"{nr} session-room session{'' if nr == 1 else 's'}")
+        keep = (f"The {ni} board item{' stays' if ni == 1 else 's stay'} in Projects, and so does the folder. "
+                if ni else "Its empty folder in Projects goes too. ")
+        body = (f"This removes the client with {' and '.join(what)}."
+                + (" The client's links stop working. " if n else " ") if (n or nr)
+                else "This removes the client. It has no sessions yet. ")
+        st.markdown(f'<div class="lv-del"><div class="h">Delete {e(name)}?</div>'
+                    f'<p>{e(body)}{e(keep)}Briefs in the Archive stay. <b>It cannot be undone.</b></p></div>',
+                    unsafe_allow_html=True)
+        with st.form(f"lv_del_form_{fid}", border=False):
+            field, _sp0 = st.columns([2.2, 3])
+            typed = field.text_input(f"To confirm, type {name}", key=f"lv_del_name_{fid}", placeholder=name)
+            a, b2, _sp = st.columns([1.3, 0.9, 3])
+            with a, st.container(key="lv_del_go"):
+                go = st.form_submit_button("✕ Delete for good", use_container_width=True)
+            with b2, st.container(key="lv_del_no"):
+                stop = st.form_submit_button("Cancel", use_container_width=True)
+        if stop:
+            st.session_state.pop(flag, None)
+            st.rerun()
+        if go:
+            if typed.strip().lower() != name.strip().lower():
+                st.markdown(f'<div class="rm-warn">Type <b>{e(name)}</b> exactly as it is written to '
+                            f'confirm. Nothing was deleted.</div>', unsafe_allow_html=True)
+                return
+            why = _lv_delete_client(c, user)
+            if why:
+                st.markdown(f'<div class="rm-warn">{e(why)}</div>', unsafe_allow_html=True)
+                return
+            st.session_state.pop(flag, None)
+            st.session_state.pop("lv_sess", None)
+            st.session_state["lv_flash"] = f"{name} was deleted."
+            if "client" in st.query_params:
+                del st.query_params["client"]
+            st.rerun()
 
 
 def _lv_cur_card(sess: dict, i: int, c: dict) -> None:
