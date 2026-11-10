@@ -15251,6 +15251,13 @@ def _lv_collect(sess: dict) -> bool:
     return changed
 
 
+def _lc_has(*names) -> bool:
+    """live_core on the server has these. app.py and live_core.py are uploaded
+    one at a time, so for a while a newer app.py can run next to an older
+    live_core.py: what needs the new functions waits, the rest works."""
+    return _lc is not None and all(hasattr(_lc, n) for n in names)
+
+
 def _lv_ensure_tide(sess: dict) -> None:
     """The Tideline of the dig's brief, worked out once and kept with the
     session: every brief this brand has had on this subject, one column per
@@ -15336,6 +15343,10 @@ def _lv_board_block(sess: dict, c: dict) -> None:
     the four parts. Nothing goes in by itself — the team picks each item and the
     part it belongs to, the same rule as the dig: nothing reaches the screen
     that the team has not looked at."""
+    if not _lc_has("board_placed", "add_board_item"):
+        st.markdown('<div class="lv-note">From the board needs the newer <b>live_core.py</b> on the server: '
+                    'upload it with app.py.</div>', unsafe_allow_html=True)
+        return
     brand = str((sess.get("setup") or {}).get("brand") or c.get("name") or c.get("brand") or "this client")
     items = _lv_board_items(sess, c)
     st.markdown('<div class="lv-part lv-brdh"><div><div class="k">From the board</div>'
@@ -15506,7 +15517,7 @@ def _lv_state(sess: dict) -> dict:
                          client_meta=" · ".join(x for x in (stp.get("category"), stp.get("product"),
                                                              stp.get("market")) if x))
     st_["saved_ok"] = not sess.get("_save_failed")
-    st_["tide"] = _lc.tide_view((sess.get("dig") or {}).get("tide"))
+    st_["tide"] = _lc.tide_view((sess.get("dig") or {}).get("tide")) if _lc_has("tide_view") else {}
     st_["intro"]["pending"] = sorted(_rm_intro_pending(sess))
     # Tap mode: who was tapped last is shown as speaking.
     st_["tap_who"] = ((_sc._tap_index(sess)[1] or [""])[-1]) if sess.get("voice_mode") == "tap" else ""
@@ -15573,8 +15584,10 @@ def _lv_run_screen(sess: dict) -> None:
                  "next to app.py. Upload it to the repository; nothing else is affected.")
         return
     _lv_answers(sess, fresh=True)
-    _lv_ensure_tide(sess)
     _lv_run_frag()
+    # After the first paint: the next tick of the screen carries the map.
+    if _lc_has("tide_view"):
+        _lv_ensure_tide(sess)
 
 
 def _lv_css() -> str:
@@ -16169,12 +16182,11 @@ def _lv_prep(sess: dict, user: str) -> None:
                 st.rerun()
         if SCAN_PAUSED:
             st.caption("Scanning is paused — " + SCAN_PAUSED_MSG)
-    if d.get("status") == "done" and not running:
-        _lv_ensure_tide(sess)
-        _tv = _lc.tide_view((sess.get("dig") or {}).get("tide"))
-        if _tv:
-            st.markdown(_lv_tide_html(_tv, str(stp.get("brand") or c.get("brand") or c.get("name") or "")),
-                        unsafe_allow_html=True)
+    # What is moving: its place is kept here, and it is filled at the END of
+    # the page — the first time, it reads every brief of the brand and asks the
+    # model which currents are the same, and the rest of the page (the parts,
+    # the room, the report) should not wait for that.
+    tide_slot = st.empty() if (d.get("status") == "done" and not running and _lc_has("tide_view")) else None
     for i, part in enumerate(_lc.SECTIONS):
         sec = sess["sections"][i]
         cur = _lc.all_currents(sess, i, include_cut=True)
@@ -16262,6 +16274,12 @@ def _lv_prep(sess: dict, user: str) -> None:
                     del st.query_params[k]
             st.query_params["client"] = sess.get("client_id", "")
             st.rerun()
+    if tide_slot is not None:
+        _lv_ensure_tide(sess)
+        _tv = _lc.tide_view((sess.get("dig") or {}).get("tide"))
+        if _tv:
+            tide_slot.markdown(_lv_tide_html(_tv, str(stp.get("brand") or c.get("brand") or c.get("name") or "")),
+                               unsafe_allow_html=True)
     if sess.get("_dirty"):
         _lv_save(sess)
 
