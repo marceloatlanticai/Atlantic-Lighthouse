@@ -662,6 +662,106 @@ def cut(sess: dict, cid: str, on: bool = True) -> bool:
     return True
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# What is moving: the Tideline, read as coming in / holding / going out
+# ══════════════════════════════════════════════════════════════════════════════
+# The app lays every current this brand has had on this subject on a time axis
+# (app._sv_tideline: one column per day a brief was made, the dig's own brief
+# the last). This reads that axis the way a room does. Nothing is predicted:
+# every dot is a brief that exists, and "going out" only means a current that
+# was there before is not in the latest reading.
+TIDE_PER = 5                     # per column on the screen; the rest are counted
+
+
+def tide_view(tl, per: int = TIDE_PER) -> dict:
+    """{"days", "n", "in", "hold", "out", "counts", "related"} from a Tideline;
+    {"first": True, "days"} on a brand's first day on the subject; {} when
+    there is nothing to read. Each item: {"t", "cells", "meta"}."""
+    tl = tl if isinstance(tl, dict) else {}
+    days = [clip(d, 12) for d in (tl.get("days") or [])][:12]
+    n = len(days)
+    runs = [r for r in (tl.get("runs") or []) if isinstance(r, dict) and clip(r.get("title"), TITLE_MAX)]
+    if n < 2 or not runs:
+        return {"first": True, "days": days} if tl.get("first") else {}
+    last = n - 1
+    # The same headline is the same current, whatever the grouping said: rows
+    # with one wording are joined, their readings added up.
+    merged: dict = {}
+    for r in runs:
+        raw = list(r.get("cells") or [])[:n]
+        cells = [bool(x) for x in raw] + [False] * (n - len(raw))
+        key = re.sub(r"[^a-z0-9]+", "", clip(r.get("title"), TITLE_MAX).lower())
+        if key in merged:
+            merged[key]["cells"] = [a or b for a, b in zip(merged[key]["cells"], cells)]
+        else:
+            merged[key] = {"t": clip(r.get("title"), TITLE_MAX), "cells": cells}
+    cin, hold, out = [], [], []
+    for m in merged.values():
+        cells = m["cells"]
+        on = [i for i, x in enumerate(cells) if x]
+        if not on:
+            continue
+        f, l, hits = on[0], on[-1], len(on)
+        item = {"t": m["t"], "cells": cells}
+        if l == last and f == last:
+            item["meta"] = f"First seen {days[last]}"
+            cin.append(item)
+        elif l == last:
+            back = not cells[last - 1]
+            item["meta"] = (f"Back · first seen {days[f]}" if back else f"Since {days[f]}") + f" · {hits} of {n} readings"
+            hold.append((-(l - f), -hits, item))
+        else:
+            item["meta"] = f"Last seen {days[l]}" + (f" · in {hits} readings" if hits > 1 else "")
+            out.append((-l, -hits, item))
+    # Holding: the longest runs first. Going out: the most recent to stop first.
+    hold = [x[2] for x in sorted(hold, key=lambda x: (x[0], x[1]))]
+    out = [x[2] for x in sorted(out, key=lambda x: (x[0], x[1]))]
+    if not (cin or hold or out):
+        return {}
+    return {"days": days, "n": n, "in": cin[:per], "hold": hold[:per], "out": out[:per],
+            "counts": {"in": len(cin), "hold": len(hold), "out": len(out)},
+            "related": [clip(x, 80) for x in (tl.get("related") or [])][:6]}
+
+
+def board_ev(lines, url: str = "") -> list:
+    """A board item's sources ("Reddit · title · https://…", one per line, as
+    db.pack_evidence writes them) as a current's evidence."""
+    ev = []
+    for ln in list(lines or [])[:8]:
+        bits = [b.strip() for b in str(ln).split(" · ") if b.strip()]
+        link = bits.pop() if bits and bits[-1].startswith(("http://", "https://")) else ""
+        src = bits[0] if len(bits) >= 2 else "Board"
+        ti = " · ".join(bits[1:]) if len(bits) >= 2 else (bits[0] if bits else link)
+        if ti or link:
+            ev.append({"ti": clip(plain(ti), 140), "url": link[:500], "src": clip(src, 30), "d": "", "k": "post"})
+    u = str(url or "")
+    if u.startswith(("http://", "https://")) and not any(x["url"] == u for x in ev):
+        ev.insert(0, {"ti": clip(u, 140), "url": u[:500], "src": "Board", "d": "", "k": "post"})
+    return ev[:8]
+
+
+def add_board_item(sess: dict, sec: int, item: dict, summary: str = "", lines=None,
+                   now: Optional[str] = None) -> str:
+    """A board item the team chose for one part: in as the team's current, with
+    its sources as evidence, remembered by the item's id so it is offered once."""
+    bid = str((item or {}).get("id") or "")
+    if not bid or board_placed(sess, bid) >= 0:
+        return ""
+    cid = add_current(sess, sec, (item or {}).get("title", ""), "team", body=summary,
+                      ev=board_ev(lines, (item or {}).get("url", "")), keep=False, now=now)
+    if cid:
+        find_current(sess, cid)[1]["board"] = bid
+    return cid
+
+
+def board_placed(sess: dict, bid: str) -> int:
+    """The part a board item went into, or -1."""
+    for i, s in enumerate(sess.get("sections") or []):
+        if any(c.get("board") == bid for c in s.get("currents") or []):
+            return i
+    return -1
+
+
 def selects(sess: dict) -> list:
     out = []
     for i, s in enumerate(sess.get("sections") or []):

@@ -7645,6 +7645,12 @@ def _sv_group_currents(titles: tuple, category: str, summaries: tuple = ()) -> l
             seen.update(grp)
             if grp:
                 out.append(grp)
+        if not out:
+            # An answer with no groups in it is not "every current stands alone":
+            # it is no answer. Back to the lexical matcher, as for a failed call —
+            # otherwise the same headline on three days becomes three rows.
+            print("[tideline] grouping came back empty, falling back to token overlap")
+            return []
         # Anything the model forgot becomes its own row rather than vanishing:
         # a missing current is a hole in the timeline, a singleton is only a
         # missed merge.
@@ -7674,7 +7680,7 @@ def _sv_same_subject(cat_a: str, prod_a: str, cat_b: str, prod_b: str) -> bool:
 
 
 def _sv_tideline(active: str, trends: list, category: str = "", product: str = "",
-                 current_saved_at: str = "") -> dict:
+                 current_saved_at: str = "", limit: int = 10) -> dict:
     """Every current this search has produced, laid out on a time axis.
 
     WHY THIS IS THE ONE WORTH BUILDING. A brief answers "what is happening".
@@ -7840,7 +7846,7 @@ def _sv_tideline(active: str, trends: list, category: str = "", product: str = "
                 near.append({"a": r1["title"][:44], "b": r2["title"][:44],
                              "score": round(score, 2), "shared": sorted(sh)[:5]})
     near.sort(key=lambda n: -n["score"])
-    return {"related": _related[:6], "days": [_sv_pretty_day(d) for d in days], "runs": out[:10],
+    return {"related": _related[:6], "days": [_sv_pretty_day(d) for d in days], "runs": out[:max(1, int(limit))],
             "near": near[:6], "by": "model" if _groups else "tokens",
             "grouped": [r.get("members") for r in runs
                         if len(r.get("members") or []) > 1][:8]}
@@ -15222,6 +15228,7 @@ def _lv_collect(sess: dict) -> bool:
         elif kind == "dig":
             _LV_PROGRESS.pop(j.get("id", ""), None)
             d = sess.setdefault("dig", {})
+            d.pop("tide", None)          # a new brief: its Tideline is worked out again
             if ok and any(r.get("parts") or []):
                 _lc.apply_dig(sess, r["parts"], report_id=r.get("report_id", ""), now=_lv_now())
                 d.update(status="done", at=_lv_now(), err="", n=r.get("n", 0),
@@ -15242,6 +15249,132 @@ def _lv_collect(sess: dict) -> bool:
                 sess["sections"][i]["status"] = "done" if sess["sections"][i].get("currents") else "todo"
                 sess["sections"][i]["err"] = "Nothing new came back for this part — try again."
     return changed
+
+
+def _lv_ensure_tide(sess: dict) -> None:
+    """The Tideline of the dig's brief, worked out once and kept with the
+    session: every brief this brand has had on this subject, one column per
+    day, the dig's own the last (the same axis as the brief's section 09).
+    Script thread only — the grouping call is cached by Streamlit. Nothing is
+    kept when the brief cannot be read, so the next page tries again."""
+    d = sess.get("dig") or {}
+    if d.get("status") != "done" or "tide" in d or not d.get("report_id"):
+        return
+    one = _sv_load_brief_by_id(d["report_id"])
+    if not one:
+        return
+    res = one.get("result") or {}
+    meta = res.get("_meta") or {}
+    stp = sess.get("setup") or {}
+    try:
+        tl = _sv_tideline(str(stp.get("brand") or sess.get("client_name") or ""), res.get("trends") or [],
+                          str(meta.get("category") or stp.get("category") or ""),
+                          str(meta.get("product") or stp.get("product") or ""),
+                          current_saved_at=one.get("saved_at", ""), limit=40) or {}
+    except Exception as exc:
+        print(f"[live] tideline: {exc}")
+        tl = {}
+    d["tide"] = {k: tl[k] for k in ("days", "runs", "first", "related") if k in tl}
+    _lv_save(sess, force=True)
+
+
+def _lv_tide_html(tv: dict, brand: str) -> str:
+    """The prep page's 'What is moving': the same three columns the room sees."""
+    if tv.get("first"):
+        return ('<div class="lv-note">The Tideline starts on the second day: this is the first reading of '
+                f'{e(brand)} on this subject. Dig again another day, or run a brief in the Overview, and '
+                'every current gets its time axis — what is coming in, what is holding, what is going out.</div>')
+    if not tv.get("n"):
+        return ""
+
+    def col(key, label, sub):
+        items, n_all = tv.get(key) or [], int((tv.get("counts") or {}).get(key) or 0)
+        rows = "".join(
+            f'<div class="it"><div class="t">{e(x["t"])}</div><div class="dots">'
+            + "".join(f'<i class="{"on" if c else ""}"></i>' for c in x.get("cells") or [])
+            + f'</div><div class="m">{e(x.get("meta", ""))}</div></div>' for x in items)
+        more = n_all - len(items)
+        return (f'<div class="col"><div class="ch">{label} <b>{n_all}</b></div><div class="cs">{sub}</div>'
+                + (rows or '<div class="none">Nothing here this time.</div>')
+                + (f'<div class="more">+ {more} more</div>' if more > 0 else "") + "</div>")
+    days = tv.get("days") or []
+    rel = tv.get("related") or []
+    return ('<div class="lv-tide"><div class="hd"><span class="k">What is moving</span>'
+            f'<span class="sm">The Tideline · {len(days)} readings, {e(days[0])} to {e(days[-1])}</span></div>'
+            '<div class="cols">' + col("in", "Coming in", "New in this dig")
+            + col("hold", "Holding", "Seen before, still here") + col("out", "Going out", "Seen before, gone now")
+            + '</div><div class="ft">A reading is a day Lighthouse searched ' + e(brand) + ' on this subject; a dot is '
+            'a reading where the current appeared. The room sees this on the opening screen.'
+            + (f' Includes related searches: {e(" · ".join(rel))}.' if len(rel) > 1 else "") + "</div></div>")
+
+
+_LV_BOARD_SHOW = 12
+
+
+def _lv_board_items(sess: dict, c: dict) -> list:
+    """What the team saved on the board for this client, newest first: items
+    filed in its folder in Projects, and items saved from a brief of this brand
+    (the board files each one with the search it came from — brand · category ·
+    product — so the first part of that is the brand)."""
+    fid = str(c.get("folder_id") or sess.get("client_id") or "")
+    key = re.sub(r"[^a-z0-9]", "", str((sess.get("setup") or {}).get("brand") or c.get("brand")
+                                       or c.get("name") or "").lower())
+    out = []
+    for it in _rm_all_items():
+        if not str(it.get("title") or "").strip() or not it.get("id"):
+            continue
+        mine = bool(fid) and fid in (it.get("folder_ids") or [])
+        if not mine and key:
+            mine = re.sub(r"[^a-z0-9]", "", str(it.get("category") or "").split(" · ")[0].lower()) == key
+        if mine:
+            out.append(it)
+    return out
+
+
+def _lv_board_block(sess: dict, c: dict) -> None:
+    """From the board: what the team already saved for this client, offered to
+    the four parts. Nothing goes in by itself — the team picks each item and the
+    part it belongs to, the same rule as the dig: nothing reaches the screen
+    that the team has not looked at."""
+    brand = str((sess.get("setup") or {}).get("brand") or c.get("name") or c.get("brand") or "this client")
+    items = _lv_board_items(sess, c)
+    st.markdown('<div class="lv-part lv-brdh"><div><div class="k">From the board</div>'
+                f'<div class="h">What the team saved for {e(brand)}</div></div>'
+                f'<div class="n">{len(items)} item{"" if len(items) == 1 else "s"}</div></div>',
+                unsafe_allow_html=True)
+    if not items:
+        st.markdown(f'<div class="lv-note">Nothing on the board for {e(brand)} yet. Items saved from a {e(brand)} '
+                    f'brief, or filed in its folder in Projects, show up here, ready to add to a part with '
+                    f'their sources.</div>', unsafe_allow_html=True)
+        return
+    st.markdown('<div class="lv-note">Add the ones that belong in the room: each goes into the part you choose '
+                'as the team\'s current, with its sources as evidence.</div>', unsafe_allow_html=True)
+    keys = [p_["key"] for p_ in _lc.SECTIONS]
+    for it in items[:_LV_BOARD_SHOW]:
+        summary, lines = _db.unpack_evidence(it.get("content") or "")
+        bid = str(it["id"])
+        placed = _lc.board_placed(sess, bid)
+        kind = str(it.get("type") or "Item").split(" · ")[0].strip().capitalize() or "Item"
+        n_src = len([l for l in lines if l.strip()]) + (1 if str(it.get("url") or "").startswith("http") and not lines else 0)
+        a, b = st.columns([5.2, 1.5], vertical_alignment="center")
+        with a:
+            st.markdown(f'<div class="lv-brd"><span class="ty">{e(kind)}</span><b>{e(_lc.clip(it.get("title"), 140))}</b>'
+                        f'<span class="m">Saved {e(str(it.get("saved_at") or "").split(" · ")[0])}'
+                        f'{" · " + str(n_src) + (" source" if n_src == 1 else " sources") if n_src else " · no source"}'
+                        f'</span></div>', unsafe_allow_html=True)
+        with b:
+            if placed >= 0:
+                st.markdown(f'<div class="lv-brd-in">✓ In {e(keys[placed])}</div>', unsafe_allow_html=True)
+            else:
+                with st.popover("Add to ▾", use_container_width=True):
+                    for i, k in enumerate(keys):
+                        if st.button(f"{i + 1} · {k}", key=f"lv_brd_{bid}_{i}", use_container_width=True):
+                            if _lc.add_board_item(sess, i, it, summary=summary.strip(), lines=lines, now=_lv_now()):
+                                _lv_save(sess, force=True)
+                            st.rerun()
+    if len(items) > _LV_BOARD_SHOW:
+        st.markdown(f'<div class="lv-note">+ {len(items) - _LV_BOARD_SHOW} older items on the board.</div>',
+                    unsafe_allow_html=True)
 
 
 def _lv_report(sess: dict, fresh: bool = False) -> dict:
@@ -15373,6 +15506,7 @@ def _lv_state(sess: dict) -> dict:
                          client_meta=" · ".join(x for x in (stp.get("category"), stp.get("product"),
                                                              stp.get("market")) if x))
     st_["saved_ok"] = not sess.get("_save_failed")
+    st_["tide"] = _lc.tide_view((sess.get("dig") or {}).get("tide"))
     st_["intro"]["pending"] = sorted(_rm_intro_pending(sess))
     # Tap mode: who was tapped last is shown as speaking.
     st_["tap_who"] = ((_sc._tap_index(sess)[1] or [""])[-1]) if sess.get("voice_mode") == "tap" else ""
@@ -15439,6 +15573,7 @@ def _lv_run_screen(sess: dict) -> None:
                  "next to app.py. Upload it to the repository; nothing else is affected.")
         return
     _lv_answers(sess, fresh=True)
+    _lv_ensure_tide(sess)
     _lv_run_frag()
 
 
@@ -15505,6 +15640,33 @@ def _lv_css() -> str:
 .lv-brand span {{ font-family:{s}; font-size:11px; letter-spacing:.16em; text-transform:uppercase; font-weight:700;
   color:#0000ff; border-left:1.5px solid #000; padding-left:14px; }}
 .lv-links {{ display:flex; gap:20px; align-items:baseline; flex-wrap:wrap; justify-content:flex-end; }}
+/* What is moving — the Tideline read as three columns */
+.lv-tide {{ font-family:{s}; border:1.5px solid #000; padding:16px 20px 14px; margin:16px 0 26px; }}
+.lv-tide .hd {{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:12px; }}
+.lv-tide .k {{ font-size:11px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:#0000ff; }}
+.lv-tide .sm {{ font-size:12px; color:#666; }}
+.lv-tide .cols {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }}
+.lv-tide .col {{ border-top:1.5px solid #000; padding-top:9px; }}
+.lv-tide .ch {{ font-size:10.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:#0000ff; }}
+.lv-tide .ch b {{ color:#000; margin-left:3px; }}
+.lv-tide .cs {{ font-size:11.5px; color:#666; margin:2px 0 6px; }}
+.lv-tide .it {{ padding:8px 0; border-top:1px solid #eee; }}
+.lv-tide .t {{ font-size:13.5px; font-weight:700; line-height:1.3; color:#000; }}
+.lv-tide .dots {{ display:flex; gap:4px; margin:5px 0 3px; }}
+.lv-tide .dots i {{ width:8px; height:8px; border-radius:50%; border:1.5px solid #0000ff; box-sizing:border-box; }}
+.lv-tide .dots i.on {{ background:#0000ff; }}
+.lv-tide .m {{ font-size:11px; color:#666; }}
+.lv-tide .none {{ font-size:12px; color:#666; padding:8px 0; border-top:1px solid #eee; }}
+.lv-tide .more {{ font-size:11px; font-weight:700; color:#666; margin-top:4px; }}
+.lv-tide .ft {{ font-size:11.5px; line-height:1.5; color:#666; margin-top:12px; }}
+@media (max-width:820px) {{ .lv-tide .cols {{ grid-template-columns:1fr; }} }}
+/* From the board */
+.lv-brdh {{ margin-top:34px; }}
+.lv-brd {{ font-family:{s}; font-size:13.5px; line-height:1.4; color:#222; border-top:1px solid #e6e6e6; padding:9px 0; }}
+.lv-brd .ty {{ font-size:9.5px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:#0000ff; margin-right:9px; }}
+.lv-brd b {{ color:#000; }}
+.lv-brd .m {{ display:block; font-size:11.5px; color:#666; margin-top:2px; }}
+.lv-brd-in {{ font-family:{s}; font-size:12px; font-weight:700; color:#0000ff; text-align:center; }}
 /* deleting a client: a quiet way in at the foot of the page, then a red-ruled warning */
 .st-key-lv_del {{ margin-top:60px; border-top:1.5px solid #000; padding-top:12px; }}
 .block-container .st-key-lv_del_open button[kind="secondary"] {{ background:none !important; border:none !important;
@@ -16007,6 +16169,12 @@ def _lv_prep(sess: dict, user: str) -> None:
                 st.rerun()
         if SCAN_PAUSED:
             st.caption("Scanning is paused — " + SCAN_PAUSED_MSG)
+    if d.get("status") == "done" and not running:
+        _lv_ensure_tide(sess)
+        _tv = _lc.tide_view((sess.get("dig") or {}).get("tide"))
+        if _tv:
+            st.markdown(_lv_tide_html(_tv, str(stp.get("brand") or c.get("brand") or c.get("name") or "")),
+                        unsafe_allow_html=True)
     for i, part in enumerate(_lc.SECTIONS):
         sec = sess["sections"][i]
         cur = _lc.all_currents(sess, i, include_cut=True)
@@ -16047,6 +16215,7 @@ def _lv_prep(sess: dict, user: str) -> None:
                             _lv_start_back(sess, cid)
                         _lv_save(sess, force=True)
                         st.rerun()
+    _lv_board_block(sess, c)
 
     # ── 4 · In the room ──────────────────────────────────────────────────
     st.markdown('<div class="lv-h"><span>4</span>In the room</div>', unsafe_allow_html=True)
