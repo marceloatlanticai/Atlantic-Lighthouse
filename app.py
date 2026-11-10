@@ -485,10 +485,12 @@ IS_SESSION = st.query_params.get("view") == "session"
 #   ?view=live          the team's page for a live session — behind the login
 #   ?view=intake&k=…    the client's ten questions, on a link of its own — NO login
 #   ?view=leave&k=…     the leave-behind after the session — no team login
-# All three are plain white pages without the app's chrome.
+#   ?view=guide         how a live session runs, for the team — no login, no data
+# All of them are plain white pages without the app's chrome.
 _LV_ROUTE = str(st.query_params.get("view", "") or "")
 IS_LIVE, IS_INTAKE, IS_LEAVE = _LV_ROUTE == "live", _LV_ROUTE == "intake", _LV_ROUTE == "leave"
-if IS_SESSION or IS_LIVE or IS_INTAKE or IS_LEAVE:
+IS_GUIDE = _LV_ROUTE == "guide"
+if IS_SESSION or IS_LIVE or IS_INTAKE or IS_LEAVE or IS_GUIDE:
     st.markdown("""
 <style>
   [data-testid="stSidebar"], #lh-toptabs-marker, header, [data-testid="stToolbar"],
@@ -1362,6 +1364,46 @@ def _lv_public_leave() -> None:
                                 "(the print dialog opens by itself).")
 
 
+# The address written into assets/live-guide.html, so the file also works on its
+# own (opened from a folder, or put on any static host).
+_LV_GUIDE_APP = "https://atlantic-lighthouse-ciudtjtmum3lt5x3d8lcjj.streamlit.app"
+
+
+def _lv_guide_page() -> str:
+    """assets/live-guide.html ready to show: the fonts the app uses (the licensed
+    Telegraf when its files are on the server, else Space Grotesk) and the
+    public address when one is set. "" when the file is not on the server."""
+    try:
+        page = open("assets/live-guide.html", encoding="utf-8").read()
+    except Exception:
+        return ""
+    if PUBLIC_BASE_URL:
+        page = page.replace(_LV_GUIDE_APP, PUBLIC_BASE_URL)
+    fonts = _sv_font_css_safe()
+    if fonts and "</head>" in page:
+        page = page.replace("</head>", "<style>" + fonts + "</style>\n</head>", 1)
+    return page
+
+
+def _lv_public_guide() -> None:
+    """How a live session runs, on a link of its own (?view=guide). No login:
+    the page shows how the screens work and holds no client data."""
+    page = _lv_guide_page()
+    if not page:
+        _lv_public_note("The guide is not on the server yet.",
+                        "Upload assets/live-guide.html with the app, then reload this page.")
+        return
+    st.markdown(_lv_public_css(), unsafe_allow_html=True)   # white, edge to edge
+    if hasattr(st, "iframe"):
+        st.iframe(page)          # Streamlit measures the page and sizes the frame to it
+    else:                        # older builds: a fixed height that holds the whole guide
+        import streamlit.components.v1 as _cv1
+        _cv1.html(page, height=11000, scrolling=True)
+
+
+if IS_GUIDE:
+    _lv_public_guide()
+    st.stop()
 if IS_INTAKE:
     _lv_public_intake()
     st.stop()
@@ -15413,6 +15455,7 @@ def _lv_css() -> str:
 .lv-brand svg {{ width:170px; height:auto; display:block; }}
 .lv-brand span {{ font-family:{s}; font-size:11px; letter-spacing:.16em; text-transform:uppercase; font-weight:700;
   color:#0000ff; border-left:1.5px solid #000; padding-left:14px; }}
+.lv-links {{ display:flex; gap:20px; align-items:baseline; flex-wrap:wrap; justify-content:flex-end; }}
 </style>"""
 
 
@@ -15420,9 +15463,11 @@ def _lv_top(back_label: str = "", back_params: Optional[dict] = None) -> None:
     _wm = _lh_wordmark()
     _brand = (f'<div class="lv-brand">{_wm}<span>Live session</span></div>' if _wm
               else '<div class="rm-eyebrow">The Lighthouse · Live session</div>')
-    st.markdown(f'<div class="rm-top">{_brand}'
+    st.markdown(f'<div class="rm-top">{_brand}<span class="lv-links">'
+                f'<a class="rm-back" href="{_public_url("view=guide")}" target="_blank" rel="noopener">'
+                f'How it works ↗</a>'
                 f'<a class="rm-back" href="{_public_url("")}" target="_blank" rel="noopener">'
-                f'The Lighthouse ↗</a></div>', unsafe_allow_html=True)
+                f'The Lighthouse ↗</a></span></div>', unsafe_allow_html=True)
     if back_label and st.button(back_label, key="lv_back"):
         for k in ("id", "mode", "client"):
             if k in st.query_params:

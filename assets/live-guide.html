@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lighthouse · Live session guide</title>
+<meta name="description" content="How to run one test live session with Lighthouse, from the client's ten questions to the final report.">
+<!--
+  THE LIVE SESSION GUIDE — one self-contained page in the Lighthouse visual system:
+  black, white and #0000ff, red only for a negative; tiny tracked labels against big
+  tight headlines; square ruled content, rounded controls; blue bands alternating
+  with white ground.
+
+  The app serves this file at ?view=guide (assets/live-guide.html), with no login: it
+  holds no client data. It works just as well opened as a file or on any static host.
+
+  The examples (rp- classes) copy the session screen's own styles from
+  components/live_session/index.html, so they look like the real thing. A few of their
+  buttons work, as a demo; nothing on this page talks to a server.
+
+  Fonts: Telegraf only where it is licensed (the app adds its @font-face rules when the
+  files are on the server); otherwise Space Grotesk, then Helvetica.
+-->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+:root{
+  --ink:#000;--paper:#fff;--blue:#0000ff;--press:#0000cc;--wash:rgba(0,0,255,.08);
+  --red:#ff383c;--red-text:#ed0005;--body:#222;--meta:#666;--hair:#ddd;--hair-soft:#e6e6e6;--row:#eee;
+  --on2:rgba(255,255,255,.85);--on3:rgba(255,255,255,.75);--on-rule:rgba(255,255,255,.55);--on-hair:rgba(255,255,255,.28);
+  --sans:'Telegraf','Space Grotesk','Helvetica Neue',Helvetica,Arial,sans-serif;
+  --rad:10.5px;--measure:1120px;--gut:max(60px,calc((100% - var(--measure)) / 2));
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+body{margin:0;font-family:var(--sans);background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+a{color:inherit}
+button{font-family:inherit}
+[hidden]{display:none !important}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.is-blue :focus-visible{outline-color:#fff}
+.is-blue .rp :focus-visible,.is-blue .card :focus-visible,.is-blue .trow :focus-visible{outline-color:var(--blue)}
+[id]{scroll-margin-top:18px}
+
+/* ── Context: the ground decides the colours ─────────────────────────────────
+   White ground: blue labels and headlines, cards inverted to solid blue.
+   Blue band: white type, cards turn white. Components only read these. */
+.sec{
+  --fg:var(--ink);--text:var(--body);--fg2:var(--body);--fg3:var(--meta);--accent:var(--blue);
+  --rule:var(--ink);--rowline:var(--hair-soft);--chip:var(--ink);--panel-line:var(--ink);--row-border:1.5px solid var(--ink);
+  --card-bg:var(--blue);--card-fg:#fff;--card-body:#fff;--card-label:#fff;--card-meta:var(--on3);--card-rule:var(--on-rule);--card-border:none;
+  padding:56px var(--gut) 64px;background:var(--paper);color:var(--fg)}
+.sec.is-blue{
+  --fg:#fff;--text:#fff;--fg2:var(--on2);--fg3:var(--on3);--accent:#fff;
+  --rule:#fff;--rowline:var(--on-hair);--chip:#fff;--panel-line:#fff;--row-border:none;
+  --card-bg:#fff;--card-fg:var(--ink);--card-body:var(--body);--card-label:var(--blue);--card-meta:var(--meta);--card-rule:var(--hair);
+  background:var(--blue)}
+
+/* ── Type ── */
+.label{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+.headline{font-size:40px;font-weight:700;letter-spacing:-.022em;line-height:1.08;color:var(--accent);margin:0}
+.display{font-size:70px;line-height:60px;font-weight:700;letter-spacing:-.022em;color:var(--fg);margin:0 0 26px;max-width:980px}
+.lead{font-size:17.5px;font-weight:600;line-height:1.3;color:var(--text);max-width:780px;margin:0}
+.micro{font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--fg3)}
+.shead{margin-bottom:24px}
+.headline,.card-title,.starter .q,.rp-terr .ttl{text-wrap:balance}
+.nw{white-space:nowrap}
+
+/* ── Controls: rounded, because they are controls ── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font:700 13px/1 var(--sans);letter-spacing:.02em;
+  padding:12px 18px;border-radius:var(--rad);border:1.5px solid var(--blue);background:var(--blue);color:#fff;cursor:pointer;
+  text-decoration:none;transition:background .15s,color .15s,border-color .15s}
+.btn:hover{background:var(--press);border-color:var(--press)}
+.btn--outline{background:transparent;color:var(--blue)}
+.btn--outline:hover{background:var(--blue);color:#fff}
+.btn--secondary{background:#fff;color:var(--ink);border-color:var(--ink)}
+.btn--secondary:hover{background:#fff;color:var(--blue);border-color:var(--blue)}
+/* a button as it is named in the text: the label on the screen, drawn as a control */
+.ui{display:inline-block;font-size:12.5px;font-weight:700;line-height:1.25;letter-spacing:.01em;padding:2px 9px 3px;
+  border:1.5px solid var(--chip);color:var(--chip);border-radius:var(--rad);white-space:nowrap;vertical-align:1px}
+.key{min-width:25px;text-align:center;padding-left:6px;padding-right:6px}
+
+/* ── Masthead ── */
+.mast{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:36px;align-items:center;padding:24px var(--gut) 40px}
+.mast .wm{line-height:0}
+.mast .wm svg{width:100%;height:auto;display:block}
+.mast-label{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--blue);margin:0 0 9px}
+.mast-tag{font-size:13.5px;line-height:1.45;color:var(--ink);margin:0 0 14px}
+
+/* ── The band: one display headline per page ── */
+.band{padding:46px var(--gut) 56px}
+.band-rule{border:0;border-top:2px solid var(--rule);margin:0 0 30px}
+.ros-h{margin:40px 0 0}
+.ros{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));border-top:1.5px solid var(--rule);margin-top:10px}
+.ros div{padding:12px 10px 0 0;font-size:12px;line-height:1.35;color:var(--fg2)}
+.ros b{display:block;font-size:22px;font-weight:700;letter-spacing:-.01em;color:var(--fg);font-variant-numeric:tabular-nums;margin-bottom:2px}
+
+/* ── Cards: they invert with their ground ── */
+.row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.row2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+.card{--chip:var(--card-fg);background:var(--card-bg);color:var(--card-fg);border:var(--card-border);padding:22px 24px;display:flex;flex-direction:column}
+.card-label{font-size:10px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--card-label);margin:0 0 10px}
+.card-title{font-size:18px;font-weight:700;line-height:1.28;margin:0 0 14px;color:inherit}
+.card-body{font-size:13.5px;line-height:1.6;color:var(--card-body);margin:0 0 16px}
+.card .hair{border:0;border-top:1px solid var(--card-rule);margin:auto 0 12px}
+.stat{font-size:11.5px;font-weight:600;line-height:1.5;color:var(--card-label)}
+.toc{list-style:none;margin:0 0 18px;padding:0;border-top:1px solid var(--card-rule)}
+.toc li{border-bottom:1px solid var(--card-rule)}
+.toc a{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:4px;align-items:baseline;padding:10px 0 11px;
+  text-decoration:none;font-size:14.5px;font-weight:700;line-height:1.3;color:inherit}
+.toc .n{font-size:10.5px;letter-spacing:.12em;color:var(--card-meta);font-variant-numeric:tabular-nums}
+.toc .go{font-weight:400;opacity:.8;padding-left:8px}
+.toc a:hover .t{text-decoration:underline;text-underline-offset:3px}
+.also{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 22px;margin-top:24px;font-size:13.5px;font-weight:700}
+.also a{color:var(--accent);text-decoration:none}
+.also a:hover{text-decoration:underline;text-underline-offset:3px}
+
+/* ── Before you start: white rows on the band, a rule between the columns ── */
+.trow{--chip:var(--ink);display:grid;grid-template-columns:170px minmax(0,1fr);background:#fff;color:var(--ink);
+  border:var(--row-border);padding:20px 26px;margin-bottom:12px}
+.trow > * + *{border-left:1px solid var(--ink);padding-left:26px;margin-left:26px}
+.trow .name{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--blue);padding-top:4px}
+.trow .move{font-size:17px;font-weight:700;line-height:1.3}
+.trow .detail{font-size:13.5px;line-height:1.5;color:var(--body);margin-top:4px}
+
+/* ── A step: the heading on the left, what to do on the right ── */
+.step-grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:28px 56px;align-items:start}
+.facts{margin:22px 0 0;padding:14px 0 0;border-top:1.5px solid var(--rule);display:grid;gap:9px}
+.facts div{display:grid;grid-template-columns:52px minmax(0,1fr);gap:10px;align-items:baseline}
+.facts dt{font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--fg3)}
+.facts dd{margin:0;font-size:13.5px;line-height:1.45;color:var(--fg2)}
+.intro{font-size:15px;line-height:1.55;color:var(--text);margin:20px 0 0}
+.steps{list-style:none;margin:0;padding:0;border-top:1.5px solid var(--rule);counter-reset:s}
+.steps li{display:grid;grid-template-columns:34px minmax(0,1fr);gap:6px;padding:14px 0 15px;border-bottom:1px solid var(--rowline);
+  font-size:15.5px;line-height:1.55;color:var(--text)}
+.steps li::before{counter-increment:s;content:counter(s);font-size:13px;font-weight:700;line-height:1.9;color:var(--accent);font-variant-numeric:tabular-nums}
+.steps b{color:var(--fg)}
+.note{margin:18px 0 0;padding:2px 0 2px 14px;border-left:3px solid var(--accent);font-size:13.5px;line-height:1.55;color:var(--fg2)}
+.note b{color:var(--fg)}
+.step-nav{display:flex;justify-content:space-between;gap:12px 24px;flex-wrap:wrap;margin-top:34px;padding-top:14px;
+  border-top:1px solid var(--rowline);font-size:13px;font-weight:700}
+.step-nav a{color:var(--accent);text-decoration:none}
+.step-nav a:hover{text-decoration:underline;text-underline-offset:3px}
+.step-nav .back{color:var(--fg3)}
+
+/* the four parts, with the codes the selects use */
+.parts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-top:40px}
+.part{border-top:1.5px solid var(--rule);padding-top:14px}
+.part b{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:700;color:var(--fg)}
+.part p{font-size:13.5px;line-height:1.5;color:var(--text);margin:8px 0 0}
+.code{display:inline-block;width:14px;height:14px;flex:none;border:1.5px solid var(--ink)}
+.code.c0{background:var(--blue);border-color:var(--blue)}
+.code.c1{background:#fff;border:3px solid var(--blue)}
+.code.c2{background:var(--ink)}
+.code.c3{background:#fff;border:3px solid var(--ink)}
+
+/* privacy, on white: an inverted card */
+.privacy{margin-top:22px}
+.privacy .card-body{margin:0;font-size:14px}
+
+/* ── Examples: the session screen's own styles ───────────────────────────── */
+.fig{margin:44px 0 0}
+.fig-cap{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin:0 0 14px;font-size:13px;line-height:1.45;color:var(--fg2)}
+.fig-cap .micro{color:var(--accent)}
+.rp{font-family:var(--sans);color:var(--ink);text-align:left;font-size:13px}
+.rp button{font-family:inherit;cursor:pointer}
+.rp-lbl{font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:var(--blue)}
+.rp-micro{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:var(--meta)}
+.rp-quiet{font-size:12.5px;color:var(--meta)}
+.rp-pbtn{display:inline-block;border-radius:var(--rad);border:1.5px solid var(--blue);background:var(--blue);color:#fff;font-weight:700;font-size:12px;padding:6px 12px}
+.rp-obtn{display:inline-block;border-radius:var(--rad);border:1.5px solid var(--ink);background:#fff;color:var(--ink);font-weight:700;font-size:13px;padding:10px 16px}
+/* top bar */
+.rp-top{display:flex;align-items:center;gap:16px;padding:12px 18px;background:#fff;border:1.5px solid var(--panel-line);border-bottom:3px solid var(--ink);flex-wrap:wrap}
+.rp-wm{display:block;width:118px;flex:none;line-height:0}
+.rp-wm svg{width:100%;height:auto;display:block}
+.rp-client{font-size:12px;color:var(--meta)}
+.rp-client b{color:var(--ink)}
+.rp-steps{display:flex;gap:4px;flex-wrap:wrap;flex:1;justify-content:flex-end}
+.rp-step{border:1.5px solid var(--ink);border-radius:var(--rad);background:#fff;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:6px 10px;color:var(--ink)}
+.rp-step i{font-style:normal;opacity:.55;margin-right:5px}
+.rp-step.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.rp-pile{border:1.5px solid var(--blue);border-radius:var(--rad);padding:6px 12px;font-size:12px;font-weight:700;color:var(--blue);background:#fff}
+.rp-prep{font-size:11.5px;font-weight:700;color:var(--meta);text-decoration:underline}
+/* the room */
+.rp-room{background:#fff;padding:16px 16px 14px;border:1.5px solid var(--panel-line)}
+.rp-room-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.rp-live{font-size:10px;letter-spacing:.14em;font-weight:700;color:var(--meta);display:inline-flex;align-items:center;gap:6px;text-transform:uppercase}
+.rp-live i{width:8px;height:8px;border-radius:50%;background:#ccc;display:inline-block}
+.rp-live.on{color:var(--red-text)}
+.rp-live.on i{background:var(--red);animation:lh-pulse 1.4s ease-in-out infinite}
+@keyframes lh-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.rp-consent{border:1.5px solid var(--blue);padding:10px 12px;margin:10px 0 4px;font-size:12.5px;line-height:1.45;color:var(--body)}
+.rp-consent .rp-pbtn{margin-top:8px}
+.rp-ctl{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 6px}
+.rp-ctl span{border-radius:var(--rad);border:1.5px solid var(--ink);background:#fff;font-size:11.5px;font-weight:700;padding:6px 10px;color:var(--ink)}
+.rp-ctl span.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.rp-ctl span.off{opacity:.45}
+.rp-ctl span.gear{margin-left:auto}
+.rp-engs{font-size:11px;color:var(--meta);line-height:1.4}
+.rp-mode{display:flex;border:1.5px solid var(--ink);border-radius:var(--rad);overflow:hidden;margin:12px 0 10px}
+.rp-mode button{flex:1;border:none;background:#fff;font-size:11px;font-weight:700;padding:7px 4px;color:var(--ink);transition:background .12s,color .12s}
+.rp-mode button.on{background:var(--ink);color:#fff}
+.rp-ppl{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin:4px 0 10px}
+.rp-ppl span{border:1.5px solid var(--ink);border-radius:var(--rad);background:#fff;font-size:11px;font-weight:700;padding:4px 8px;color:var(--ink)}
+.rp-ppl span.fac{border-style:dashed;color:var(--meta)}
+.rp-ppl span.unk{color:var(--meta)}
+.rp-ppl span.ghost{border-color:var(--blue);color:var(--blue)}
+.rp-ppl span.none{border:none;padding:4px 0;font-weight:400;color:var(--meta);font-size:12.5px}
+.rp-tx{border-top:1.5px solid var(--ink)}
+.rp-tx p{margin:0;font-size:13px;line-height:1.45;padding:7px 0;border-bottom:1px solid var(--row)}
+.rp-tx p b{font-weight:700}
+.rp-tx p span{font-size:11px;color:var(--meta);margin-left:4px}
+.rp-tx p.fac b{color:var(--meta)}
+.rp-tx .empty{font-size:12.5px;color:var(--meta);padding:10px 0;line-height:1.45}
+.rp-reads{margin-top:10px;border-top:1.5px solid var(--ink);padding-top:6px}
+.rp-reads .rh{display:flex;justify-content:space-between;align-items:center}
+.rp-reads .rh span.u{color:var(--blue);font-size:11px;font-weight:700;text-decoration:underline}
+.rp-reads p{margin:0;font-size:12px;line-height:1.5;color:var(--body);padding:4px 0}
+.rp-reads p b{color:var(--blue)}
+.rp-note{font-size:11px;color:var(--meta);margin-top:10px;line-height:1.45}
+.rp-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;align-items:start}
+.rp-pair > div > .rp-micro{display:block;margin-bottom:8px;color:var(--fg3)}
+/* a part: the currents and the room beside them */
+.rp-seclay{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+.rp-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+.rp-cur{background:#fff;color:var(--ink);padding:20px 22px;display:flex;flex-direction:column;border:1.5px solid var(--panel-line);transition:opacity .15s}
+.rp-cur .tag{font-size:10px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--blue);margin-bottom:9px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.rp-cur .star{color:var(--blue)}
+.rp-cur .ttl{font-size:18px;font-weight:700;line-height:1.28;margin:0 0 8px;border-radius:4px}
+.rp-cur .ttl[contenteditable="true"]{outline:1.5px solid var(--ink);outline-offset:3px}
+.rp-cur p.b{font-size:13.5px;line-height:1.55;color:var(--body);margin:0}
+.rp-cur .ev{border-top:1px solid var(--hair);margin-top:12px;padding-top:9px;font-size:11.5px;line-height:1.55;color:var(--meta)}
+.rp-cur .ev b{color:var(--blue);font-weight:700}
+.rp-cur .ev u{color:var(--blue);font-weight:700}
+.rp-aimark{margin-top:12px;padding:9px 11px;border:1.5px solid var(--blue);font-size:12px;line-height:1.45;color:var(--blue)}
+.rp-aimark button{border:none;background:none;color:var(--blue);text-decoration:underline;font-size:12px;font-weight:700;padding:0;margin-left:6px}
+.rp-aimark.sugg{background:var(--blue);color:#fff}
+.rp-aimark.sugg button{color:#fff;margin:4px 12px 0 0}
+.rp-contest{margin-top:10px;padding:8px 11px;border:1.5px solid var(--ink);font-size:12px;line-height:1.45;color:var(--ink)}
+.rp-contest b{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase}
+.rp-talk{font-size:11.5px;color:var(--meta);margin-top:8px}
+.rp-talk b{color:var(--ink)}
+.rp-dec{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+.rp-dec button{border-radius:var(--rad);border:1.5px solid var(--ink);background:#fff;font-size:11.5px;font-weight:700;padding:5px 10px;color:var(--ink);transition:background .12s,color .12s,border-color .12s}
+.rp-dec button:hover{background:#f2f2f2}
+.rp-dec button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.rp-dec button.kill.on{background:#fff;color:var(--red-text);border-color:var(--red)}
+.rp-cur.killed{opacity:.38}
+.rp-cur.killed .ttl{text-decoration:line-through}
+.rp-cur.starred{outline:4px solid var(--blue);outline-offset:-10px}
+.rp-ask{margin-top:18px;border-top:2px solid var(--rule);padding-top:14px}
+.rp-ask .rowc{display:flex;gap:10px;margin-top:10px}
+.rp-ask .in{flex:1;font-size:14px;border:1.5px solid var(--rule);border-radius:var(--rad);padding:10px 14px;color:var(--fg3)}
+.rp-ask .dig{border-radius:var(--rad);border:1.5px solid #fff;background:#fff;color:var(--blue);font-weight:700;font-size:14px;padding:10px 18px}
+.rp-ask .lbl2{font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:var(--accent)}
+/* selects and territories */
+.rp-sels{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:20px}
+.rp-sel{border:1.5px solid var(--ink);padding:16px 18px;background:#fff;display:flex;flex-direction:column;gap:6px}
+.rp-sel .s{font-size:11px;color:var(--meta);display:flex;gap:8px;align-items:center}
+.rp-sel .s b{color:var(--blue)}
+.rp-sel .t{font-size:16px;font-weight:700;line-height:1.3}
+.rp-sel .ai{font-size:11px;color:var(--blue);font-weight:700}
+.rp-sel .x{font-size:11.5px;color:var(--meta);text-decoration:underline}
+.rp-terrs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+.rp-terr{background:#fff;color:var(--ink);padding:22px 24px;border:1.5px solid var(--ink);transition:background .15s,color .15s,border-color .15s}
+.rp-terr-h{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.rp-terr .k{font-size:10px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--blue)}
+.rp-terr .ttl{font-size:26px;font-weight:700;letter-spacing:-.01em;line-height:1.15;margin:10px 0 14px}
+.rp-tens{display:grid;grid-template-columns:1fr 1fr;border-top:1.5px solid var(--ink)}
+.rp-tens > div{padding:12px 14px 12px 0;font-size:13.5px;line-height:1.5}
+.rp-tens > div + div{border-left:1px solid var(--ink);padding-left:14px}
+.rp-tens .rp-micro{display:block;margin-bottom:6px}
+.rp-terr .why{font-size:13.5px;line-height:1.6;color:var(--body);margin:12px 0}
+.rp-terr .evs{font-size:12px;line-height:1.7;color:var(--meta);border-top:1px solid var(--hair);padding-top:10px}
+.rp-terr .notes{min-height:58px;font-size:13.5px;background:#fff;border:1.5px solid var(--ink);border-radius:var(--rad);padding:8px 10px;margin-top:10px;color:#757575}
+.rp-terr .notes.filled{color:var(--ink)}
+.rp-sbtn{border-radius:var(--rad);border:1.5px solid var(--ink);background:#fff;color:var(--ink);font-weight:700;font-size:12px;padding:6px 12px;transition:background .12s,color .12s}
+.rp-sbtn:hover{background:var(--ink);color:#fff}
+.rp-sbtn.inv{background:#fff;color:var(--blue);border-color:#fff}
+.rp-sbtn.inv:hover{background:#eaeaff}
+.rp-terr.ripe{background:var(--blue);color:#fff;border-color:var(--blue)}
+.rp-terr.ripe .k,.rp-terr.ripe .why,.rp-terr.ripe .evs{color:rgba(255,255,255,.88)}
+.rp-terr.ripe .rp-tens{border-top-color:#fff}
+.rp-terr.ripe .rp-tens > div + div{border-left-color:#fff}
+.rp-terr.ripe .rp-micro{color:#fff}
+.rp-terr.ripe .evs{border-top-color:rgba(255,255,255,.55)}
+/* the final report */
+.rp-report{background:#fff;padding:24px 26px;border:1.5px solid var(--panel-line);max-width:860px}
+.rp-report .rh{font-size:30px;font-weight:700;letter-spacing:-.022em;line-height:1.08;margin:10px 0 0}
+.rp-report .rtxt{font-size:14.5px;line-height:1.5;color:var(--body);margin-top:10px;max-width:760px}
+.rp-opts{display:flex;gap:22px;flex-wrap:wrap;margin-top:16px}
+.rp-opt{display:flex;gap:9px;align-items:center;font-size:14px;font-weight:700;cursor:pointer}
+.rp-opt input{width:17px;height:17px;margin:0;accent-color:var(--blue);cursor:pointer}
+.rp-linkrow{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+
+/* ── If something goes wrong: what the screen says → what to do ── */
+.fix{border-top:1.5px solid var(--ink)}
+.fix-row{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:6px 56px;padding:18px 0 19px;border-bottom:1px solid var(--rowline)}
+.fix-row .say{font-size:17px;font-weight:700;line-height:1.3;color:var(--ink)}
+.fix-row .say .micro{display:block;margin-bottom:6px}
+.fix-row .do{font-size:15px;line-height:1.55;color:var(--text)}
+
+/* ── Feedback: the four questions, as thought starters ── */
+.starter{background:var(--card-bg);color:var(--card-fg);border:var(--card-border);padding:22px 24px}
+.starter .k{font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--card-meta);margin:0 0 12px}
+.starter .q{font-size:22px;font-weight:700;letter-spacing:-.01em;line-height:1.2;margin:0}
+.feedback .lead{margin-bottom:26px}
+
+/* ── Footer ── */
+.foot{border-top:3px solid var(--ink);padding:26px var(--gut) 44px;display:flex;justify-content:space-between;align-items:center;gap:18px 24px;flex-wrap:wrap}
+.foot .who{font-size:12px;line-height:1.6;color:var(--meta)}
+.foot .who b{color:var(--ink)}
+.foot .acts{display:flex;gap:10px;flex-wrap:wrap}
+
+/* ── One breakpoint ── */
+@media (max-width:1000px){
+  .rp-seclay{grid-template-columns:1fr}
+}
+@media (max-width:820px){
+  :root{--gut:20px}
+  .mast,.row3,.row2,.step-grid,.parts,.fix-row,.trow,.rp-pair,.rp-grid2,.rp-sels,.rp-terrs{grid-template-columns:1fr}
+  .mast{gap:22px;padding-top:20px;padding-bottom:28px}
+  .trow > * + *{border-left:none;padding-left:0;margin-left:0;margin-top:8px}
+  .headline{font-size:30px}
+  .display{font-size:40px;line-height:36px}
+  .ros{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .ros div{padding-bottom:12px}
+  .rp-steps{justify-content:flex-start}
+  .rp-tens{grid-template-columns:1fr}
+  .rp-tens > div + div{border-left:none;padding-left:0;border-top:1px solid var(--ink)}
+  .rp-terr.ripe .rp-tens > div + div{border-top-color:#fff}
+  .steps li{font-size:15px}
+  .lead{font-size:16px}
+  .fix-row{gap:8px}
+}
+
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .rp-live.on i{animation:none}
+  *{transition:none !important}
+}
+
+/* ── Print: no blue bands on paper — a white page, black rules, blue labels ── */
+@media print{
+  @page{margin:14mm 14mm 16mm}
+  :root{--gut:0px}
+  body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .sec,.sec.is-blue{
+    --fg:var(--ink);--text:var(--body);--fg2:var(--body);--fg3:var(--meta);--accent:var(--blue);
+    --rule:var(--ink);--rowline:var(--hair-soft);--chip:var(--ink);--panel-line:var(--ink);--row-border:1.5px solid var(--ink);
+    --card-bg:#fff;--card-fg:var(--ink);--card-body:var(--body);--card-label:var(--blue);--card-meta:var(--meta);--card-rule:var(--hair);
+    --card-border:1.5px solid var(--ink);
+    background:#fff !important;border-top:3px solid var(--ink);padding:24px 0 28px}
+  .headline,.display{color:var(--ink)}
+  .display{font-size:44px;line-height:1.02}
+  .mast{padding:0 0 20px}
+  .btn,.step-nav,.also,.no-print{display:none !important}
+  .card,.trow,.steps li,.fig,.starter,.fix-row,.part,.facts,.rp-cur,.rp-room,.rp-terr{break-inside:avoid}
+  .shead,.rp-ask,.rp-pair > div{break-inside:avoid}
+  .label,.shead,.step-grid > div:first-child{break-after:avoid}
+  /* ripe stays visible without a block of ink: a blue frame instead of a blue fill */
+  .rp-terr.ripe{background:#fff;color:var(--ink);border:3px solid var(--blue)}
+  .rp-terr.ripe .k{color:var(--blue)}
+  .rp-terr.ripe .why{color:var(--body)}
+  .rp-terr.ripe .evs{color:var(--meta);border-top-color:var(--hair)}
+  .rp-terr.ripe .rp-micro{color:var(--meta)}
+  .rp-terr.ripe .rp-tens{border-top-color:var(--ink)}
+  .rp-terr.ripe .rp-tens > div + div{border-left-color:var(--ink);border-top-color:var(--ink)}
+  .rp-sbtn.inv{border-color:var(--blue)}
+  .rp-ask .dig{border-color:var(--ink)}
+  a{text-decoration:none}
+}
+</style>
+</head>
+<body>
+
+<header class="mast">
+  <div class="wm"><svg role="img" aria-label="Lighthouse" viewBox="79 0 664 68" fill="none" xmlns="http://www.w3.org/2000/svg"><g><path d="M90.8672 66.3421H138.733V50.953H110.738V25.8311L90.8672 24.8359V66.3421Z" fill="black"/><path d="M154.004 50.9533H143.14V66.3424H184.452V50.9533H173.587V28.9744L154.004 27.9961V50.9533Z" fill="black"/><path d="M220.379 41.6983H239.273C238.295 48.1306 234.866 52.9998 224.295 52.9998C213.724 52.9998 209.317 46.7643 209.317 34.1021C209.317 32.9326 209.362 31.825 209.452 30.7736L189.062 29.7559C188.932 31.1503 188.864 32.5672 188.864 34.0066C188.864 52.2239 198.26 67.911 219.306 67.911C234.188 67.911 239.278 61.1863 241.623 55.1476V66.3535H257.872V33.2025L220.379 31.3246V41.7039V41.6983Z" fill="black"/><path d="M266.296 66.3426H285.873V41.2094H310.54V66.3426H330.117V36.8069L266.296 33.6133V66.3426Z" fill="black"/><path d="M356.355 66.3428H376.034V39.1011L356.355 38.1172V66.3428Z" fill="black"/><path d="M401.192 66.3415H420.775V41.3377L401.192 40.3594V66.3415Z" fill="black"/><path d="M445.442 66.343H465.019V43.5545L445.442 42.5762V66.343Z" fill="black"/><path d="M507.998 52.0206C500.297 52.0206 496.348 49.5129 494.438 45.0204L473.517 43.9746C476.675 56.946 486.737 67.8989 507.998 67.8989C527.422 67.8989 537.456 58.7734 541.473 47.3707L520.936 46.3417C518.846 50.0021 514.964 52.015 507.998 52.015V52.0206Z" fill="black"/><path d="M581.814 52.0218C577.604 52.0218 574.633 51.1559 572.74 48.9406L551.027 47.8555C553.429 61.2598 563.836 67.9057 581.808 67.9057C598.424 67.9057 608.504 62.2156 611.871 50.9029L590.091 49.8121C588.187 51.3921 585.463 52.0275 581.814 52.0275V52.0218Z" fill="black"/><path d="M650.828 53.9731C648.105 53.9731 645.997 53.4109 644.364 52.5225L621.635 51.3867C624.499 60.4335 632.663 68.0016 650.438 68.0016C668.212 68.0016 676.156 62.6207 679.196 54.2655L656.591 53.1354C655.088 53.6751 653.178 53.9731 650.833 53.9731H650.828Z" fill="black"/><path d="M688.518 66.3412H741.869V57.4012L688.518 54.7305V66.3412Z" fill="black"/><path d="M99.438 1.55664H79.5674V18.8687L99.438 18.4695V1.55664Z" fill="black"/><path d="M162.287 16.9514H173.152V1.55664H131.84V16.9514H142.705V17.6036L162.287 17.21V16.9514Z" fill="black"/><path d="M214.464 14.9056C217.092 14.9056 219.312 15.3273 221.137 16.0357L245.228 15.5522C241.929 6.87085 232.742 0 214.176 0C196.865 0 186.402 6.80337 181.322 16.8285L206.606 16.3225C208.849 15.3498 211.481 14.9056 214.47 14.9056H214.464Z" fill="black"/><path d="M318.817 1.55664H299.24V14.4718L318.817 14.0782V1.55664Z" fill="black"/><path d="M274.573 1.55664H254.996V15.3546L274.573 14.961V1.55664Z" fill="black"/><path d="M385.096 1.55664H324.699V13.9601L385.096 12.7513V1.55664Z" fill="black"/><path d="M409.475 1.55664H389.893V12.6557L409.475 12.2621V1.55664Z" fill="black"/><path d="M453.719 1.55664H434.143V11.7673L453.719 11.3794V1.55664Z" fill="black"/><path d="M496.699 0C483.297 0 474.348 4.50372 468.771 11.0766L523.649 9.98015C518.027 4.01455 509.36 0 496.699 0Z" fill="black"/><path d="M558.864 1.55664H539.186V9.66446L558.864 9.27088V1.55664Z" fill="black"/><path d="M601.838 1.55664H582.261V8.8042L601.838 8.41062V1.55664Z" fill="black"/><path d="M638.94 0C627.419 0 619.368 3.01935 614.764 8.1528L662.313 7.20258C657.624 2.81693 650.098 0 638.945 0H638.94Z" fill="black"/><path d="M730.276 1.55664H677.218V6.90375L730.276 5.84108V1.55664Z" fill="black"/><path d="M107.297 21.7315V18.3242L87.4268 18.7234V21.4279L107.297 21.7315Z" fill="#0000FF"/><path d="M85.2168 21.3594V24.6261L105.087 25.6213V21.663L85.2168 21.3594Z" fill="#0000FF"/><path d="M168.152 22.8218V17.0586L148.14 17.4578V22.5125L168.152 22.8218Z" fill="#0000FF"/><path d="M147.01 22.3105V27.8826L167.022 28.8834V22.6198L147.01 22.3105Z" fill="#0000FF"/><path d="M232.742 22.603H252.319C252.2 20.1235 251.731 17.6776 250.872 15.3555L226.781 15.8503C230.392 17.284 232.414 19.8704 232.736 22.5974L232.742 22.603Z" fill="#0000FF"/><path d="M204.3 23.4299L183.452 23.1094C182.875 25.2403 182.491 27.4613 182.276 29.7497L202.667 30.7674C202.904 27.8942 203.452 25.454 204.3 23.4242V23.4299Z" fill="#0000FF"/><path d="M218.119 29.8105V31.3118L255.612 33.1897V29.8105H218.119Z" fill="#0000FF"/><path d="M205.43 23.9915C206.882 20.1568 209.199 17.6323 212.25 16.1816L186.966 16.7383C185.966 18.9086 185.175 21.2195 184.582 23.6372L205.43 23.9915Z" fill="#0000FF"/><path d="M304.891 24.705V25.8745H280.223V24.3171L260.646 24.0078V33.5438L324.468 36.8049V25.0143L304.891 24.705Z" fill="#0000FF"/><path d="M326.163 25.268V13.9609L306.586 14.3545V24.9588L326.163 25.268Z" fill="#0000FF"/><path d="M281.494 24.5646V14.4551L261.917 14.8655V24.2497L281.494 24.5646Z" fill="#0000FF"/><path d="M351.835 16.3896V25.1102L371.514 25.4139V16.3896H391.876V12.1895L331.479 13.3983V16.3896H351.835Z" fill="#0000FF"/><path d="M350.705 24.7617V38.048L370.384 39.0994V25.0878L350.705 24.7617Z" fill="#0000FF"/><path d="M395.543 25.9766V40.2861L415.125 41.287V41.1576H439.793V42.5521L459.37 43.5529V26.983L395.543 25.9766Z" fill="#0000FF"/><path d="M460.952 27.1575V11.1836L441.375 11.5772V25.9149H416.702V12.0663L397.125 12.4599V26.1679L460.952 27.1575Z" fill="#0000FF"/><path d="M490.353 27.685C491.421 19.9933 495.111 15.6414 505.326 15.6414C515.541 15.6414 519.405 20.1676 520.371 28.1461L540.999 28.4666C540.112 21.6182 537.507 14.9048 532.581 9.67578L477.076 10.7891C473.042 15.5402 470.748 21.3652 469.805 27.3702L490.348 27.685H490.353Z" fill="#0000FF"/><path d="M487.461 33.7358C487.461 31.363 487.569 29.1927 487.84 27.2304L466.907 26.9043C466.551 29.1702 466.376 31.4586 466.376 33.7302C466.376 37.16 466.755 40.5954 467.562 43.9071L489.122 44.9867C487.862 42.0235 487.461 38.2283 487.461 33.7302V33.7358Z" fill="#0000FF"/><path d="M538.394 27.8261L517.467 27.5C517.688 29.3274 517.772 31.3346 517.772 33.505C517.772 38.7115 517.253 42.9678 515.479 46.0715L536.553 47.123C538.078 42.7823 538.767 38.1268 538.767 33.4993C538.767 31.6158 538.643 29.7097 538.4 27.8205L538.394 27.8261Z" fill="#0000FF"/><path d="M609.182 29.642V8.15234L589.605 8.55155V29.3328L609.182 29.642Z" fill="#0000FF"/><path d="M564.514 38.8694V28.9735L544.836 28.6699V41.3995C544.836 43.6992 545.022 45.847 545.378 47.8487L567.091 48.9339C565.334 46.876 564.514 43.6542 564.514 38.8637V38.8694Z" fill="#0000FF"/><path d="M566.209 28.9669V9.02344L546.53 9.42264V28.6576L566.209 28.9669Z" fill="#0000FF"/><path d="M607.487 29.6415L587.91 29.3379V38.8739C587.91 44.3953 586.82 47.8363 584.441 49.8099L606.222 50.9006C607.058 48.0837 607.487 44.9238 607.487 41.4097V29.6471V29.6415Z" fill="#0000FF"/><path d="M637.793 45.4922H618.702C618.872 47.4826 619.245 49.4674 619.855 51.3847L642.584 52.5205C639.528 50.8562 638.172 48.0336 637.793 45.4922Z" fill="black"/><path d="M619.725 29.8724L670.178 30.6595C666.726 28.0225 661.867 26.3863 655.41 25.8409L644.155 24.857C639.454 24.4634 637.692 22.2931 637.692 19.4311C637.692 15.8776 641.409 13.9041 646.794 13.9041C652.862 13.9041 656.387 16.6648 656.975 21.0055H676.359C675.998 15.6977 674.06 10.7667 670.071 6.98828L622.522 7.94975C619.454 11.4133 617.917 15.8158 617.917 20.9043C617.917 24.2947 618.538 27.2916 619.725 29.8667V29.8724Z" fill="#0000FF"/><path d="M668.071 30.5765L617.617 29.7949C620.431 35.8449 626.425 39.5389 634.9 40.4273L648.703 41.8892C652.816 42.3783 655.065 44.1326 655.065 47.8323C655.065 50.295 653.697 52.1336 650.935 53.1344L673.54 54.2646C674.421 51.8356 674.834 49.1536 674.834 46.2748C674.834 39.3927 672.726 34.085 668.065 30.5765H668.071Z" fill="#0000FF"/><path d="M702.547 50.8404V40.2361H732.988V31.1387L682.868 30.3516V54.6863L736.22 57.402V50.8404H702.547Z" fill="#0000FF"/><path d="M735.926 31.4077V26.1786H705.484V16.6371H738.864V5.41992L685.806 6.49384V30.6261L735.926 31.4077Z" fill="#0000FF"/></g></svg></div>
+  <div>
+    <div class="mast-label">Live session · Guide</div>
+    <p class="mast-tag">One test session with Lighthouse, from the client's ten questions to the final report.</p>
+    <a class="btn btn--outline" href="https://atlantic-lighthouse-ciudtjtmum3lt5x3d8lcjj.streamlit.app/?view=live" target="_blank" rel="noopener">Open the Lighthouse ↗</a>
+  </div>
+</header>
+
+<main>
+
+<section class="sec is-blue band" aria-labelledby="top-h">
+  <div class="label">The live session · A guide for testing</div>
+  <h1 class="display" id="top-h">How a live session runs, <span class="nw">start to finish</span></h1>
+  <hr class="band-rule">
+  <p class="lead">The live session runs a two-hour client workshop with Lighthouse. Before the meeting, the client answers ten questions and Lighthouse digs four parts: Company, Competition, Customer and Climate. In the room, people decide what is true while Lighthouse listens and records. At the end, Lighthouse finds the countercurrents and writes the leave-behind, with a full report and the transcript.</p>
+  <div class="ros-h micro">The two hours, as the session screen runs them</div>
+  <div class="ros">
+    <div><b>10′</b>Intro</div><div><b>15′</b>Company</div><div><b>15′</b>Competition</div><div><b>15′</b>Customer</div><div><b>5′</b>Break</div><div><b>15′</b>Climate</div><div><b>5′</b>Selects</div><div><b>30′</b>Countercurrent</div><div><b>10′</b>Next steps</div>
+  </div>
+</section>
+
+<section class="sec" id="steps" aria-labelledby="steps-h">
+  <div class="shead">
+    <div class="label">Eight steps</div>
+    <h2 class="headline" id="steps-h">Three before the meeting, four in the room, one after</h2>
+  </div>
+  <div class="row3">
+    <div class="card">
+      <div class="card-label">Before the meeting</div>
+      <h3 class="card-title">The client answers, Lighthouse digs</h3>
+      <ol class="toc">
+        <li><a href="#step-01"><span class="n">01</span><span class="t">Create the client and a session</span><span class="go">›</span></a></li>
+        <li><a href="#step-02"><span class="n">02</span><span class="t">Send the client their ten questions</span><span class="go">›</span></a></li>
+        <li><a href="#step-03"><span class="n">03</span><span class="t">Let Lighthouse dig the four parts</span><span class="go">›</span></a></li>
+      </ol>
+      <hr class="hair">
+      <div class="stat">On the preparation page</div>
+    </div>
+    <div class="card">
+      <div class="card-label">In the room</div>
+      <h3 class="card-title">The room decides what is true</h3>
+      <ol class="toc" start="4">
+        <li><a href="#step-04"><span class="n">04</span><span class="t">Open the session screen</span><span class="go">›</span></a></li>
+        <li><a href="#step-05"><span class="n">05</span><span class="t">Record the meeting</span><span class="go">›</span></a></li>
+        <li><a href="#step-06"><span class="n">06</span><span class="t">Work through the four parts</span><span class="go">›</span></a></li>
+        <li><a href="#step-07"><span class="n">07</span><span class="t">Selects and countercurrents</span><span class="go">›</span></a></li>
+      </ol>
+      <hr class="hair">
+      <div class="stat">On the session screen · two hours</div>
+    </div>
+    <div class="card">
+      <div class="card-label">After</div>
+      <h3 class="card-title">Lighthouse writes it up</h3>
+      <ol class="toc" start="8">
+        <li><a href="#step-08"><span class="n">08</span><span class="t">The leave-behind and the final report</span><span class="go">›</span></a></li>
+      </ol>
+      <p class="card-body">The leave-behind for the client, on a link with no password, and the final report with every interaction and the full transcript.</p>
+      <hr class="hair">
+      <div class="stat">On the session screen, then the preparation page</div>
+    </div>
+  </div>
+  <nav class="also" aria-label="More in this guide">
+    <a href="#start">Before you start ›</a>
+    <a href="#help">If something goes wrong ›</a>
+    <a href="#feedback">What to look out for ›</a>
+  </nav>
+</section>
+
+<section class="sec is-blue" id="start" aria-labelledby="start-h">
+  <div class="shead">
+    <div class="label">Before you start</div>
+    <h2 class="headline" id="start-h">Five things to check first</h2>
+  </div>
+  <div class="trow"><div class="name">Browser</div><div><div class="move">Chrome or Edge, on a laptop</div><div class="detail">The microphone only works there.</div></div></div>
+  <div class="trow"><div class="name">The page</div><div><div class="move">Open the Lighthouse and click <span class="ui">Live session</span></div><div class="detail">It is in the left sidebar, and at the top of a brief.</div></div></div>
+  <div class="trow"><div class="name">Login</div><div><div class="move">If it asks for a password, use your team login</div><div class="detail">The client's links never ask for one.</div></div></div>
+  <div class="trow"><div class="name">Test client</div><div><div class="move">Use a test name, such as “Zing Zang – test”</div><div class="detail">Not a real client: a test session is saved like any other.</div></div></div>
+  <div class="trow"><div class="name">Google Meet</div><div><div class="move">Wear headphones</div><div class="detail">So voices are not heard twice.</div></div></div>
+</section>
+
+<section class="sec" id="step-01" aria-labelledby="s1-h">
+  <div class="step-grid">
+    <div>
+      <div class="label">Step 01 · Before the meeting</div>
+      <h2 class="headline" id="s1-h">Create the client and a session</h2>
+      <dl class="facts"><div><dt>Where</dt><dd>The Live session page</dd></div></dl>
+    </div>
+    <ol class="steps">
+      <li><div>On the Live session page, fill in <b>New client</b>: the client's name, the brand, the category, the product and the market.</div></li>
+      <li><div>Click <span class="ui">Create the client</span>.</div></li>
+      <li><div>Click <span class="ui">Start a new live session</span>. The session's preparation page opens.</div></li>
+    </ol>
+  </div>
+  <nav class="step-nav" aria-label="Step 01"><a class="back" href="#steps">‹ All steps</a><a href="#step-02">Next · Send the client their ten questions ›</a></nav>
+</section>
+
+<section class="sec is-blue" id="step-02" aria-labelledby="s2-h">
+  <div class="step-grid">
+    <div>
+      <div class="label">Step 02 · Before the meeting</div>
+      <h2 class="headline" id="s2-h">Send the client their ten questions</h2>
+      <dl class="facts"><div><dt>Where</dt><dd>The preparation page, section 1</dd></div><div><dt>Who</dt><dd>The client, on a link of their own</dd></div></dl>
+    </div>
+    <div>
+      <ol class="steps">
+        <li><div>In section 1, <b>Before the session: the client's questions</b>, copy the link. The copy icon appears when you point at the box.</div></li>
+        <li><div>Send it to the client. They need no password: ten questions, one per screen, and each answer is saved as they give it.</div></li>
+        <li><div>For this test, open the link yourself and answer as if you were the client.</div></li>
+        <li><div>Back on the preparation page, click <span class="ui">Reload the answers</span> to see them. You can fix an answer under <span class="ui">Complete or correct the answers</span>, then <span class="ui">Save the answers</span>.</div></li>
+      </ol>
+      <p class="note"><span class="ui">Close the link</span> stops the client from answering. Ending the session closes it too.</p>
+    </div>
+  </div>
+  <nav class="step-nav" aria-label="Step 02"><a class="back" href="#steps">‹ All steps</a><a href="#step-03">Next · Let Lighthouse dig the four parts ›</a></nav>
+</section>
+
+<section class="sec" id="step-03" aria-labelledby="s3-h">
+  <div class="step-grid">
+    <div>
+      <div class="label">Step 03 · Before the meeting</div>
+      <h2 class="headline" id="s3-h">Let Lighthouse dig the four parts</h2>
+      <dl class="facts"><div><dt>Where</dt><dd>The preparation page, sections 2 and 3</dd></div><div><dt>Time</dt><dd>About five minutes</dd></div></dl>
+    </div>
+    <ol class="steps">
+      <li><div>In section 2, <b>What Lighthouse looks for</b>, check the brand, category, market, competitors and the question. Click <span class="ui">Save</span>.</div></li>
+      <li><div>In section 3, click <span class="ui">Dig the four parts</span>. It takes about five minutes, and you can keep working meanwhile.</div></li>
+      <li><div>When it is done, read the currents in each part: Company, Competition, Customer and Climate.</div></li>
+      <li><div>Click <span class="ui">Cut</span> on anything weak: it will not appear in the room. Use <span class="ui">+ Add a current</span> for ideas of your own.</div></li>
+    </ol>
+  </div>
+  <div class="parts" aria-label="The four parts">
+    <div class="part"><b><span class="code c0"></span>Company</b><p>Mission, marketing history, product and the challenge in front of it.</p></div>
+    <div class="part"><b><span class="code c1"></span>Competition</b><p>What competitors do, and what is moving in the wider industry.</p></div>
+    <div class="part"><b><span class="code c2"></span>Customer</b><p>What customers are dealing with, and the barriers they face.</p></div>
+    <div class="part"><b><span class="code c3"></span>Climate</b><p>Macro forces, and what is happening in culture right now.</p></div>
+  </div>
+  <nav class="step-nav" aria-label="Step 03"><a class="back" href="#steps">‹ All steps</a><a href="#step-04">Next · Open the session screen ›</a></nav>
+</section>
+
+<section class="sec is-blue" id="step-04" aria-labelledby="s4-h">
+  <div class="step-grid">
+    <div>
+      <div class="label">Step 04 · In the room</div>
+      <h2 class="headline" id="s4-h">Open the session screen</h2>
+      <dl class="facts"><div><dt>Where</dt><dd>The computer that will be in the meeting</dd></div></dl>
+    </div>
+    <ol class="steps">
+      <li><div>On the computer that will be in the meeting, click <span class="ui">Open the session screen ›</span>.</div></li>
+      <li><div>The opening screen shows the run of show and what the client told us.</div></li>
+      <li><div>On the right sits <b>◉ The room</b>: the microphone, the people and the transcript. It is beside every part, and the recording starts there.</div></li>
+      <li><div>The steps along the top move between the screens. <span class="ui">Selects · 0</span> counts what the room has kept, and <span class="ui">‹ Prepare</span> goes back to the preparation page, which stops the microphone.</div></li>
+    </ol>
+  </div>
+  <figure class="fig">
+    <figcaption class="fig-cap"><span class="micro">Example</span>The top of the session screen</figcaption>
+    <div class="rp rp-top" aria-hidden="true">
+      <div class="rp-wm"><svg role="img" aria-label="Lighthouse" viewBox="79 0 664 68" fill="none" xmlns="http://www.w3.org/2000/svg"><g><path d="M90.8672 66.3421H138.733V50.953H110.738V25.8311L90.8672 24.8359V66.3421Z" fill="black"/><path d="M154.004 50.9533H143.14V66.3424H184.452V50.9533H173.587V28.9744L154.004 27.9961V50.9533Z" fill="black"/><path d="M220.379 41.6983H239.273C238.295 48.1306 234.866 52.9998 224.295 52.9998C213.724 52.9998 209.317 46.7643 209.317 34.1021C209.317 32.9326 209.362 31.825 209.452 30.7736L189.062 29.7559C188.932 31.1503 188.864 32.5672 188.864 34.0066C188.864 52.2239 198.26 67.911 219.306 67.911C234.188 67.911 239.278 61.1863 241.623 55.1476V66.3535H257.872V33.2025L220.379 31.3246V41.7039V41.6983Z" fill="black"/><path d="M266.296 66.3426H285.873V41.2094H310.54V66.3426H330.117V36.8069L266.296 33.6133V66.3426Z" fill="black"/><path d="M356.355 66.3428H376.034V39.1011L356.355 38.1172V66.3428Z" fill="black"/><path d="M401.192 66.3415H420.775V41.3377L401.192 40.3594V66.3415Z" fill="black"/><path d="M445.442 66.343H465.019V43.5545L445.442 42.5762V66.343Z" fill="black"/><path d="M507.998 52.0206C500.297 52.0206 496.348 49.5129 494.438 45.0204L473.517 43.9746C476.675 56.946 486.737 67.8989 507.998 67.8989C527.422 67.8989 537.456 58.7734 541.473 47.3707L520.936 46.3417C518.846 50.0021 514.964 52.015 507.998 52.015V52.0206Z" fill="black"/><path d="M581.814 52.0218C577.604 52.0218 574.633 51.1559 572.74 48.9406L551.027 47.8555C553.429 61.2598 563.836 67.9057 581.808 67.9057C598.424 67.9057 608.504 62.2156 611.871 50.9029L590.091 49.8121C588.187 51.3921 585.463 52.0275 581.814 52.0275V52.0218Z" fill="black"/><path d="M650.828 53.9731C648.105 53.9731 645.997 53.4109 644.364 52.5225L621.635 51.3867C624.499 60.4335 632.663 68.0016 650.438 68.0016C668.212 68.0016 676.156 62.6207 679.196 54.2655L656.591 53.1354C655.088 53.6751 653.178 53.9731 650.833 53.9731H650.828Z" fill="black"/><path d="M688.518 66.3412H741.869V57.4012L688.518 54.7305V66.3412Z" fill="black"/><path d="M99.438 1.55664H79.5674V18.8687L99.438 18.4695V1.55664Z" fill="black"/><path d="M162.287 16.9514H173.152V1.55664H131.84V16.9514H142.705V17.6036L162.287 17.21V16.9514Z" fill="black"/><path d="M214.464 14.9056C217.092 14.9056 219.312 15.3273 221.137 16.0357L245.228 15.5522C241.929 6.87085 232.742 0 214.176 0C196.865 0 186.402 6.80337 181.322 16.8285L206.606 16.3225C208.849 15.3498 211.481 14.9056 214.47 14.9056H214.464Z" fill="black"/><path d="M318.817 1.55664H299.24V14.4718L318.817 14.0782V1.55664Z" fill="black"/><path d="M274.573 1.55664H254.996V15.3546L274.573 14.961V1.55664Z" fill="black"/><path d="M385.096 1.55664H324.699V13.9601L385.096 12.7513V1.55664Z" fill="black"/><path d="M409.475 1.55664H389.893V12.6557L409.475 12.2621V1.55664Z" fill="black"/><path d="M453.719 1.55664H434.143V11.7673L453.719 11.3794V1.55664Z" fill="black"/><path d="M496.699 0C483.297 0 474.348 4.50372 468.771 11.0766L523.649 9.98015C518.027 4.01455 509.36 0 496.699 0Z" fill="black"/><path d="M558.864 1.55664H539.186V9.66446L558.864 9.27088V1.55664Z" fill="black"/><path d="M601.838 1.55664H582.261V8.8042L601.838 8.41062V1.55664Z" fill="black"/><path d="M638.94 0C627.419 0 619.368 3.01935 614.764 8.1528L662.313 7.20258C657.624 2.81693 650.098 0 638.945 0H638.94Z" fill="black"/><path d="M730.276 1.55664H677.218V6.90375L730.276 5.84108V1.55664Z" fill="black"/><path d="M107.297 21.7315V18.3242L87.4268 18.7234V21.4279L107.297 21.7315Z" fill="#0000FF"/><path d="M85.2168 21.3594V24.6261L105.087 25.6213V21.663L85.2168 21.3594Z" fill="#0000FF"/><path d="M168.152 22.8218V17.0586L148.14 17.4578V22.5125L168.152 22.8218Z" fill="#0000FF"/><path d="M147.01 22.3105V27.8826L167.022 28.8834V22.6198L147.01 22.3105Z" fill="#0000FF"/><path d="M232.742 22.603H252.319C252.2 20.1235 251.731 17.6776 250.872 15.3555L226.781 15.8503C230.392 17.284 232.414 19.8704 232.736 22.5974L232.742 22.603Z" fill="#0000FF"/><path d="M204.3 23.4299L183.452 23.1094C182.875 25.2403 182.491 27.4613 182.276 29.7497L202.667 30.7674C202.904 27.8942 203.452 25.454 204.3 23.4242V23.4299Z" fill="#0000FF"/><path d="M218.119 29.8105V31.3118L255.612 33.1897V29.8105H218.119Z" fill="#0000FF"/><path d="M205.43 23.9915C206.882 20.1568 209.199 17.6323 212.25 16.1816L186.966 16.7383C185.966 18.9086 185.175 21.2195 184.582 23.6372L205.43 23.9915Z" fill="#0000FF"/><path d="M304.891 24.705V25.8745H280.223V24.3171L260.646 24.0078V33.5438L324.468 36.8049V25.0143L304.891 24.705Z" fill="#0000FF"/><path d="M326.163 25.268V13.9609L306.586 14.3545V24.9588L326.163 25.268Z" fill="#0000FF"/><path d="M281.494 24.5646V14.4551L261.917 14.8655V24.2497L281.494 24.5646Z" fill="#0000FF"/><path d="M351.835 16.3896V25.1102L371.514 25.4139V16.3896H391.876V12.1895L331.479 13.3983V16.3896H351.835Z" fill="#0000FF"/><path d="M350.705 24.7617V38.048L370.384 39.0994V25.0878L350.705 24.7617Z" fill="#0000FF"/><path d="M395.543 25.9766V40.2861L415.125 41.287V41.1576H439.793V42.5521L459.37 43.5529V26.983L395.543 25.9766Z" fill="#0000FF"/><path d="M460.952 27.1575V11.1836L441.375 11.5772V25.9149H416.702V12.0663L397.125 12.4599V26.1679L460.952 27.1575Z" fill="#0000FF"/><path d="M490.353 27.685C491.421 19.9933 495.111 15.6414 505.326 15.6414C515.541 15.6414 519.405 20.1676 520.371 28.1461L540.999 28.4666C540.112 21.6182 537.507 14.9048 532.581 9.67578L477.076 10.7891C473.042 15.5402 470.748 21.3652 469.805 27.3702L490.348 27.685H490.353Z" fill="#0000FF"/><path d="M487.461 33.7358C487.461 31.363 487.569 29.1927 487.84 27.2304L466.907 26.9043C466.551 29.1702 466.376 31.4586 466.376 33.7302C466.376 37.16 466.755 40.5954 467.562 43.9071L489.122 44.9867C487.862 42.0235 487.461 38.2283 487.461 33.7302V33.7358Z" fill="#0000FF"/><path d="M538.394 27.8261L517.467 27.5C517.688 29.3274 517.772 31.3346 517.772 33.505C517.772 38.7115 517.253 42.9678 515.479 46.0715L536.553 47.123C538.078 42.7823 538.767 38.1268 538.767 33.4993C538.767 31.6158 538.643 29.7097 538.4 27.8205L538.394 27.8261Z" fill="#0000FF"/><path d="M609.182 29.642V8.15234L589.605 8.55155V29.3328L609.182 29.642Z" fill="#0000FF"/><path d="M564.514 38.8694V28.9735L544.836 28.6699V41.3995C544.836 43.6992 545.022 45.847 545.378 47.8487L567.091 48.9339C565.334 46.876 564.514 43.6542 564.514 38.8637V38.8694Z" fill="#0000FF"/><path d="M566.209 28.9669V9.02344L546.53 9.42264V28.6576L566.209 28.9669Z" fill="#0000FF"/><path d="M607.487 29.6415L587.91 29.3379V38.8739C587.91 44.3953 586.82 47.8363 584.441 49.8099L606.222 50.9006C607.058 48.0837 607.487 44.9238 607.487 41.4097V29.6471V29.6415Z" fill="#0000FF"/><path d="M637.793 45.4922H618.702C618.872 47.4826 619.245 49.4674 619.855 51.3847L642.584 52.5205C639.528 50.8562 638.172 48.0336 637.793 45.4922Z" fill="black"/><path d="M619.725 29.8724L670.178 30.6595C666.726 28.0225 661.867 26.3863 655.41 25.8409L644.155 24.857C639.454 24.4634 637.692 22.2931 637.692 19.4311C637.692 15.8776 641.409 13.9041 646.794 13.9041C652.862 13.9041 656.387 16.6648 656.975 21.0055H676.359C675.998 15.6977 674.06 10.7667 670.071 6.98828L622.522 7.94975C619.454 11.4133 617.917 15.8158 617.917 20.9043C617.917 24.2947 618.538 27.2916 619.725 29.8667V29.8724Z" fill="#0000FF"/><path d="M668.071 30.5765L617.617 29.7949C620.431 35.8449 626.425 39.5389 634.9 40.4273L648.703 41.8892C652.816 42.3783 655.065 44.1326 655.065 47.8323C655.065 50.295 653.697 52.1336 650.935 53.1344L673.54 54.2646C674.421 51.8356 674.834 49.1536 674.834 46.2748C674.834 39.3927 672.726 34.085 668.065 30.5765H668.071Z" fill="#0000FF"/><path d="M702.547 50.8404V40.2361H732.988V31.1387L682.868 30.3516V54.6863L736.22 57.402V50.8404H702.547Z" fill="#0000FF"/><path d="M735.926 31.4077V26.1786H705.484V16.6371H738.864V5.41992L685.806 6.49384V30.6261L735.926 31.4077Z" fill="#0000FF"/></g></svg></div>
+      <div class="rp-client">Live session · <b>Zing Zang – test</b></div>
+      <div class="rp-steps"><span class="rp-step on"><i>0</i>Session</span><span class="rp-step"><i>1</i>Company</span><span class="rp-step"><i>2</i>Competition</span><span class="rp-step"><i>3</i>Customer</span><span class="rp-step"><i>4</i>Climate</span><span class="rp-step"><i>5</i>Selects</span><span class="rp-step"><i>6</i>Countercurrent</span><span class="rp-step"><i>7</i>Brief</span></div>
+      <span class="rp-pile">Selects · 0</span>
+      <span class="rp-prep">‹ Prepare</span>
+    </div>
+  </figure>
+  <nav class="step-nav" aria-label="Step 04"><a class="back" href="#steps">‹ All steps</a><a href="#step-05">Next · Record the meeting ›</a></nav>
+</section>
+
+<section class="sec" id="step-05" aria-labelledby="s5-h">
+  <div class="step-grid">
+    <div>
+      <div class="label">Step 05 · In the room</div>
+      <h2 class="headline" id="s5-h">Record the meeting</h2>
+      <p class="intro">Lighthouse transcribes the meeting as it happens. That is how it notices which topics the room keeps coming back to, and how the final report gets its full transcript.</p>
+      <dl class="facts"><div><dt>Where</dt><dd>The room panel, on the opening screen</dd></div><div><dt>Time</dt><dd>The 10′ intro</dd></div></dl>
+    </div>
+    <ol class="steps">
+      <li><div>Before anyone speaks, tell the room the conversation is being transcribed. Then click <span class="ui">I've told the room ✓</span>. The microphone stays off until you do.</div></li>
+      <li><div>Click <span class="ui">▶︎ Listen</span> and allow the microphone when the browser asks. The transcript appears in the room panel as people speak.</div></li>
+      <li><div><b>In person:</b> the laptop's microphone hears the room. Put the laptop in the middle of the table.</div></li>
+      <li><div><b>On Google Meet:</b> also click <span class="ui">+ Meet tab</span>, choose the Meet tab and tick <b>Also share tab audio</b>. The other side is heard through the tab, your room through the microphone.</div></li>
+      <li><div>Click <span class="ui">Names</span> to give each voice a name and a role. Mark the Atlantic people with <span class="ui">Atlantic</span>: their words do not count when Lighthouse picks. One person showing up as two voices? Join them with <b>Same person as…</b></div></li>
+      <li><div>Optional: click <span class="ui">Round of introductions</span> and ask everyone to say their name and role. Lighthouse names the voices for you. Click <span class="ui">■ End the introductions</span> when everyone has spoken.</div></li>
+      <li><div>Click <span class="ui">Start · Company currents ›</span> to begin the first part.</div></li>
+    </ol>
+  </div>
+  <figure class="fig">
+    <figcaption class="fig-cap"><span class="micro">Example</span>The room panel, before the microphone and once it is listening</figcaption>
+    <div class="rp-pair">
+      <div>
+        <span class="rp-micro">First · ask the room</span>
+        <div class="rp rp-room" aria-hidden="true">
+          <div class="rp-room-h"><span class="rp-lbl">◉ The room</span><span class="rp-live"><i></i>Off</span></div>
+          <div class="rp-consent">Before the microphone switches on: everyone in the room knows this conversation is being transcribed, with names on who said what — voices are told apart for this meeting only.<br><span class="rp-pbtn">I've told the room ✓</span></div>
+          <div class="rp-ctl"><span class="off">▶︎ Listen</span><span>+ Meet tab</span><span>Round of introductions</span><span class="gear">⚙︎</span></div>
+          <div class="rp-engs">Not listening · AssemblyAI EU, voices told apart</div>
+          <div class="rp-micro" style="margin:10px 0 4px">People</div>
+          <div class="rp-ppl"><span class="none">Voices appear as people speak.</span><span class="ghost">Names</span></div>
+          <div class="rp-micro" style="margin-bottom:6px">Transcript · who said it</div>
+          <div class="rp-tx"><div class="empty">Ask the room first, then press Listen.</div></div>
+        </div>
+      </div>
+      <div>
+        <span class="rp-micro">Then · listening</span>
+        <div class="rp rp-room" aria-hidden="true">
+          <div class="rp-room-h"><span class="rp-lbl">◉ The room</span><span class="rp-live on"><i></i>Live</span></div>
+          <div class="rp-ctl"><span class="on">❚❚ Pause</span><span>+ Meet tab</span><span class="on">■ End the introductions</span><span class="gear">⚙︎</span></div>
+          <div class="rp-engs">Listening · voices told apart · AssemblyAI EU, voices told apart</div>
+          <div class="rp-micro" style="margin:10px 0 4px">People</div>
+          <div class="rp-ppl"><span class="fac">Alex</span><span>Dana</span><span class="unk">Voice C</span><span class="ghost">Names</span></div>
+          <div class="rp-micro" style="margin-bottom:6px">Transcript · who said it</div>
+          <div class="rp-tx">
+            <p class="fac"><b>Alex</b><span>Atlantic</span><br>This conversation is being transcribed. Shall we go round the table first?</p>
+            <p><b>Dana</b><span>Brand lead</span><br>I'm Dana, and I look after the brand.</p>
+            <p><b>Voice C</b><br>And I'm Sam, from the sales team.</p>
+          </div>
+          <div class="rp-note">Recorded with the room's consent. Voices told apart for this meeting only — nothing is kept as a voiceprint.</div>
+        </div>
+      </div>
+    </div>
+  </figure>
+  <div class="card privacy">
+    <div class="card-label">Privacy</div>
+    <p class="card-body">Lighthouse tells the voices apart by itself (Voice A, Voice B…). Nothing is kept as a voiceprint, and the audio is processed on AssemblyAI's servers in the EU.</p>
+  </div>
+  <nav class="step-nav" aria-label="Step 05"><a class="back" href="#steps">‹ All steps</a><a href="#step-06">Next · Work through the four parts ›</a></nav>
+</section>
+
+<section class="sec is-blue" id="step-06" aria-labelledby="s6-h">
+  <div class="step-grid">
+    <div>
+      <div class="label">Step 06 · In the room</div>
+      <h2 class="headline" id="s6-h">Work through the four parts</h2>
+      <dl class="facts"><div><dt>Where</dt><dd>Company, Competition, Customer, Climate</dd></div><div><dt>Time</dt><dd>15′ each, with a 5′ break before Climate</dd></div></dl>
+    </div>
+    <ol class="steps">
+      <li><div>For each current, the room decides: <span class="ui">✓ Keep</span>, <span class="ui">★ Star</span> (the strongest), <span class="ui">Tweak</span> (rewrite it) or <span class="ui">✕ Kill</span>. The keys <span class="ui key">K</span> <span class="ui key">S</span> <span class="ui key">T</span> <span class="ui key">X</span> decide the first current still open.</div></li>
+      <li><div>Lighthouse listens, and reads the last minutes every 30 seconds. When people keep coming back to a topic, it marks the current <b>◉ Picked from the conversation</b>. Click <span class="ui">Undo</span> if it got it wrong.</div></li>
+      <li><div>Prefer to approve each pick? Switch the room panel to <span class="ui">AI suggests</span>, then click <span class="ui">Confirm</span> or <span class="ui">Dismiss</span> on each suggestion.</div></li>
+      <li><div>When someone disagrees, Lighthouse only flags the current as <b>Contested</b>. It never kills anything on its own.</div></li>
+      <li><div><b>Ask Lighthouse:</b> type a question in the box, such as “what about Gen Z planners?”, and click <span class="ui">Dig ›</span>. It comes back with a new current and its evidence. <b>Their questions</b>, under the box, are the client's own: click one to dig it.</div></li>
+      <li><div><b>Add an idea:</b> type it in the <b>+ Add a current</b> box and click <span class="ui">Add</span>. Lighthouse looks for posts that back it.</div></li>
+      <li><div>Move between parts with the steps at the top, or with <span class="ui">‹ Back</span> and <span class="ui">Next · Competition ›</span> at the bottom of each part.</div></li>
+    </ol>
+  </div>
+  <figure class="fig">
+    <figcaption class="fig-cap"><span class="micro">Example · try the buttons</span>Two currents and the room beside them. The cards answer like the real ones.</figcaption>
+    <div class="rp-seclay">
+      <div class="rp-grid2">
+        <div class="rp rp-cur" data-dec="keep">
+          <div class="tag">Current <span class="star" hidden>★ starred</span></div>
+          <div class="ttl">A current from the dig, with the evidence behind it</div>
+          <p class="b">Lighthouse found it before the meeting. The room says whether it is true: keep it, star it, rewrite it or kill it.</p>
+          <div class="ev"><b>Evidence</b> · 4 posts · Reddit, TikTok · 1 article <u>show ↗</u></div>
+          <div class="rp-aimark">◉ <b>Picked from the conversation</b> — Dana, Sam · 3 mentions<button type="button" data-demo="undo">Undo</button></div>
+          <div class="rp-talk">Talk · <b>3 mentions</b> · 2 people · came back to it</div>
+          <div class="rp-dec"><button type="button" class="on" data-demo="dec" data-d="keep" aria-pressed="true">✓ Keep</button><button type="button" data-demo="dec" data-d="star" aria-pressed="false">★ Star</button><button type="button" data-demo="tweak">Tweak</button><button type="button" class="kill" data-demo="dec" data-d="kill" aria-pressed="false">✕ Kill</button></div>
+        </div>
+        <div class="rp rp-cur" data-dec="">
+          <div class="tag">Added by the room <span class="star" hidden>★ starred</span></div>
+          <div class="ttl">An idea the room added, in its own words</div>
+          <p class="b">Lighthouse goes looking for posts that back it while the room talks.</p>
+          <div class="ev">Lighthouse is looking for posts that back it…</div>
+          <div class="rp-aimark sugg">◉ <b>Lighthouse suggests ✓ Keep</b> — Dana · 2 mentions<br><button type="button" data-demo="confirm">Confirm</button><button type="button" data-demo="dismiss">Dismiss</button></div>
+          <div class="rp-contest"><b>Contested</b> — Sam: “That is not what our customers tell us.”</div>
+          <div class="rp-talk">Talk · <b>3 mentions</b> · 2 people</div>
+          <div class="rp-dec"><button type="button" data-demo="dec" data-d="keep" aria-pressed="false">✓ Keep</button><button type="button" data-demo="dec" data-d="star" aria-pressed="false">★ Star</button><button type="button" data-demo="tweak">Tweak</button><button type="button" class="kill" data-demo="dec" data-d="kill" aria-pressed="false">✕ Kill</button></div>
+        </div>
+      </div>
+      <aside class="rp rp-room">
+        <div class="rp-room-h"><span class="rp-lbl">◉ The room</span><span class="rp-live on"><i></i>Live</span></div>
+        <div class="rp-ctl" aria-hidden="true"><span class="on">❚❚ Pause</span><span>+ Meet tab</span><span class="gear">⚙︎</span></div>
+        <div class="rp-mode" role="group" aria-label="How Lighthouse decides"><button type="button" class="on" data-demo="mode" aria-pressed="true">AI selects</button><button type="button" data-demo="mode" aria-pressed="false">AI suggests</button></div>
+        <div class="rp-micro" style="margin:8px 0 4px">People</div>
+        <div class="rp-ppl" aria-hidden="true"><span class="fac">Alex</span><span>Dana</span><span>Sam</span><span class="ghost">Names</span></div>
+        <div class="rp-reads" aria-hidden="true"><div class="rh"><span class="rp-micro">Lighthouse's readings</span><span class="u">Read now</span></div>
+          <p><b>Reading 4</b> · picked ✓ A current from the dig, with the evidence behind it</p>
+          <p><b>Reading 3</b> · nothing strong enough yet.</p>
+        </div>
+      </aside>
+    </div>
+    <div class="rp-ask" aria-hidden="true">
+      <div class="lbl2">Ask Lighthouse</div>
+      <div class="rowc"><div class="in">Dig into something the room just said — e.g. “what about Gen Z planners?”</div><div class="dig">Dig ›</div></div>
+    </div>
+  </figure>
+  <nav class="step-nav" aria-label="Step 06"><a class="back" href="#steps">‹ All steps</a><a href="#step-07">Next · Selects and countercurrents ›</a></nav>
+</section>
+
+<section class="sec" id="step-07" aria-labelledby="s7-h">
+  <div class="step-grid">
+    <div>
+      <div class="label">Step 07 · In the room</div>
+      <h2 class="headline" id="s7-h">Selects and countercurrents</h2>
+      <dl class="facts"><div><dt>Where</dt><dd>Selects, then Countercurrent</dd></div><div><dt>Time</dt><dd>5′, then 30′</dd></div></dl>
+    </div>
+    <ol class="steps">
+      <li><div>Click <span class="ui">Selects</span> at the top: everything the room kept, side by side. You need at least four. <span class="ui">Take it out</span> removes one.</div></li>
+      <li><div>Click <span class="ui">Find the countercurrents ›</span>. Lighthouse proposes territories in the gaps between what the room kept, and starred currents carry more weight.</div></li>
+      <li><div>Discuss them. Write the room's notes in each one, and click <span class="ui">Mark ripe</span> on the good ones.</div></li>
+      <li><div>Click <span class="ui">Regenerate with the notes</span>. Ripe territories stay; the others are rewritten using the notes.</div></li>
+    </ol>
+  </div>
+  <figure class="fig">
+    <figcaption class="fig-cap"><span class="micro">Example · try Mark ripe</span>Three selects with their part's code, and two territories built from them. The second is ripe.</figcaption>
+    <div class="rp-sels" aria-hidden="true">
+      <div class="rp rp-sel"><div class="s"><span class="code c0"></span>Company · <b>★ starred</b></div><div class="t">A current the room starred</div><span class="x">Take it out</span></div>
+      <div class="rp rp-sel"><div class="s"><span class="code c2"></span>Customer</div><div class="ai">◉ picked from the conversation</div><div class="t">A current Lighthouse picked as people talked</div><span class="x">Take it out</span></div>
+      <div class="rp rp-sel"><div class="s"><span class="code c3"></span>Climate</div><div class="t">A current that pulls the other way</div><span class="x">Take it out</span></div>
+    </div>
+    <div class="rp-terrs">
+    <div class="rp rp-terr">
+      <div class="rp-terr-h"><span class="k">Territory / 01</span><button type="button" class="rp-sbtn" data-demo="ripe" aria-pressed="false">Mark ripe</button></div>
+      <div class="ttl">A territory sits in the gap between two currents</div>
+      <div class="rp-tens"><div><span class="rp-micro">Side A</span>One thing the room kept.</div><div><span class="rp-micro">Side B</span>Another it kept, which pulls the other way.</div></div>
+      <div class="why">Why the gap is open: what nobody else in the category is saying, and why this brand could say it.</div>
+      <div class="evs">Built from: · A current the room starred<br>· A current that pulls the other way</div>
+      <div class="notes">Notes from the room…</div>
+    </div>
+    <div class="rp rp-terr ripe">
+      <div class="rp-terr-h"><span class="k">Territory / 02</span><button type="button" class="rp-sbtn inv" data-demo="ripe" aria-pressed="true">★ Ripe</button></div>
+      <div class="ttl">Ripe territories stay when Lighthouse looks again</div>
+      <div class="rp-tens"><div><span class="rp-micro">Side A</span>A current from one part.</div><div><span class="rp-micro">Side B</span>A current from another part that contradicts it.</div></div>
+      <div class="why">The room marked it ripe, so Regenerate with the notes keeps it as it is and rewrites only the others.</div>
+      <div class="evs">Built from: · A current the room kept<br>· A current Lighthouse picked as people talked</div>
+      <div class="notes filled">Room: this is the one. Take it into the leave-behind.</div>
+    </div>
+    </div>
+  </figure>
+  <nav class="step-nav" aria-label="Step 07"><a class="back" href="#steps">‹ All steps</a><a href="#step-08">Next · The leave-behind and the final report ›</a></nav>
+</section>
+
+<section class="sec is-blue" id="step-08" aria-labelledby="s8-h">
+  <div class="step-grid">
+    <div>
+      <div class="label">Step 08 · After</div>
+      <h2 class="headline" id="s8-h">The leave-behind and the final report</h2>
+      <dl class="facts"><div><dt>Where</dt><dd>Brief, the last step at the top</dd></div><div><dt>Time</dt><dd>The 10′ of next steps</dd></div></dl>
+    </div>
+    <ol class="steps">
+      <li><div>Click <span class="ui">Write the leave-behind ›</span>. It is the brief built together in the room: the challenge, the territories and the evidence behind them.</div></li>
+      <li><div>Click <span class="ui">Save it and get a link</span> to share it with the client, no password needed. <span class="ui">Export PDF</span> opens the print dialog: choose Save as PDF.</div></li>
+      <li><div>Under <b>The final report</b>, click <span class="ui">Show the full report</span>. It holds everything: the client's answers, every current and who decided it, every question to Lighthouse, every interaction with its time, and the full transcript.</div></li>
+      <li><div>Untick the transcript or the timeline if a copy should leave them out. What is ticked goes into the link and the PDF, so after a change click <span class="ui">Save the changes to the link</span>. <span class="ui">Download the transcript (.txt)</span> gives the transcript on its own.</div></li>
+      <li><div>Click <span class="ui">End the session</span> when you are done. The microphone stops and the client's question link closes.</div></li>
+      <li><div>Later, on the preparation page (<span class="ui">‹ Prepare</span>), section 5 has the report PDF, the transcript and the link again.</div></li>
+    </ol>
+  </div>
+  <figure class="fig">
+    <figcaption class="fig-cap"><span class="micro">Example</span>The final report, under the leave-behind</figcaption>
+    <div class="rp rp-report">
+      <div class="rp-lbl">The final report</div>
+      <div class="rh">Everything that happened in the room</div>
+      <div class="rtxt">Under the leave-behind, the whole session: what the client told us, what Lighthouse looked for, every current and who decided it, every question, every round of territories, every interaction with its time — and the full transcript. Nothing in it is written by a model.</div>
+      <div class="rp-opts"><label class="rp-opt"><input type="checkbox" checked>The full transcript</label><label class="rp-opt"><input type="checkbox" checked>Every interaction, in order</label></div>
+      <div class="rp-quiet" style="margin-top:8px">What is ticked goes into the link and the PDF. The link changes when it is saved again.</div>
+      <div class="rp-linkrow" aria-hidden="true"><span class="rp-obtn">Show the full report</span><span class="rp-obtn">Download the transcript (.txt)</span></div>
+    </div>
+  </figure>
+  <nav class="step-nav" aria-label="Step 08"><a class="back" href="#steps">‹ All steps</a><a href="#help">Next · If something goes wrong ›</a></nav>
+</section>
+
+<section class="sec" id="help" aria-labelledby="help-h">
+  <div class="shead">
+    <div class="label">If something goes wrong</div>
+    <h2 class="headline" id="help-h">What the screen says, and what to do</h2>
+  </div>
+  <div class="fix">
+    <div class="fix-row"><div class="say"><span class="micro">The room panel</span>Microphone blocked.</div><div class="do">Allow the microphone for this site in the browser's address bar, then press <span class="ui">▶︎ Listen</span> again.</div></div>
+    <div class="fix-row"><div class="say"><span class="micro">The room panel</span>No sound came with the tab.</div><div class="do">Click <span class="ui">+ Meet tab</span> again, choose the Meet tab and tick <b>Also share tab audio</b>.</div></div>
+    <div class="fix-row"><div class="say"><span class="micro">The room panel</span>Lost the connection to AssemblyAI.</div><div class="do">Press <span class="ui">▶︎ Listen</span> to try again. If it keeps failing, click <span class="ui">Use the free mode</span>: the browser transcribes and you tap who is speaking, with the name buttons or the keys 1 to 9. The free mode does not hear the Meet tab, and in Chrome the audio goes to Google's speech service. The same goes for <b>AssemblyAI did not accept the connection</b>.</div></div>
+    <div class="fix-row"><div class="say"><span class="micro">The top of the screen</span>Not saved — retrying</div><div class="do">Keep going. The change is kept on the page and saved with the next one. Do not reload the page while it shows.</div></div>
+    <div class="fix-row"><div class="say"><span class="micro">The preparation page</span>Someone has this session open on another screen.</div><div class="do">One screen drives a session: close it on the other computer. Two screens overwrite each other's changes.</div></div>
+  </div>
+</section>
+
+<section class="sec is-blue feedback" id="feedback" aria-labelledby="fb-h">
+  <div class="shead">
+    <div class="label">Your feedback</div>
+    <h2 class="headline" id="fb-h">What to look out for</h2>
+  </div>
+  <p class="lead">Please note anything that confused you or did not work, with a screenshot if you can, and send it to Marcelo.</p>
+  <div class="row2">
+    <div class="starter"><div class="k">Check / 01 · The steps</div><p class="q">Did each one make sense without help?</p></div>
+    <div class="starter"><div class="k">Check / 02 · The recording</div><p class="q">Was the transcript accurate? Were the voices told apart and named correctly? Did the Google Meet tab work?</p></div>
+    <div class="starter"><div class="k">Check / 03 · Lighthouse's picks</div><p class="q">Did it pick the topics the room really kept coming back to?</p></div>
+    <div class="starter"><div class="k">Check / 04 · The result</div><p class="q">Would you send the countercurrents and the leave-behind to a client as they are?</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="who"><b>The Lighthouse</b> · Live session guide · November 2026<br>Countercurrent.ai · Atlantic New York</div>
+  <div class="acts">
+    <button type="button" class="btn btn--secondary" data-demo="print">Print or save as PDF</button>
+    <a class="btn btn--outline" href="https://atlantic-lighthouse-ciudtjtmum3lt5x3d8lcjj.streamlit.app/?view=live" target="_blank" rel="noopener">Open the Lighthouse ↗</a>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function up(el, sel) { while (el && el.nodeType === 1) { if (el.matches(sel)) return el; el = el.parentElement; } return null; }
+  function press(btn, on) { btn.classList.toggle("on", on); btn.setAttribute("aria-pressed", on ? "true" : "false"); }
+
+  // A decision, as on the session screen: the same button again clears it.
+  function decide(card, d, force) {
+    if (!card) return;
+    var next = force ? d : ((card.getAttribute("data-dec") || "") === d ? "" : d);
+    card.setAttribute("data-dec", next);
+    card.classList.toggle("killed", next === "kill");
+    card.classList.toggle("starred", next === "star");
+    Array.prototype.forEach.call(card.querySelectorAll('[data-demo="dec"]'), function (b) { press(b, b.getAttribute("data-d") === next); });
+    var s = card.querySelector(".star"); if (s) s.hidden = next !== "star";
+  }
+  function tweak(card) {
+    var h = card && card.querySelector(".ttl"); if (!h) return;
+    h.setAttribute("contenteditable", "true"); h.focus();
+    try { var r = document.createRange(); r.selectNodeContents(h); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); } catch (x) {}
+    h.onblur = function () { h.setAttribute("contenteditable", "false"); h.onblur = h.onkeydown = null; };
+    h.onkeydown = function (ev) { if (ev.key === "Enter" || ev.key === "Escape") { ev.preventDefault(); h.blur(); } };
+  }
+
+  document.addEventListener("click", function (e) {
+    // Links inside the page. In the app this page sits in a frame as tall as itself,
+    // where the browser's own jump would move nothing: scrollIntoView moves the app too.
+    var a = up(e.target, 'a[href^="#"]');
+    if (a) {
+      var id = a.getAttribute("href").slice(1), el = id && document.getElementById(id);
+      if (el) {
+        e.preventDefault();
+        try { el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" }); } catch (x) { el.scrollIntoView(); }
+        if (window.top === window && window.history && history.replaceState) history.replaceState(null, "", "#" + id);
+      }
+      return;
+    }
+    var b = up(e.target, "[data-demo]");
+    if (!b) return;
+    var kind = b.getAttribute("data-demo"), card = up(b, ".rp-cur"), box = up(b, ".rp-aimark");
+    if (kind === "dec") decide(card, b.getAttribute("data-d"));
+    else if (kind === "tweak") tweak(card);
+    else if (kind === "undo") { if (box) box.hidden = true; decide(card, "", true); }
+    else if (kind === "confirm") { if (box) box.hidden = true; decide(card, "keep", true); }
+    else if (kind === "dismiss") { if (box) box.hidden = true; }
+    else if (kind === "mode") { Array.prototype.forEach.call(up(b, ".rp-mode").querySelectorAll("button"), function (x) { press(x, x === b); }); }
+    else if (kind === "ripe") {
+      var t = up(b, ".rp-terr"), on = !t.classList.contains("ripe");
+      t.classList.toggle("ripe", on); b.classList.toggle("inv", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false"); b.textContent = on ? "★ Ripe" : "Mark ripe";
+    }
+    else if (kind === "print") window.print();
+  });
+})();
+</script>
+</body>
+</html>
