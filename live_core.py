@@ -1382,6 +1382,8 @@ def evidence_prompt(sess: dict, sec: int, title: str, body: str, posts: list, tr
              'returned, never one from memory' if web else "")
     stat = ('\n- "stat": one figure that backs it, from published data or the press (never from a forum), with its '
             'source, the number copied exactly as the page writes it; "" if there is none' if web else "")
+    body_num = (' — a number goes in "stat", never here' if web else
+                " — a number only as the lists below write it")
     return f"""You are Lighthouse, preparing a live workshop with {brand} ({subject}, {st.get('market') or 'their market'}). Today is {today}. The part: {part['head']} — {part['lens']}.
 
 The {'room' if who == 'room' else 'team'} added this current on its own: "{clip(title, TITLE_MAX)}"{(' — ' + clip(body, BODY_MAX)) if body else ''}
@@ -1389,7 +1391,7 @@ The {'room' if who == 'room' else 'team'} added this current on its own: "{clip(
 {look} Find the evidence that really backs it: figures first (the data), then articles (the news, the trade press), then posts (how people talk about it). Never stretch: evidence about something else does not count.
 
 Answer with:
-- "body": two sentences, at most 40 words: what the evidence shows about it{pages}
+- "body": two sentences, at most 40 words: what the evidence shows about it, in words{body_num}{pages}
 - "f", "t", "s": indexes from the lists below (figures, articles, posts){stat}
 At least one piece of evidence; never invent a page, an index or a number. If nothing really backs it, answer exactly {{"none": "one sentence saying what is missing"}}.
 
@@ -1413,12 +1415,38 @@ def _nums(s) -> list:
     return [n.rstrip(".,").replace(",", "") for n in _NUM.findall(str(s or ""))]
 
 
+_YEAR = re.compile(r"(?:19|20)\d\d")
+
+
+def _claimed(s) -> list:
+    """The numbers a sentence states as facts: not years, not a digit inside a
+    name ("Q4", "Web3", "H1")."""
+    out = []
+    for m in re.finditer(r"(?<![A-Za-z])\d[\d,.]*", str(s or "")):
+        n = m.group(0).rstrip(".,").replace(",", "")
+        if n and not _YEAR.fullmatch(n):
+            out.append(n)
+    return out
+
+
+def checked_note(body: str, have: set) -> str:
+    """The note, without the sentences whose numbers Lighthouse could not find
+    in what it read: a number nobody checked is not shown as a fact."""
+    keep = [snt for snt in re.split(r"(?<=[.!?])\s+", str(body or "").strip())
+            if snt and all(n in have for n in _claimed(snt))]
+    return " ".join(keep).strip()
+
+
 def parse_evidence(obj, results: list, posts: list, trade: list, figures: list,
-                   texts: Optional[list] = None) -> dict:
-    """{"none": why} · {"ev": […], "b": what it shows}. A "stat" is kept only
-    when every number in it is written in a page the searches returned
-    (`texts`: their titles and the passages cited — never a forum's) — it then
-    leads the evidence, as a figure, with the page it came from."""
+                   texts: Optional[list] = None, stat_page: str = "") -> dict:
+    """{"none": why} · {"ev": […], "b": what it shows}.
+
+    A "stat" is kept when every number in it is written in a page the searches
+    returned (`texts`: their titles and the passages cited — never a forum's),
+    or when the caller opened the page and found it there (`stat_page`, the
+    way By the numbers checks its figures). It then leads the evidence, as a
+    figure, with that page as its link. The note keeps only the sentences
+    whose numbers are in what Lighthouse read."""
     if not isinstance(obj, dict):
         return {"none": "Lighthouse did not answer — try again."}
     if obj.get("none") and not any(obj.get(k) for k in ("urls", "f", "t", "s")):
@@ -1428,22 +1456,37 @@ def parse_evidence(obj, results: list, posts: list, trade: list, figures: list,
     st_ = clip(obj.get("stat"), 160)
     nums = _nums(st_)
     have = {n for x in (texts or []) for n in _nums(x)}
-    if st_ and texts is not None and nums and all(n in have for n in nums):
-        # the page it came from: a cited page whose title carries the numbers, else the first cited page
+    sp = _nurl(stat_page) if stat_page and not social_of(stat_page) else ""
+    on_page = bool(sp and sp in pages)
+    if st_ and texts is not None and nums and (on_page or all(n in have for n in nums)):
         web = [e for e in ev if e.get("k") == "trade" and e.get("url") and _nurl(e["url"]) in pages]
-        src = next((e for e in web if set(nums) <= set(_nums(e.get("ti")))), web[0] if web else None)
-        if src is None:
-            r_ = next((r for r in pages.values() if not social_of(r.get("url"))
-                       and set(nums) <= set(_nums(r.get("title")))), None)
-            if r_:
+        if on_page:
+            src = next((e for e in web if _nurl(e["url"]) == sp), None)
+            if src is None:
+                r_ = pages[sp]
                 src = {"url": str(r_["url"])[:500], "src": clip(_host(r_["url"]), 30), "d": clip(r_.get("page_age"), 20)}
+        else:
+            # the page it came from: a cited page whose title carries the numbers, else the first cited page
+            src = next((e for e in web if set(nums) <= set(_nums(e.get("ti")))), web[0] if web else None)
+            if src is None:
+                r_ = next((r for r in pages.values() if not social_of(r.get("url"))
+                           and set(nums) <= set(_nums(r.get("title")))), None)
+                if r_:
+                    src = {"url": str(r_["url"])[:500], "src": clip(_host(r_["url"]), 30),
+                           "d": clip(r_.get("page_age"), 20)}
         if src in web and _tkey(src.get("ti")) and _tkey(src["ti"]) in _tkey(st_):
             ev.remove(src)          # the page's title says no more than the figure: shown once, as the figure
         ev.insert(0, {"ti": st_, "url": (src or {}).get("url", ""), "src": (src or {}).get("src", "") or "Figure",
                       "d": (src or {}).get("d", ""), "k": "figure"})
+        have |= set(nums)
     if not ev:
         return {"none": clip(obj.get("none"), 240) or "Nothing Lighthouse found really backs it."}
-    return {"ev": ev[:8], "b": clip(obj.get("body"), BODY_MAX)}
+    # What the note may quote: the pages read, the figure checked, and the lists Lighthouse was given.
+    have |= {n for e in ev for n in _nums(e.get("ti"))}
+    have |= {n for f in figures or [] for n in _nums(f"{(f or {}).get('figure', '')} {(f or {}).get('claim', '')}")}
+    have |= {n for x in list(trade or []) + list(posts or [])
+             for n in _nums(f"{(x or {}).get('title', '')} {(x or {}).get('content', '')}")}
+    return {"ev": ev[:8], "b": checked_note(clip(obj.get("body"), BODY_MAX), have)}
 
 
 def parse_ask_web(obj, results: list, posts: list, trade: list, figures: list,

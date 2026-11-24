@@ -843,6 +843,26 @@ div[data-baseweb="popover"],
     background-color: #ebf2f7 !important;
     color: #071828 !important;
 }
+/* A ticked box inside a popover. The rule above clears every background in
+   the panel, and that took the box's fill with it: the tick is drawn white, so
+   a ticked box looked empty ("Find evidence for it" was on while it looked
+   off). The box is the label's div holding the tick on the Streamlit the
+   Cloud runs, and the label's first span on 1.58. */
+/* (one rule per markup: a selector a browser cannot read drops its whole rule) */
+[data-testid="stPopoverBody"] [data-testid="stCheckbox"] label:has(input:checked) > div:has(> svg) {
+    background-color: #0000ff !important;
+    border-color: #0000ff !important;
+}
+[data-testid="stPopoverBody"] [data-testid="stCheckbox"] label[data-baseweb="checkbox"]:has(input:checked) > span:first-child {
+    background-color: #0000ff !important;
+    border-color: #0000ff !important;
+}
+[data-testid="stPopoverBody"] [data-testid="stCheckbox"] label:has(input:not(:checked)) > div:has(> svg) {
+    border-color: #071828 !important;
+}
+[data-testid="stPopoverBody"] [data-testid="stCheckbox"] label[data-baseweb="checkbox"]:has(input:not(:checked)) > span:first-child {
+    border-color: #071828 !important;
+}
 /* "Add to project" / folder action buttons inside the popover — same
    transparent-with-border treatment as the main-area save buttons, since
    the [data-testid="stAppViewContainer"]-scoped rule above doesn't reach
@@ -15249,6 +15269,62 @@ def _lv_start_back(sess: dict, cid: str) -> None:
                          daemon=True, name=f"lh-back-{jid}").start()
 
 
+def _lv_accepts(fn, name: str) -> bool:
+    """Does this function (from a file uploaded separately) take this argument?"""
+    try:
+        import inspect as _insp
+        return name in _insp.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _lv_stat_page(stat: str, urls, results: list, budget: float = 15.0) -> str:
+    """The page a figure is really on — opened and read, as By the numbers
+    checks its own: the number has to be there, next to the words that say
+    what it measures. At most three pages, read at once; "" when none shows
+    it or none can be read (a paywall, a bot wall, a timeout)."""
+    if _lhsrc is None or not hasattr(_lhsrc, "figure_near_claim"):
+        return ""
+    soc = getattr(_lc, "social_of", lambda u: "")
+    by_url = {_lhsrc.norm_url(r_.get("url", "")): r_ for r_ in results or [] if r_.get("url")}
+    todo = []
+    for u in (urls if isinstance(urls, list) else [])[:6]:
+        r_ = by_url.get(_lhsrc.norm_url(str(u)))
+        if r_ and not soc(r_["url"]) and r_["url"] not in todo:
+            todo.append(r_["url"])
+    todo = todo[:3]
+    if not todo:
+        return ""
+    try:
+        from ingestion import fetch_article_text
+    except Exception:
+        return ""
+    fc_key = os.environ.get("FIRECRAWL_API_KEY", "")
+
+    def _read(u):
+        r_ = fetch_article_text(u, fc_key=fc_key, timeout=8)
+        return r_[0] if isinstance(r_, tuple) else (r_ or "")
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as _TO
+    pool = ThreadPoolExecutor(max_workers=len(todo))
+    futs = {pool.submit(_read, u): u for u in todo}
+    found = ""
+    try:
+        for f in as_completed(futs, timeout=budget):
+            try:
+                txt = f.result() or ""
+            except Exception:
+                txt = ""
+            if len(txt) >= 200 and _lhsrc.figure_near_claim(stat, stat, txt):
+                found = futs[f]
+                break
+    except _TO:
+        pass
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return found
+
+
 def _lv_evidence_worker(jid: str, p_web: str, p_plain: str, posts: list, trade: list, figs: list) -> None:
     """Search the web for what backs the current, then read what was collected;
     when the search cannot run, the collected material alone."""
@@ -15283,6 +15359,14 @@ def _lv_evidence_worker(jid: str, p_web: str, p_plain: str, posts: list, trade: 
                          + [c_.get("cited_text", "") for _a, _b, cs in rd.get("spans") or [] for c_ in cs
                             if not _soc(c_.get("url"))])
                 res = _lc.parse_evidence(obj, results, posts, trade, figs, texts=texts)
+                # The model writes its answer as JSON, so there are seldom cited
+                # passages to check a figure against: open its pages and look.
+                if (res.get("ev") and str(obj.get("stat") or "").strip()
+                        and not any(e_.get("k") == "figure" for e_ in res["ev"])
+                        and _lv_accepts(_lc.parse_evidence, "stat_page")):
+                    page = _lv_stat_page(str(obj.get("stat")), obj.get("urls"), results)
+                    if page:
+                        res = _lc.parse_evidence(obj, results, posts, trade, figs, texts=texts, stat_page=page)
             except Exception as wexc:
                 print(f"[live] evidence: no web search this time, using what was collected "
                       f"({type(wexc).__name__}: {str(wexc)[:160]})")
@@ -15905,7 +15989,10 @@ def _lv_css() -> str:
 .st-key-lv_go button p, .st-key-lv_go2 button p {{ font-size:15px !important; }}
 /* the final report's two switches: blue, as everything that is "on" here (red means a negative) */
 [class*="st-key-lv_opt_"] label[data-baseweb="checkbox"] > span:first-child {{ border-color:#000 !important; border-radius:4px !important; }}
+[class*="st-key-lv_opt_"] label > div:has(> svg) {{ border-color:#000 !important; border-radius:4px !important; }}
 [class*="st-key-lv_opt_"] label[data-baseweb="checkbox"]:has(input:checked) > span:first-child {{
+  background-color:#0000ff !important; border-color:#0000ff !important; }}
+[class*="st-key-lv_opt_"] label:has(input:checked) > div:has(> svg) {{
   background-color:#0000ff !important; border-color:#0000ff !important; }}
 [class*="st-key-lv_opt_"] label p {{ font-family:{s}; font-size:14px; font-weight:700; color:#000; }}
 /* the live session's header: the internal area's wordmark, then where you are */
@@ -16160,6 +16247,21 @@ def _lv_body(sess: dict, c: dict) -> str:
     return _lc.body_of(sess, c) if _lc_has("body_of") else c.get("b", "")
 
 
+def _lv_popover(label: str, name: str):
+    """A popover that can be closed from the code: its key carries a counter,
+    and a new key is a new panel — closed. (Streamlit keeps an open popover
+    open across reruns, so after "Add" it sat over the card it had just made.)"""
+    key = f"{name}_{int(st.session_state.get('_lv_pop_' + name, 0))}"
+    try:
+        return st.popover(label, use_container_width=True, key=key)
+    except TypeError:                     # a Streamlit without keyed popovers
+        return st.popover(label, use_container_width=True)
+
+
+def _lv_popover_close(name: str) -> None:
+    st.session_state["_lv_pop_" + name] = int(st.session_state.get("_lv_pop_" + name, 0)) + 1
+
+
 def _lv_cur_card(sess: dict, i: int, c: dict) -> None:
     """One current, before the meeting: what it says, what it stands on, and
     the team's two moves — cut it, or rewrite it."""
@@ -16197,7 +16299,7 @@ def _lv_cur_card(sess: dict, i: int, c: dict) -> None:
                 _lv_save(sess, force=True)
                 st.rerun()
         with b:
-            with st.popover("Edit", use_container_width=True):
+            with _lv_popover("Edit", f"lv_edpop_{c['id']}"):
                 with st.form(f"lv_edit_{c['id']}", border=False):
                     t = st.text_input("Title", value=c.get("t", ""), max_chars=_lc.TITLE_MAX,
                                       key=f"lv_et_{c['id']}")
@@ -16209,6 +16311,7 @@ def _lv_cur_card(sess: dict, i: int, c: dict) -> None:
                         sess["tweak"].pop(c["id"], None)
                         (sess.get("tweak_b") or {}).pop(c["id"], None)
                         _lv_save(sess, force=True)
+                        _lv_popover_close(f"lv_edpop_{c['id']}")
                         st.rerun()
 
 
@@ -16517,7 +16620,7 @@ def _lv_prep(sess: dict, user: str) -> None:
                     _lv_save(sess, force=True)
                     st.rerun()
         with b:
-            with st.popover("+ Add a current", use_container_width=True):
+            with _lv_popover("+ Add a current", f"lv_addpop_{i}"):
                 with st.form(f"lv_add_{i}", border=False, clear_on_submit=True):
                     t = st.text_input("The current, in one line", max_chars=_lc.TITLE_MAX, key=f"lv_at_{i}")
                     bd = st.text_area("What it says (optional — Lighthouse writes it from the evidence)",
@@ -16529,6 +16632,7 @@ def _lv_prep(sess: dict, user: str) -> None:
                         if cid and (fe or not bd.strip()):
                             _lv_start_back(sess, cid)
                         _lv_save(sess, force=True)
+                        _lv_popover_close(f"lv_addpop_{i}")
                         st.rerun()
     _lv_board_block(sess, c)
 

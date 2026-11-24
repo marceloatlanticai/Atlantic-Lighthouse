@@ -263,5 +263,14 @@ def direction_line(st: dict) -> str:
     if d == "fading":
         return (f"▼ Its share of the posts fell from the older half of the window to the "
                 f"newer — {pct(a)} → {pct(b)}.")
-    return (f"■ Its share of the posts held steady across the window — "
-            f"{pct(a)} → {pct(b)}.")
+    # Between the two thresholds: a move too small to call a rise or a fall.
+    # "Held steady — 58% → 44%" read as a contradiction, so the words follow
+    # the numbers: steady only when they barely moved.
+    if abs(b - a) < 0.08:
+        return (f"■ Its share of the posts held steady across the window — "
+                f"{pct(a)} → {pct(b)}.")
+    if b < a:
+        return (f"■ Its share of the posts eased across the window — {pct(a)} → {pct(b)}, "
+                f"not enough to call it a fall.")
+    return (f"■ Its share of the posts edged up across the window — {pct(a)} → {pct(b)}, "
+            f"not enough to call it a rise.")
