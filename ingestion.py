@@ -274,9 +274,34 @@ _REDDIT_APIFY_COOLDOWN = 300      # seconds
 _REDDIT_APIFY_RUNS: dict = {}
 _REDDIT_APIFY_LOCK = threading.Lock()
 _REDDIT_APIFY_QUERIES = 4         # searches per run: each one is a page Reddit must answer
-# trudax/reddit-scraper is DEPRECATED on Apify (its runs now "succeed" with no
-# posts); the Lite version is the maintained one, same author, same input.
-_REDDIT_APIFY_ACTOR = "trudax/reddit-scraper-lite"
+# WHICH ACTOR. Apify's own Reddit scraper searches without a login: residential
+# proxies and retries built in, compute and proxy included in the price (about
+# US$2.50 per 1,000 posts plus a small start fee). The trudax actors used before
+# now need a logged-in Reddit cookie for any search — trudax/reddit-scraper is
+# deprecated and "succeeded" with nothing, its Lite version FAILED (24 Nov).
+# REDDIT_APIFY_ACTOR swaps it; a trudax actor also reads REDDIT_SESSION_TOKEN.
+_REDDIT_APIFY_ACTOR = "apify/reddit-scraper"
+
+
+def _reddit_actor_input(actor_id: str, queries: list, t: str, cap: int) -> dict:
+    """The run input, in the shape each actor family reads."""
+    if actor_id.startswith("trudax/"):
+        inp = {"searches": queries,
+               "searchPosts": True, "searchComments": False, "searchCommunities": False,
+               "searchUsers": False, "searchMedia": False,
+               "sort": "relevance", "time": t,
+               "maxItems": cap, "maxPostCount": 10,
+               "maxComments": 0, "skipComments": True, "skipUserPosts": True, "skipCommunity": True,
+               "includeNSFW": False,
+               "proxy": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]}}
+        tok = os.environ.get("REDDIT_SESSION_TOKEN", "").strip()
+        if tok:
+            inp["sessionToken"] = tok
+        return inp
+    # apify/reddit-scraper, and any actor that reads its input
+    per = max(5, min(10, -(-cap // max(1, len(queries)))))
+    return {"scrapeMode": "posts", "searchQueries": queries, "searchSort": "relevance",
+            "searchTimeFilter": t, "maxSearchResultsPerQuery": per, "includeNsfw": False}
 
 
 def _reddit_t(months) -> str:
@@ -406,14 +431,13 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
     be one Reddit-wide search sorted "hot" over the last MONTH, plus the same
     search inside the first three default subreddits — r/advertising,
     r/marketing, r/socialmedia, which suit almost no brief. Fixed that, and the
-    run still "SUCCEEDED with 0 posts": the actor itself, trudax/reddit-scraper,
-    is now DEPRECATED on Apify, and it was being sent through the datacenter
-    proxy, which Reddit refuses. Now: the maintained trudax/reddit-scraper-lite
-    (same author, same input; pay per result, about US$3.40 per 1,000), its own
-    search — up to four of the scan's searches (`also`, the question's first),
-    Reddit-wide, by RELEVANCE, over the scan's window — through RESIDENTIAL
-    proxies (the actor's own default), posts only, no comments.
-    REDDIT_APIFY_ACTOR in the secrets swaps the actor without a code change.
+    run still "SUCCEEDED with 0 posts": trudax/reddit-scraper is DEPRECATED on
+    Apify, and its maintained Lite version FAILED — both now need a logged-in
+    Reddit cookie for any search. Now: Apify's own apify/reddit-scraper, which
+    searches logged out (posts mode) — up to four of the scan's searches
+    (`also`, the question's first), Reddit-wide, by RELEVANCE, over the scan's
+    window. REDDIT_APIFY_ACTOR in the secrets swaps the actor without a code
+    change (_reddit_actor_input knows both input shapes).
 
     One run per scan, shared by every Reddit call of that scan
     (_reddit_apify_once). Billing is per post, so the post count stays capped.
@@ -435,27 +459,23 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
         ac = ApifyClient(token)
         if callback:
             callback(f"[Reddit] Apify ({actor_id}): {len(queries)} searches, by relevance, past {t}")
-        # maxItems is the TOTAL across every search. Thirty keeps the run inside
-        # its ceiling: a run cut short by timeout_secs can come back EMPTY.
+        # About thirty posts in all: billed per post, and a run cut short by
+        # timeout_secs can come back EMPTY.
         cap = max(25, min(30, max_items * 3))
-        run_input = {
-            "searches": queries,
-            "searchPosts": True, "searchComments": False, "searchCommunities": False,
-            "searchUsers": False, "searchMedia": False,
-            "sort": "relevance", "time": t,
-            "maxItems": cap, "maxPostCount": 10,
-            "maxComments": 0, "skipComments": True, "skipUserPosts": True, "skipCommunity": True,
-            "includeNSFW": False,
-            "proxy": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
-        }
-        run = _apify_call(ac.actor(actor_id), cap=_REDDIT_RUN_CAP, run_input=run_input)
-        status = (run.get("status") if isinstance(run, dict) else getattr(run, "status", "")) or ""
+        run = _apify_call(ac.actor(actor_id), cap=_REDDIT_RUN_CAP,
+                          run_input=_reddit_actor_input(actor_id, queries, t, cap))
+        _get = (lambda k_: run.get(k_)) if isinstance(run, dict) else (lambda k_: getattr(run, k_, None))
+        status = str(_get("status") or "")
+        status_msg = str(_get("statusMessage") or _get("status_message") or "")[:160]
         ds = _run_dataset_id(run)
         if not ds:
             raise RuntimeError(f"Apify returned no dataset id for the Reddit run ({actor_id}"
                                + (f", run {status}" if status else "") + ")")
-        out, seen = [], set()
+        out, seen, reasons = [], set(), []
         for item in ac.dataset(ds).iterate_items():
+            if item.get("reasonCode"):        # "a search with no hits" and the like
+                reasons.append(f"{item.get('reasonCode')}: {str(item.get('reasonDescription') or '')[:90]}")
+                continue
             if str(item.get("dataType") or "post").lower() != "post":
                 continue                      # comments, communities, users: not asked for
             url = item.get("url") or item.get("link") or ""
@@ -471,6 +491,8 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
                 ts = datetime.now(tz=timezone.utc).isoformat()
             title = item.get("title") or item.get("heading") or ""
             body = item.get("body") or item.get("text") or item.get("selftext") or ""
+            if str(body).strip() in ("[deleted]", "[removed]"):
+                body = ""
             content = f"{title}\n\n{body}".strip()
             if not content:
                 continue
@@ -485,16 +507,19 @@ def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
                     "subreddit": sub,
                     "score": item.get("score") or item.get("upVotes")
                              or item.get("upvotes", 0),
-                    "num_comments": item.get("numberOfComments")
+                    "num_comments": item.get("commentCount") or item.get("numberOfComments")
                                     or item.get("num_comments", 0),
-                    "author": item.get("author") or item.get("username", ""),
+                    "author": (item.get("authorName") or item.get("author")
+                               or item.get("username", "")),
                     "via": "apify",
                 },
             ))
         if not out:
-            # Say which: a run that hit its ceiling, or Reddit having nothing.
+            # Say which: a run that failed or hit its ceiling, or Reddit having nothing.
+            why = status_msg or (reasons[0] if reasons else "")
             raise RuntimeError(f"the Apify Reddit run ({actor_id}) ended {status or 'without a status'} "
-                               f"with 0 posts for {len(queries)} searches (past {t}, by relevance)")
+                               f"with 0 posts for {len(queries)} searches (past {t}, by relevance)"
+                               + (f" — {why}" if why else ""))
         if callback:
             callback(f"[Reddit] Apify \u2713 {len(out)} signals")
         return out
