@@ -5789,8 +5789,19 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
                                   published_after=_yt_after)
         return scrape_youtube(q, api_key=ytkey, n=6, region_code=_mk["youtube"])
 
+    # REDDIT'S FALLBACK SEES THE WHOLE SCAN. When Reddit refuses the server, the
+    # Apify run searches Reddit-wide over this window, with the question's
+    # searches first and the widening's after — one run shared by both lanes.
+    # (An ingestion.py older than this app takes neither; it runs as before.)
+    try:
+        import inspect as _insp_r
+        _rp = _insp_r.signature(scrape_reddit).parameters
+    except (TypeError, ValueError):
+        _rp = {}
+    _rkw = ({"window_months": int(months or 0), "also": list(dict.fromkeys([*_xq, *_queries]))}
+            if ("also" in _rp and "window_months" in _rp) else {})
     jobs = {
-        "reddit":      lambda: _widen(lambda q: scrape_reddit(q, max_items=10), 8),
+        "reddit":      lambda: _widen(lambda q: scrape_reddit(q, max_items=10, **_rkw), 8),
         "gdelt":       lambda: _widen(lambda q: scrape_gdelt(q, n=8,
                                       source_country=_mk["gdelt"]), 6),
         "hacker_news": lambda: _widen(_hn, 5),
@@ -5808,7 +5819,7 @@ def _sv_gather(search_terms: str, active: str, market: str = DEFAULT_MARKET,
         def _question_lane():
             got, seen_u, errs = [], set(), []
             for q in _xq:
-                for fn in ((lambda q=q: scrape_reddit(q, max_items=6)),
+                for fn in ((lambda q=q: scrape_reddit(q, max_items=6, **_rkw)),
                            (lambda q=q: scrape_gdelt(q, n=5, source_country=_mk["gdelt"])),
                            ((lambda q=q: _yt(q)) if ytkey else None)):
                     if fn is None:

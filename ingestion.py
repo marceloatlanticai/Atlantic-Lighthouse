@@ -264,9 +264,62 @@ _REDDIT_APIFY_TRIED = [0.0]
 _REDDIT_APIFY_LAST_ERR = [""]     # why the one attempt failed, kept for the retries
 _REDDIT_APIFY_COOLDOWN = 300      # seconds
 
+# ONE RUN PER SCAN, SHARED — NOT ONE RUN PER SERVER.
+# The single timestamp above made the fallback process-wide: the scan's two
+# Reddit lanes (the widening and the question's searches) raced for it, the
+# loser reported "already tried", and a second person scanning another brand
+# within five minutes got no Reddit at all. Now a run belongs to the set of
+# searches it was asked for: every caller with the same set waits for that one
+# run and gets its posts; a different scan starts its own.
+_REDDIT_APIFY_RUNS: dict = {}
+_REDDIT_APIFY_LOCK = threading.Lock()
+_REDDIT_APIFY_QUERIES = 4         # searches per run: each one is a page Reddit must answer
+
+
+def _reddit_t(months) -> str:
+    """Reddit's own time filter for the scan's window. It only knows hour, day,
+    week, month, year and all, so anything past a month is "year" — the scan
+    drops what is older than its window afterwards. "month" for 0 (no window),
+    as before."""
+    try:
+        m = int(months or 0)
+    except (TypeError, ValueError):
+        m = 0
+    return "month" if m <= 1 else "year"
+
+
+def _reddit_apify_once(key, run_fn, wait_secs: float) -> list:
+    """Run `run_fn` once for `key` within the cooldown; callers with the same
+    key wait for it and share the posts (as copies: the question's lane tags
+    its own). A failure is shared too, so the retries say why."""
+    import copy as _copy
+    now = time.monotonic()
+    with _REDDIT_APIFY_LOCK:
+        for k_ in [k_ for k_, r_ in _REDDIT_APIFY_RUNS.items()
+                   if now - r_["t"] > _REDDIT_APIFY_COOLDOWN]:
+            _REDDIT_APIFY_RUNS.pop(k_, None)
+        rec = _REDDIT_APIFY_RUNS.get(key)
+        mine = rec is None
+        if mine:
+            rec = {"t": now, "done": threading.Event(), "res": [], "err": ""}
+            _REDDIT_APIFY_RUNS[key] = rec
+    if mine:
+        try:
+            rec["res"] = list(run_fn() or [])
+        except Exception as exc:
+            rec["err"] = str(exc) or type(exc).__name__
+            _REDDIT_APIFY_LAST_ERR[0] = f"Apify fallback failed: {rec['err']}"
+        finally:
+            rec["done"].set()
+    elif not rec["done"].wait(timeout=wait_secs):
+        raise RuntimeError("the Apify Reddit run for this scan is still going")
+    if rec["err"]:
+        raise RuntimeError(rec["err"])
+    return [_copy.copy(s_) for s_ in rec["res"]]
+
 
 def _scrape_reddit_rss(topic: str, subs: list, client_tag: Optional[str],
-                       callback: Optional[Callable]) -> list:
+                       callback: Optional[Callable], window_months: int = 0) -> list:
     """Reddit through its RSS endpoints — free, no key, no actor rental.
 
     Reddit blocks `search.json` from datacenter IPs with a hard 403, but it
@@ -288,10 +341,11 @@ def _scrape_reddit_rss(topic: str, subs: list, client_tag: Optional[str],
         "Accept-Language": "en-US,en;q=0.9",
     }
     q = urllib.parse.quote(topic)
-    targets = [f"https://www.reddit.com/search.rss?q={q}&sort=hot&t=month"]
+    t = _reddit_t(window_months)
+    targets = [f"https://www.reddit.com/search.rss?q={q}&sort=relevance&t={t}"]
     for sub in list(subs)[:10]:
         targets.append(f"https://www.reddit.com/r/{sub}/search.rss?q={q}"
-                       f"&restrict_sr=1&sort=hot&t=month")
+                       f"&restrict_sr=1&sort=hot&t={t}")
 
     def _one(url: str):
         req = urllib.request.Request(url, headers=headers)
@@ -340,99 +394,97 @@ def _scrape_reddit_rss(topic: str, subs: list, client_tag: Optional[str],
 
 
 def _scrape_reddit_apify(topic: str, subs: list, max_items: int,
-                         client_tag: Optional[str], callback: Optional[Callable]) -> list:
+                         client_tag: Optional[str], callback: Optional[Callable],
+                         window_months: int = 0, also: Optional[list] = None,
+                         own_subs: bool = False) -> list:
     """Reddit through Apify's proxy pool — the route that survives the block.
 
-    Search URLs, not subreddit crawls: one global Reddit search plus the same
-    search inside a handful of relevant subreddits. Billing is per post, so the
-    URL list is kept short on purpose.
+    WHAT IT SEARCHES, AND WHY IT CAME BACK EMPTY (HoneyBook, 24 Nov). It used to
+    be one Reddit-wide search sorted "hot" over the last MONTH, plus the same
+    search inside the first three default subreddits — r/advertising,
+    r/marketing, r/socialmedia, which suit almost no brief. A twelve-month,
+    five-word search has next to nothing "hot" this month, so both HoneyBook
+    briefs got zero posts from Reddit. Now: up to four of the scan's own
+    searches (`also` — the question's first), Reddit-wide, by RELEVANCE, over
+    the scan's window; subreddits only when the caller chose them.
+
+    One run per scan, shared by every Reddit call of that scan
+    (_reddit_apify_once). Billing is per post, so the post count stays capped.
     """
     token = os.environ.get("APIFY_API_TOKEN", "")
     if not token:
         raise RuntimeError("no APIFY_API_TOKEN, so no fallback available")
-    if time.monotonic() - _REDDIT_APIFY_TRIED[0] < _REDDIT_APIFY_COOLDOWN:
-        # Report WHY the one attempt failed, not merely that we declined to
-        # repeat it. Production surfaced "already tried this scan", which is
-        # true and useless — it described the second query's refusal and buried
-        # the first query's actual error.
-        raise RuntimeError(_REDDIT_APIFY_LAST_ERR[0]
-                           or "Apify fallback already tried this scan")
-    _REDDIT_APIFY_TRIED[0] = time.monotonic()
-    from apify_client import ApifyClient
-    ac = ApifyClient(token)
+    queries = list(dict.fromkeys(str(q_).strip() for q_ in list(also or []) + [topic]
+                                 if q_ and str(q_).strip()))[:_REDDIT_APIFY_QUERIES]
+    t = _reddit_t(window_months)
+    picked = list(subs)[:2] if own_subs else []
+    key = (tuple(sorted(queries)), t, tuple(picked))
 
-    def _remember(exc):
-        _REDDIT_APIFY_LAST_ERR[0] = f"Apify fallback failed: {exc}"
-        return exc
-
-    q = urllib.parse.quote(topic)
-    urls = [{"url": f"https://www.reddit.com/search/?q={q}&sort=hot&t=month"}]
-    # THREE SUBREDDITS, NOT SIX — AND THE CEILING IS NOT THE REASON.
-    # Cutting a run short with timeout_secs aborts it and returns an EMPTY
-    # dataset, so a tight cap on work that genuinely needs longer is the worst
-    # of both worlds: we pay and get nothing. The honest fix is to ask for less
-    # so the run finishes inside the ceiling on its own, and to keep the ceiling
-    # only as a backstop.
-    #
-    # Little is lost. The FIRST url is a global Reddit search — it already
-    # reaches every subreddit. The per-subreddit URLs only sharpen focus, and
-    # returns diminish fast after the top few.
-    for sub in list(subs)[:3]:
-        urls.append({"url": f"https://www.reddit.com/r/{sub}/search/?q={q}"
-                            f"&sort=hot&restrict_sr=1&t=month"})
-
-    if callback:
-        callback(f"[Reddit] Apify: {len(urls)} search URLs")
-    # The caller asks for 10 per subreddit on the free path, but here maxItems is
-    # the TOTAL across every search URL — 10 would not fill a six-card deck.
-    cap = max(25, max_items)
-    try:
+    def _run() -> list:
+        _REDDIT_APIFY_TRIED[0] = time.monotonic()
+        from apify_client import ApifyClient
+        ac = ApifyClient(token)
+        urls = [{"url": f"https://www.reddit.com/search/?q={urllib.parse.quote(q_)}"
+                        f"&sort=relevance&t={t}"} for q_ in queries]
+        for sub in picked:
+            urls.append({"url": f"https://www.reddit.com/r/{sub}/search/?q={urllib.parse.quote(queries[0])}"
+                                f"&sort=relevance&restrict_sr=1&t={t}"})
+        if callback:
+            callback(f"[Reddit] Apify: {len(urls)} searches, by relevance, past {t}")
+        # maxItems is the TOTAL across every search URL. Thirty keeps the run
+        # inside its ceiling: a run cut short by timeout_secs comes back EMPTY.
+        cap = max(25, min(30, max_items * 3))
         run = _apify_call(ac.actor("trudax/reddit-scraper"),
                           cap=_REDDIT_RUN_CAP,
                           run_input={"startUrls": urls, "maxItems": cap,
                                      "proxy": {"useApifyProxy": True}})
-    except Exception as exc:
-        raise _remember(exc)
-    ds = _run_dataset_id(run)
-    if not ds:
-        raise RuntimeError("Apify returned no dataset id for the Reddit run")
+        status = (run.get("status") if isinstance(run, dict) else getattr(run, "status", "")) or ""
+        ds = _run_dataset_id(run)
+        if not ds:
+            raise RuntimeError("Apify returned no dataset id for the Reddit run"
+                               + (f" (run {status})" if status else ""))
+        out, seen = [], set()
+        for item in ac.dataset(ds).iterate_items():
+            url = item.get("url") or item.get("link") or ""
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            ts_raw = item.get("createdAt") or item.get("created_utc") or ""
+            try:
+                ts = (datetime.fromtimestamp(ts_raw, tz=timezone.utc).isoformat()
+                      if isinstance(ts_raw, (int, float))
+                      else str(ts_raw) or datetime.now(tz=timezone.utc).isoformat())
+            except Exception:
+                ts = datetime.now(tz=timezone.utc).isoformat()
+            title = item.get("title") or item.get("heading") or ""
+            body = item.get("body") or item.get("text") or item.get("selftext") or ""
+            content = f"{title}\n\n{body}".strip()
+            if not content:
+                continue
+            out.append(Signal(
+                id=_make_id(url, ts),
+                title=_clean_title(title, content),
+                content=content[:4000], source="reddit", url=url,
+                timestamp=ts, client_tag=client_tag,
+                raw_meta={
+                    "subreddit": item.get("subreddit") or item.get("community", ""),
+                    "score": item.get("score") or item.get("upVotes")
+                             or item.get("upvotes", 0),
+                    "num_comments": item.get("numberOfComments")
+                                    or item.get("num_comments", 0),
+                    "author": item.get("author") or item.get("username", ""),
+                    "via": "apify",
+                },
+            ))
+        if not out:
+            # Say which: a run that hit its ceiling, or Reddit having nothing.
+            raise RuntimeError(f"the Apify Reddit run ended {status or 'without a status'} "
+                               f"with 0 posts for {len(urls)} searches (past {t}, by relevance)")
+        if callback:
+            callback(f"[Reddit] Apify \u2713 {len(out)} signals")
+        return out
 
-    out, seen = [], set()
-    for item in ac.dataset(ds).iterate_items():
-        url = item.get("url") or item.get("link") or ""
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        ts_raw = item.get("createdAt") or item.get("created_utc") or ""
-        try:
-            ts = (datetime.fromtimestamp(ts_raw, tz=timezone.utc).isoformat()
-                  if isinstance(ts_raw, (int, float))
-                  else str(ts_raw) or datetime.now(tz=timezone.utc).isoformat())
-        except Exception:
-            ts = datetime.now(tz=timezone.utc).isoformat()
-        title = item.get("title") or item.get("heading") or ""
-        body = item.get("body") or item.get("text") or item.get("selftext") or ""
-        content = f"{title}\n\n{body}".strip()
-        if not content:
-            continue
-        out.append(Signal(
-            id=_make_id(url, ts),
-            title=_clean_title(title, content),
-            content=content[:4000], source="reddit", url=url,
-            timestamp=ts, client_tag=client_tag,
-            raw_meta={
-                "subreddit": item.get("subreddit") or item.get("community", ""),
-                "score": item.get("score") or item.get("upVotes")
-                         or item.get("upvotes", 0),
-                "num_comments": item.get("numberOfComments")
-                                or item.get("num_comments", 0),
-                "author": item.get("author") or item.get("username", ""),
-                "via": "apify",
-            },
-        ))
-    if callback:
-        callback(f"[Reddit] Apify \u2713 {len(out)} signals")
-    return out
+    return _reddit_apify_once(key, _run, wait_secs=_REDDIT_RUN_CAP + 30)
 
 
 def scrape_reddit(
@@ -441,6 +493,8 @@ def scrape_reddit(
     max_items: int = 30,
     client_tag: Optional[str] = None,
     callback: Optional[Callable] = None,
+    window_months: int = 0,
+    also: Optional[list] = None,
 ) -> list[Signal]:
     """Search Reddit for topic across relevant subreddits. No API key needed.
 
@@ -493,7 +547,8 @@ def scrape_reddit(
 
     def _one(sub: str):
         url = (f"https://{host}/r/{sub}/{leaf}?q={q}&sort=hot"
-               f"&limit={max_items}&restrict_sr={'1' if sub != 'all' else '0'}&t=month")
+               f"&limit={max_items}&restrict_sr={'1' if sub != 'all' else '0'}"
+               f"&t={_reddit_t(window_months)}")
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=8) as resp:
             return json.loads(resp.read())
@@ -566,7 +621,7 @@ def scrape_reddit(
     # RUNG 2: RSS. Free, so it goes before anything that bills.
     if not signals:
         try:
-            signals = _scrape_reddit_rss(topic, subs, client_tag, callback)
+            signals = _scrape_reddit_rss(topic, subs, client_tag, callback, window_months)
         except Exception as exc:
             errors.append(f"rss: {exc}")
 
@@ -580,7 +635,9 @@ def scrape_reddit(
         if callback:
             callback(f"[Reddit] public API gave nothing ({why}) \u2014 trying Apify")
         try:
-            signals = _scrape_reddit_apify(topic, subs, max_items, client_tag, callback)
+            signals = _scrape_reddit_apify(topic, subs, max_items, client_tag, callback,
+                                           window_months=window_months, also=also,
+                                           own_subs=subreddits is not None)
         except Exception as exc:
             raise RuntimeError(f"public Reddit failed ({why}); Apify fallback "
                                f"also failed: {exc}")
