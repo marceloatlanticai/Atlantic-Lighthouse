@@ -295,7 +295,7 @@ def live_defaults(sess: dict) -> dict:
         s.setdefault("currents", [])
         s.setdefault("status", "todo")
     sess["sections"] = secs[:N_SEC]
-    for k in ("dec", "tweak", "human", "ai", "sugg", "locked", "flag", "talk", "last_topic",
+    for k in ("dec", "tweak", "tweak_b", "human", "ai", "sugg", "locked", "flag", "talk", "last_topic",
               "newt", "reads", "chat", "sec_start"):
         if not isinstance(sess.get(k), dict):
             sess[k] = {}
@@ -379,7 +379,8 @@ def _ev_from_signal(s: dict, kind: str = "post") -> dict:
 
 
 def evidence_line(ev: list) -> str:
-    """'4 posts · Reddit, TikTok · 1 article · 1 figure' — what a current stands on."""
+    """'1 figure · 2 articles · 4 posts · Reddit, TikTok' — what a current stands
+    on, the data and the press first, social listening after them."""
     if not ev:
         return ""
     posts = [e for e in ev if e.get("k") == "post"]
@@ -387,16 +388,38 @@ def evidence_line(ev: list) -> str:
     figs = [e for e in ev if e.get("k") == "figure"]
     room = [e for e in ev if e.get("k") == "room"]
     bits = []
+    if figs:
+        bits.append(f"{len(figs)} figure{'s' if len(figs) != 1 else ''}")
+    if arts:
+        bits.append(f"{len(arts)} article{'s' if len(arts) != 1 else ''}")
     if posts:
         nets = list(dict.fromkeys(net_label(e.get("src")) for e in posts))
         bits.append(f"{len(posts)} post{'s' if len(posts) != 1 else ''} · {', '.join(nets[:3])}")
-    if arts:
-        bits.append(f"{len(arts)} article{'s' if len(arts) != 1 else ''}")
-    if figs:
-        bits.append(f"{len(figs)} figure{'s' if len(figs) != 1 else ''}")
     if room:
         bits.append("said in the room")
     return " · ".join(bits)
+
+
+# News outlets the scan reads (GDELT, the RSS feeds, the web search) write
+# ARTICLES, not posts: they go with the trade press, ahead of social listening.
+NEWS_SOURCES = {"gdelt", "rss", "web", "news"}
+ARTICLES_MAX = 80              # articles a dig may read: the trade press, newsletters and the news
+DIG_N = "10 to 12"             # currents per part, a full dig
+PER_PART = 12                  # …and at most this many are kept
+
+
+def split_pool(signals: list) -> tuple:
+    """(articles, posts): what the news wrote, and what people posted."""
+    arts, posts = [], []
+    for s in signals or []:
+        if isinstance(s, dict):
+            (arts if str(s.get("source") or "").lower() in NEWS_SOURCES else posts).append(s)
+    return arts, posts
+
+
+def _tkey(t) -> str:
+    """A title as a key: the same words are the same current, whatever the case."""
+    return re.sub(r"[^a-z0-9]+", "", str(t or "").lower())
 
 
 # ── The dig: four parts, each through its own lens ───────────────────────────
@@ -445,9 +468,10 @@ def _answers_block(answers: list) -> str:
 
 
 def dig_prompt(setup: dict, answers: list, signals: list, trade: list, figures: list,
-               today: str, only: Optional[int] = None, avoid: Optional[list] = None) -> str:
-    """The four lenses over one scan's evidence — or, with `only`, one part again
-    (Re-dig), never repeating `avoid`."""
+               today: str, only: Optional[int] = None, avoid: Optional[list] = None, n: str = "") -> str:
+    """The four lenses over one scan's evidence — or, with `only`, one part (the
+    dig asks for each part on its own, all four at once; Re-dig and the room's
+    "More currents" ask for one), never repeating `avoid`. `n`: how many."""
     st = setup or {}
     brand = st.get("brand") or "the brand"
     subject = " · ".join(p for p in (st.get("category"), st.get("product")) if p) or "its category"
@@ -456,7 +480,7 @@ def dig_prompt(setup: dict, answers: list, signals: list, trade: list, figures: 
     lenses = "\n".join(f"- {p['key']} — {p['lens']}." .replace("the competitors", f"the competitors ({comps})")
                        for p in parts)
     keep = "\n".join(f"- {clip(t, 120)}" for t in (avoid or []) if t)
-    n = "3 or 4" if only is None else "3"
+    n = n or DIG_N
     return f"""You are preparing a two-hour live workshop with {brand} ({subject}, {st.get('market') or 'their market'}). Today is {today}.
 
 WHAT THE CLIENT TOLD US BEFORE THE SESSION:
@@ -465,22 +489,23 @@ WHAT THE CLIENT TOLD US BEFORE THE SESSION:
 Write the currents for {'each of the four parts' if only is None else 'this part'} of the session, each through its own lens:
 {lenses}
 
-{n} currents per part. A current is something MOVING that the evidence shows — not a topic. For each:
+{n} currents {'per part' if only is None else 'for this part'}, each a different one. A current is something MOVING that the evidence shows — not a topic. For each:
 - "title": an argument with a point of view, at most 8 words (not a description, not a question)
 - "body": two sentences, at most 40 words: what is happening, and why it matters for {brand}
-- the evidence it stands on, as indexes from the lists below: "s" for posts [S#], "t" for trade articles [T#], "f" for figures [F#]. At least one index; never invent one; a current the evidence does not support is not written.
+- the evidence it stands on, as indexes from the lists below: "f" for figures [F#], "t" for articles [T#], "s" for posts [S#]. At least one index; never invent one; a current the evidence does not support is not written.
+WHAT TO STAND ON, IN THIS ORDER: the figures and the articles (the data, the news, the trade press) first; the posts show how people talk about it. Every current cites at least one figure or article whenever one supports it — a current on posts alone only when no article or figure touches it. Start with the currents the data and the press carry.
 Never repeat a current across parts{', and never repeat or reword any of these:' if keep else '.'}
 {keep}
 Prefer currents that bear on what the client said they want, fear or are curious about. Plain words; no consultancy language.
 
-POSTS:
-{listing(signals, 'S') or '(none)'}
-
-TRADE PRESS:
-{listing(trade, 'T', 200, 40) or '(none)'}
-
 FIGURES (checked against their sources):
 {figures_listing(figures) or '(none)'}
+
+ARTICLES (the news, the trade press, newsletters):
+{listing(trade, 'T', 200, ARTICLES_MAX) or '(none)'}
+
+POSTS (social listening):
+{listing(signals, 'S') or '(none)'}
 
 Answer only with JSON: {{"sections": [{{"key": "{parts[0]['key']}", "currents": [{{"title": "…", "body": "…", "s": [0, 4], "t": [1], "f": []}}]}}]}}"""
 
@@ -504,7 +529,7 @@ def parse_dig(obj, signals: list, trade: list, figures: list, only: Optional[int
     a title already used (in another part, or in `avoid`)."""
     keys = {p["key"].lower(): i for i, p in enumerate(SECTIONS)}
     out = [[] for _ in SECTIONS]
-    seen = {clip(t, 120).lower() for t in (avoid or []) if t}
+    seen = {_tkey(clip(t, 120)) for t in (avoid or []) if t}
     rows = (obj or {}).get("sections") if isinstance(obj, dict) else None
     for r in rows if isinstance(rows, list) else []:
         if not isinstance(r, dict):
@@ -512,25 +537,38 @@ def parse_dig(obj, signals: list, trade: list, figures: list, only: Optional[int
         i = keys.get(str(r.get("key") or "").strip().lower())
         if i is None or (only is not None and i != only):
             continue
-        for c in (r.get("currents") if isinstance(r.get("currents"), list) else [])[:6]:
+        for c in (r.get("currents") if isinstance(r.get("currents"), list) else [])[:PER_PART + 4]:
             if not isinstance(c, dict):
                 continue
             t, b = clip(c.get("title"), TITLE_MAX), clip(c.get("body"), BODY_MAX)
-            if not t or t.lower() in seen:
+            if not t or _tkey(t) in seen:
                 continue
-            ev = ([_ev_from_signal(signals[j], "post") for j in _idx_list(c.get("s"), len(signals or []))] +
-                  [dict(_ev_from_signal(trade[j], "trade"), src=clip((trade[j] or {}).get("source") or "trade", 30))
-                   for j in _idx_list(c.get("t"), len(trade or []))] +
-                  [{"ti": clip(f"{(figures[j] or {}).get('figure', '')} — {(figures[j] or {}).get('claim', '')}", 160),
+            # figures and articles first, so the first evidence shown is the data and the press
+            ev = ([{"ti": clip(f"{(figures[j] or {}).get('figure', '')} — {(figures[j] or {}).get('claim', '')}", 160),
                     "url": str((figures[j] or {}).get("url") or "")[:500], "src": clip((figures[j] or {}).get("source"), 30),
                     "d": str((figures[j] or {}).get("date") or "")[:10], "k": "figure"}
-                   for j in _idx_list(c.get("f"), len(figures or []))])
+                   for j in _idx_list(c.get("f"), len(figures or []))] +
+                  [dict(_ev_from_signal(trade[j], "trade"), src=clip((trade[j] or {}).get("source") or "trade", 30))
+                   for j in _idx_list(c.get("t"), len(trade or []))] +
+                  [_ev_from_signal(signals[j], "post") for j in _idx_list(c.get("s"), len(signals or []))])
             if not ev:
                 continue
-            seen.add(t.lower())
+            seen.add(_tkey(t))
             out[i].append({"t": t, "b": b, "ev": ev[:8]})
-            if len(out[i]) >= 4:
+            if len(out[i]) >= PER_PART:
                 break
+    return out
+
+
+def parse_parts(objs: list, signals: list, trade: list, figures: list, avoid: Optional[list] = None) -> list:
+    """The dig asks for each part on its own (all four at once): one answer per
+    part, read in order, a title used in one part never written again in another."""
+    out = [[] for _ in SECTIONS]
+    used = list(avoid or [])
+    for i, obj in enumerate((objs or [])[:N_SEC]):
+        got = parse_dig(obj, signals, trade, figures, only=i, avoid=used)[i]
+        out[i] = got
+        used += [c["t"] for c in got]
     return out
 
 
@@ -549,7 +587,7 @@ def apply_dig(sess: dict, parts: list, only: Optional[int] = None, report_id: st
         sec = sess["sections"][i]
         gone = [c["id"] for c in sec["currents"] if c.get("src") == "dig"]
         sec["currents"] = [c for c in sec["currents"] if c.get("src") != "dig"]
-        for k in ("dec", "tweak", "human", "ai", "sugg", "locked", "flag"):
+        for k in ("dec", "tweak", "tweak_b", "human", "ai", "sugg", "locked", "flag"):
             for cid in gone:
                 sess[k].pop(cid, None)
         for c in cur or []:
@@ -585,6 +623,11 @@ def title_of(sess: dict, c: dict) -> str:
     return (sess.get("tweak") or {}).get(c.get("id"), "") or c.get("t", "")
 
 
+def body_of(sess: dict, c: dict) -> str:
+    """The note under the title, as the room rewrote it (Tweak edits both)."""
+    return (sess.get("tweak_b") or {}).get(c.get("id"), "") or c.get("b", "")
+
+
 def decide(sess: dict, cid: str, d: str) -> bool:
     """A person's decision: Keep, Star, Kill — or the same again to clear it.
     Whatever Lighthouse had picked or suggested gives way, for good."""
@@ -611,13 +654,18 @@ def set_decision(sess: dict, cid: str, d: str) -> bool:
     return True
 
 
-def tweak(sess: dict, cid: str, text: str) -> bool:
-    """Rewritten on the spot. A tweaked current is a kept one, by a person."""
+def tweak(sess: dict, cid: str, text: str, body=None) -> bool:
+    """Rewritten on the spot — the title, and the note under it when `body` is
+    given. A tweaked current is a kept one, by a person."""
     i, c = find_current(sess, cid)
     t = clip(text, TITLE_MAX)
     if not c or not t:
         return False
+    live_defaults(sess)
     sess["tweak"][cid] = "" if t == c.get("t") else t
+    if body is not None:
+        b = clip(body, BODY_MAX)
+        sess["tweak_b"][cid] = "" if b == c.get("b", "") else b
     if not sess["dec"].get(cid) or sess["dec"][cid] == "kill":
         sess["dec"][cid] = "keep"
     sess["human"][cid] = True
@@ -628,7 +676,7 @@ def tweak(sess: dict, cid: str, text: str) -> bool:
 
 def add_current(sess: dict, sec: int, title: str, src: str = "room", body: str = "",
                 ev: Optional[list] = None, q: str = "", keep: bool = True,
-                now: Optional[str] = None) -> str:
+                now: Optional[str] = None, top: bool = False) -> str:
     """A current the data did not find: the room's own (kept at once, by a
     person), or one Lighthouse dug for the room's question (left undecided)."""
     try:
@@ -643,9 +691,10 @@ def add_current(sess: dict, sec: int, title: str, src: str = "room", body: str =
     if len(cur) >= MAX_CURRENTS + 6:
         return ""
     cid = _new_cid(sess)
-    cur.append({"id": cid, "t": t, "b": clip(body, BODY_MAX), "ev": list(ev or [])[:8],
-                "src": src if src in ("room", "team", "ask", "talk", "dig") else "room",
-                "cut": False, "q": clip(q, 200), "at": now or now_iso()})
+    row = {"id": cid, "t": t, "b": clip(body, BODY_MAX), "ev": list(ev or [])[:8],
+           "src": src if src in ("room", "team", "ask", "talk", "dig", "live") else "room",
+           "cut": False, "q": clip(q, 200), "at": now or now_iso()}
+    cur.insert(0, row) if top else cur.append(row)
     if keep:
         sess["dec"][cid] = "keep"
         sess["human"][cid] = True
@@ -768,7 +817,7 @@ def selects(sess: dict) -> list:
         for c in s.get("currents") or []:
             d = (sess.get("dec") or {}).get(c["id"], "")
             if not c.get("cut") and d in ("keep", "star"):
-                out.append({"id": c["id"], "sec": i, "t": title_of(sess, c), "b": c.get("b", ""),
+                out.append({"id": c["id"], "sec": i, "t": title_of(sess, c), "b": body_of(sess, c),
                             "star": d == "star", "ai": bool((sess.get("ai") or {}).get(c["id"])),
                             "src": c.get("src", ""), "ev": c.get("ev") or []})
     return out
@@ -1219,6 +1268,215 @@ POSTS:
 Answer only with JSON: {fmt}"""
 
 
+ASK_MAX = 3                    # currents one question may bring back
+
+
+def _nurl(u) -> str:
+    """A web address as a key: no scheme, no www, no fragment, no trailing slash."""
+    s = re.sub(r"^https?://(www\.)?", "", str(u or "").strip().lower())
+    return s.split("#", 1)[0].rstrip("/")
+
+
+def _host(u) -> str:
+    return re.sub(r"^www\.", "", re.sub(r"^https?://", "", str(u or "").strip().lower()).split("/", 1)[0])
+
+
+def ask_web_prompt(sess: dict, sec: int, q: str, posts: list, trade: list, figures: list,
+                   today: str, web: bool = True) -> str:
+    """A question from the room, answered with up to ASK_MAX currents: the news
+    and the data on the web first (`web`), then what the dig collected."""
+    part = SECTIONS[sec]
+    st = sess.get("setup") or {}
+    brand = st.get("brand") or sess.get("client_name") or "the brand"
+    subject = " · ".join(x for x in (st.get("category"), st.get("product")) if x) or "its category"
+    have = "\n".join(f"- {title_of(sess, c)}" for i in range(N_SEC) for c in all_currents(sess, i))
+    look = ("Search the web first — the news, the trade press and published data of the last months — and "
+            "use the lists below too." if web else "Use only the lists below.")
+    pages = ('\n- "urls": the web pages it stands on — only pages your searches returned, never one from memory'
+             if web else "")
+    return f"""You are Lighthouse, in a live workshop with {brand} ({subject}, {st.get('market') or 'their market'}). Today is {today}. The part on screen: {part['head']} — {part['lens']}.
+
+Somebody in the room asked: "{clip(q, 300)}"
+
+{look} Answer with up to {ASK_MAX} currents that really answer it, through this part's lens. A current is something MOVING the evidence shows — not a topic. Stand on the news, the articles and the figures first; posts only show how people talk about it.
+
+Currents already on screen — never repeat or reword them:
+{have or '- (none)'}
+
+For each current:
+- "title": an argument with a point of view, at most 8 words
+- "body": two sentences, at most 40 words: what is happening, and why it matters for {brand}{pages}
+- "f", "t", "s": indexes from the lists below (figures, articles, posts)
+At least one piece of evidence per current; never invent a page or an index. If nothing really answers it, answer exactly {{"none": "one sentence saying what is missing"}}.
+
+FIGURES:
+{figures_listing(figures) or '(none)'}
+
+ARTICLES:
+{listing(trade, 'T', 200, 40) or '(none)'}
+
+POSTS:
+{listing(posts, 'S', 200, 80) or '(none)'}
+
+Answer only with JSON: {{"currents": [{{"title": "…", "body": "…",{' "urls": ["https://…"],' if web else ''} "f": [], "t": [0], "s": [3]}}]}}"""
+
+
+_SOCIAL_HOSTS = {"reddit.com": "Reddit", "youtube.com": "YouTube", "tiktok.com": "TikTok",
+                 "instagram.com": "Instagram", "x.com": "X", "twitter.com": "X", "threads.net": "Threads",
+                 "facebook.com": "Facebook", "linkedin.com": "LinkedIn", "pinterest.com": "Pinterest",
+                 "quora.com": "Quora"}
+
+
+def social_of(url) -> str:
+    """The network a web page belongs to ("Reddit"…), or "" for the press and the rest of the web."""
+    h = _host(url)
+    return next((v for k, v in _SOCIAL_HOSTS.items() if h == k or h.endswith("." + k)), "")
+
+
+def _pages(results) -> dict:
+    """The pages the searches really returned, by address."""
+    pages = {}
+    for r in results or []:
+        if isinstance(r, dict) and str(r.get("url") or "").startswith(("http://", "https://")):
+            pages.setdefault(_nurl(r["url"]), r)
+    return pages
+
+
+def _ev_resolve(c: dict, pages: dict, posts: list, trade: list, figures: list) -> list:
+    """An answer's references as evidence, in the order it should be read:
+    figures, the web pages, the articles, the posts. A page the searches did
+    not return and an index that points at nothing are dropped."""
+    web, social = [], []
+    for u in (c.get("urls") if isinstance(c.get("urls"), list) else [])[:6]:
+        r = pages.get(_nurl(u))
+        if not r or any(w["url"] == r["url"] for w in web + social):
+            continue
+        net = social_of(r["url"])           # a Reddit thread found on the web is a post, not an article
+        (social if net else web).append({"ti": clip(plain(r.get("title") or r["url"]), 140), "url": str(r["url"])[:500],
+                                         "src": clip(net or _host(r["url"]), 30), "d": clip(r.get("page_age"), 20),
+                                         "k": "post" if net else "trade"})
+    return ([{"ti": clip(f"{(figures[j] or {}).get('figure', '')} — {(figures[j] or {}).get('claim', '')}", 160),
+              "url": str((figures[j] or {}).get("url") or "")[:500], "src": clip((figures[j] or {}).get("source"), 30),
+              "d": str((figures[j] or {}).get("date") or "")[:10], "k": "figure"}
+             for j in _idx_list(c.get("f"), len(figures or []))]
+            + web
+            + [dict(_ev_from_signal(trade[j], "trade"), src=clip((trade[j] or {}).get("source") or "trade", 30))
+               for j in _idx_list(c.get("t"), len(trade or []))]
+            + social
+            + [_ev_from_signal(posts[j], "post") for j in _idx_list(c.get("s"), len(posts or []))])
+
+
+def evidence_prompt(sess: dict, sec: int, title: str, body: str, posts: list, trade: list, figures: list,
+                    today: str, web: bool = True, who: str = "team") -> str:
+    """A current the team (or the room) wrote on its own: go and find what backs
+    it — figures first, then articles, then posts; on the web first (`web`),
+    then in what the dig collected."""
+    part = SECTIONS[sec]
+    st = sess.get("setup") or {}
+    brand = st.get("brand") or sess.get("client_name") or "the brand"
+    subject = " · ".join(x for x in (st.get("category"), st.get("product")) if x) or "its category"
+    look = ("Search the web first: published data, the news and the trade press for figures and articles, and "
+            "Reddit threads for how people talk about it. Then use the lists below too." if web
+            else "Use only the lists below.")
+    pages = ('\n- "urls": the web pages that back it (data, articles, Reddit threads) — only pages your searches '
+             'returned, never one from memory' if web else "")
+    stat = ('\n- "stat": one figure that backs it, from published data or the press (never from a forum), with its '
+            'source, the number copied exactly as the page writes it; "" if there is none' if web else "")
+    return f"""You are Lighthouse, preparing a live workshop with {brand} ({subject}, {st.get('market') or 'their market'}). Today is {today}. The part: {part['head']} — {part['lens']}.
+
+The {'room' if who == 'room' else 'team'} added this current on its own: "{clip(title, TITLE_MAX)}"{(' — ' + clip(body, BODY_MAX)) if body else ''}
+
+{look} Find the evidence that really backs it: figures first (the data), then articles (the news, the trade press), then posts (how people talk about it). Never stretch: evidence about something else does not count.
+
+Answer with:
+- "body": two sentences, at most 40 words: what the evidence shows about it{pages}
+- "f", "t", "s": indexes from the lists below (figures, articles, posts){stat}
+At least one piece of evidence; never invent a page, an index or a number. If nothing really backs it, answer exactly {{"none": "one sentence saying what is missing"}}.
+
+FIGURES:
+{figures_listing(figures) or '(none)'}
+
+ARTICLES:
+{listing(trade, 'T', 200, 40) or '(none)'}
+
+POSTS:
+{listing(posts, 'S', 200, 80) or '(none)'}
+
+Answer only with JSON: {{"body": "…",{' "urls": ["https://…"],' if web else ''} "f": [], "t": [0], "s": [3]{', "stat": ""' if web else ''}}}"""
+
+
+_NUM = re.compile(r"\d[\d,.]*")
+
+
+def _nums(s) -> list:
+    """The numbers written in a text, as tokens: "1,200" and "1200" are the same number."""
+    return [n.rstrip(".,").replace(",", "") for n in _NUM.findall(str(s or ""))]
+
+
+def parse_evidence(obj, results: list, posts: list, trade: list, figures: list,
+                   texts: Optional[list] = None) -> dict:
+    """{"none": why} · {"ev": […], "b": what it shows}. A "stat" is kept only
+    when every number in it is written in a page the searches returned
+    (`texts`: their titles and the passages cited — never a forum's) — it then
+    leads the evidence, as a figure, with the page it came from."""
+    if not isinstance(obj, dict):
+        return {"none": "Lighthouse did not answer — try again."}
+    if obj.get("none") and not any(obj.get(k) for k in ("urls", "f", "t", "s")):
+        return {"none": clip(obj["none"], 240)}
+    pages = _pages(results)
+    ev = _ev_resolve(obj, pages, posts, trade, figures)
+    st_ = clip(obj.get("stat"), 160)
+    nums = _nums(st_)
+    have = {n for x in (texts or []) for n in _nums(x)}
+    if st_ and texts is not None and nums and all(n in have for n in nums):
+        # the page it came from: a cited page whose title carries the numbers, else the first cited page
+        web = [e for e in ev if e.get("k") == "trade" and e.get("url") and _nurl(e["url"]) in pages]
+        src = next((e for e in web if set(nums) <= set(_nums(e.get("ti")))), web[0] if web else None)
+        if src is None:
+            r_ = next((r for r in pages.values() if not social_of(r.get("url"))
+                       and set(nums) <= set(_nums(r.get("title")))), None)
+            if r_:
+                src = {"url": str(r_["url"])[:500], "src": clip(_host(r_["url"]), 30), "d": clip(r_.get("page_age"), 20)}
+        if src in web and _tkey(src.get("ti")) and _tkey(src["ti"]) in _tkey(st_):
+            ev.remove(src)          # the page's title says no more than the figure: shown once, as the figure
+        ev.insert(0, {"ti": st_, "url": (src or {}).get("url", ""), "src": (src or {}).get("src", "") or "Figure",
+                      "d": (src or {}).get("d", ""), "k": "figure"})
+    if not ev:
+        return {"none": clip(obj.get("none"), 240) or "Nothing Lighthouse found really backs it."}
+    return {"ev": ev[:8], "b": clip(obj.get("body"), BODY_MAX)}
+
+
+def parse_ask_web(obj, results: list, posts: list, trade: list, figures: list,
+                  avoid: Optional[list] = None) -> dict:
+    """{"none": why} · {"cur": [{"t", "b", "ev"}…], "web": pages seen} — every
+    page a page the searches really returned, every index a real item; a
+    current with no evidence, or already on screen, is dropped."""
+    if not isinstance(obj, dict):
+        return {"none": "Lighthouse did not answer — try again."}
+    rows = obj.get("currents") if isinstance(obj.get("currents"), list) else []
+    if not rows and obj.get("none"):
+        return {"none": clip(obj["none"], 240)}
+    pages = _pages(results)
+    seen = {_tkey(t) for t in (avoid or []) if t}
+    out = []
+    for c in rows[:ASK_MAX + 2]:
+        if not isinstance(c, dict):
+            continue
+        t, b = clip(c.get("title"), TITLE_MAX), clip(c.get("body"), BODY_MAX)
+        if not t or _tkey(t) in seen:
+            continue
+        ev = _ev_resolve(c, pages, posts, trade, figures)
+        if not ev:
+            continue
+        seen.add(_tkey(t))
+        out.append({"t": t, "b": b, "ev": ev[:8]})
+        if len(out) >= ASK_MAX:
+            break
+    if not out:
+        return {"none": clip(obj.get("none"), 240) or "Nothing Lighthouse found really answers it — try other words."}
+    return {"cur": out, "web": len(pages)}
+
+
 def parse_ask(obj, cand: list, back: bool = False) -> dict:
     """{"none": why} · {"t", "b", "ev"} — evidence resolved to real posts, at least one."""
     if not isinstance(obj, dict):
@@ -1278,15 +1536,15 @@ WHAT THE ROOM KEPT (the selects; starred ones carry more weight):
 {chr(10).join(rows)}
 {extra}
 
-Find {want} countercurrent territor{'y' if want == 1 else 'ies'}: where {brand} could go that nobody else is going. Each one sits in the GAP between two currents the room kept — a tension with two sides that are both true. For each:
-- "title": the territory, at most 7 words, an idea a creative team could run with — a line with a point of view, in sentence case. Never "X vs. Y": the tension goes in "a" and "b", the title is where the brand goes
-- "a": side A of the tension, one line
-- "b": side B, one line, starting with "…" (it answers side A)
+Find {want} countercurrent territor{'y' if want == 1 else 'ies'}: where {brand} could go that nobody else is going. Each one is a TENSION between currents the room kept — two sides that are both true at once and pull against each other. The two sides are what the room reads first, in large type, so make them land. For each:
+- "a": side A — a short, sharp statement, at most 12 words, said the way people would say it
+- "b": side B — the same, pulling the other way; both must be true at once. A full statement of its own: no "…" at the start, no "but"
+- "title": where {brand} could stand inside that tension, at most 10 words, in sentence case — a direction a creative team could run with. Never "X vs. Y": the tension is already in "a" and "b"
 - "why": two sentences, at most 40 words: why the brand can own it, in plain words
 - "from": the indexes of the selects it is built from (two or more)
 No territory may repeat one marked ripe. Plain words; no consultancy language.
 
-Answer only with JSON: {{"territories": [{{"title": "…", "a": "…", "b": "…", "why": "…", "from": [0, 4]}}]}}"""
+Answer only with JSON: {{"territories": [{{"a": "…", "b": "…", "title": "…", "why": "…", "from": [0, 4]}}]}}"""
 
 
 def parse_terr(obj, sels: list) -> list:
@@ -1296,13 +1554,14 @@ def parse_terr(obj, sels: list) -> list:
     for r in rows if isinstance(rows, list) else []:
         if not isinstance(r, dict):
             continue
-        t = clip(r.get("title"), 90)
+        a, b = clip(r.get("a"), 160), clip(side(r.get("b")), 160)
+        t = clip(r.get("title"), 90) or clip(a, 90)
         frm = [sels[j]["id"] for j in _idx_list(r.get("from"), len(sels or []))]
-        if not t or t.lower() in seen or len(frm) < 2:
+        key = f"{a.lower()}|{b.lower()}"
+        if not (a and b) or key in seen or t.lower() in seen or len(frm) < 2:
             continue
-        seen.add(t.lower())
-        out.append({"t": t, "a": clip(r.get("a"), 200), "b": clip(r.get("b"), 200),
-                    "why": clip(r.get("why"), 360), "from": frm[:6]})
+        seen.update((key, t.lower()))
+        out.append({"t": t, "a": a, "b": b, "why": clip(r.get("why"), 360), "from": frm[:6]})
         if len(out) >= 5:
             break
     return out
@@ -1531,18 +1790,29 @@ def event_text(ev: dict, labels: dict) -> str:
             return f"Took {q(t)} out of the selects" if k == "set" else f"Cleared the decision on {q(t)}"
         return {"keep": f"Kept {q(t)}", "star": f"Starred {q(t)}", "kill": f"Killed {q(t)}"}.get(d, q(t))
     if k == "tweak":
-        return f"Rewrote {q(ev.get('frm', ''))} as {q(t)}"
+        if ev.get("frm", "") == t and ev.get("body"):
+            return f"Rewrote the note on {q(t)}"
+        return f"Rewrote {q(ev.get('frm', ''))} as {q(t)}" + (" — and its note" if ev.get("body") else "")
     if k == "add":
         return f"Added a current: {q(t)}"
     if k == "ask":
         return f"Asked Lighthouse: {q(ev.get('q', ''))}"
     if k == "ask_done":
+        if int(ev.get("n") or 1) > 1:
+            return f"Lighthouse answered {q(ev.get('q', ''))} with {ev['n']} new currents: {t}"
         return f"Lighthouse answered {q(ev.get('q', ''))} with a new current: {q(t)}"
+    if k == "more":
+        return f"Asked Lighthouse for more {ev.get('part', '')} currents".replace("  ", " ")
+    if k == "more_done":
+        return f"Lighthouse dug {_plural(int(ev.get('n') or 0), 'new current')} for {ev.get('part', 'the part')}: {t}"
+    if k == "more_none":
+        return f"Lighthouse found nothing new for {ev.get('part', 'the part')}" + (f" — {ev['note']}" if ev.get("note") else "")
     if k == "ask_none":
         return f"Lighthouse found nothing for {q(ev.get('q', ''))}" + (f" — {ev['note']}" if ev.get("note") else "")
     if k == "back":
-        return (f"Lighthouse found {_plural(int(ev.get('n') or 0), 'post')} behind {q(t)}" if ev.get("n")
-                else f"Nothing Lighthouse collected backs {q(t)} yet")
+        return (f"Lighthouse found {_plural(int(ev.get('n') or 0), 'piece', 'pieces')} of evidence behind {q(t)}"
+                + (f" ({ev['line']})" if ev.get("line") else "") if ev.get("n")
+                else f"Nothing Lighthouse found backs {q(t)} yet")
     if k == "ai":
         lv = "★ Star" if ev.get("d") == "star" else "✓ Keep"
         verb = "suggested" if ev.get("mode") == "suggest" else "picked"
@@ -1683,9 +1953,10 @@ def report_doc(sess: dict, answers: list, lines: list, people: dict, labels: dic
             n_dec[d if d in n_dec else ""] += 1
             stt = topic_stats(sess, i, cid, by_key, people)
             fl = (sess.get("flag") or {}).get(cid)
-            title = title_of(sess, c)
+            title, body = title_of(sess, c), body_of(sess, c)
             curs.append({"t": title, "was": c.get("t", "") if title != c.get("t", "") else "",
-                         "b": c.get("b", ""), "src": c.get("src") or "dig", "q": c.get("q", ""),
+                         "b": body, "was_b": c.get("b", "") if body != c.get("b", "") else "",
+                         "src": c.get("src") or "dig", "q": c.get("q", ""),
                          "outcome": _OUTCOME.get(d, "Not decided"), "d": d,
                          "how": _decided_how(sess, cid, labels, by_log),
                          "ev": [e for e in c.get("ev") or [] if e.get("url")][:8],
@@ -1705,7 +1976,8 @@ def report_doc(sess: dict, answers: list, lines: list, people: dict, labels: dic
                 other.append({"t": nt.get("t", ""), "m": stt["m"], "n": len(stt["who"]),
                               "quotes": _quotes(stt, people, labels)})
         asks = [{"t": clock(a.get("at", "")), "q": a.get("q", ""), "status": a.get("status", ""),
-                 "note": a.get("note", "")} for a in (sess.get("chat") or {}).get(str(i)) or []]
+                 "note": a.get("note", ""), "kind": a.get("kind", ""), "n": int(a.get("n") or 1)}
+                for a in (sess.get("chat") or {}).get(str(i)) or []]
         reads = []
         for r in (sess.get("reads") or {}).get(str(i)) or []:
             bits = []
@@ -1773,6 +2045,20 @@ def report_doc(sess: dict, answers: list, lines: list, people: dict, labels: dic
         "made": fmt_day(when or now_iso(), tz_name) + " " + clock(when or now_iso()),
     }
     return doc
+
+
+def side(x) -> str:
+    """A side of a tension as a statement of its own: older rounds wrote side B
+    as an answer to side A ("…but still want a room")."""
+    s = str(x or "").strip().lstrip(".…").strip()
+    return (s[:1].upper() + s[1:]) if s else ""
+
+
+def _sides_html(a, b, esc, small: bool = False) -> str:
+    """Side A and side B, side by side, as the point of the territory."""
+    return (f'<div class="lb-sides{" lb-sides-sm" if small else ""}">'
+            f'<div><span>Side A</span><b>{esc(side(a))}</b></div>'
+            f'<div><span>Side B</span><b>{esc(side(b))}</b></div></div>')
 
 
 def tension(a, b) -> str:
@@ -1867,6 +2153,7 @@ def _full_html(f: dict, brief_url: str = "") -> str:
                 f'<div class="lb-cur-t">{_x(c["t"])}</div>'
                 + (f'<div class="lb-was">Rewritten in the room. It was: “{_x(c["was"])}”</div>' if c.get("was") else "")
                 + (f'<p>{_x(c["b"])}</p>' if c.get("b") else "")
+                + (f'<div class="lb-was">The note was rewritten too. It was: “{_x(c["was_b"])}”</div>' if c.get("was_b") else "")
                 + (f'<div class="lb-how">{_x(c["how"])}</div>' if c.get("how") else "")
                 + (f'<div class="lb-evl">{_x(c.get("evline"))}' + (f"<br>{links}" if links else "") + "</div>"
                    if (links or c.get("evline")) else "")
@@ -1887,8 +2174,10 @@ def _full_html(f: dict, brief_url: str = "") -> str:
                                + "</div>" for x in p["other"]))
         if p.get("asks"):
             h.append('<div class="lb-sub">Questions put to Lighthouse</div><ul class="lb-list">' + "".join(
-                f'<li><span class="lb-time">{_x(a["t"])}</span>“{_x(a["q"])}” — '
-                + ({"done": f"a new current: “{_x(a['note'])}”", "running": "still looking when the record was made"}
+                f'<li><span class="lb-time">{_x(a["t"])}</span>'
+                + ("More currents for this part" if a.get("kind") == "more" else f"“{_x(a['q'])}”") + " — "
+                + ({"done": (f"{a['n']} new currents: {_x(a['note'])}" if a.get("n", 1) > 1 else f"a new current: “{_x(a['note'])}”"),
+                    "running": "still looking when the record was made"}
                    .get(a.get("status"), _x(a.get("note") or "nothing found"))) + "</li>" for a in p["asks"]) + "</ul>")
         if p.get("reads"):
             h.append('<div class="lb-sub">Lighthouse listening — each reading of the room</div><ul class="lb-list">'
@@ -1913,9 +2202,9 @@ def _full_html(f: dict, brief_url: str = "") -> str:
                      + (" · the final round" if r.get("final") else "") + "</div>")
             for x in r.get("items") or []:
                 h.append(f'<div class="lb-cur o-terr{" ripe" if x.get("ripe") else ""}">'
-                         f'<div class="lb-cur-h"><span class="lb-out">{"★ Ripe" if x.get("ripe") else ("Replaced" if x.get("replaced") else "Territory")}</span></div>'
-                         f'<div class="lb-cur-t">{_x(x["t"])}</div>'
-                         f'<p><b>The tension:</b> {_x(tension(x.get("a"), x.get("b")))}</p>'
+                         f'<div class="lb-cur-h"><span class="lb-out">{"★ Ripe" if x.get("ripe") else ("Replaced" if x.get("replaced") else "Tension")}</span></div>'
+                         + _sides_html(x.get("a"), x.get("b"), _x, small=True)
+                         + f'<p><b>Where the brand could stand:</b> {_x(x["t"])}</p>'
                          + (f'<p>{_x(x["why"])}</p>' if x.get("why") else "")
                          + (f'<div class="lb-said"><b>Notes from the room</b>: {_x(x["notes"])}</div>' if x.get("notes") else "")
                          + "</div>")
@@ -2025,13 +2314,16 @@ def leave_html(doc: dict, font_css: str = "", standalone: bool = True,
     (Print → Save as PDF), like the brief's export. A report_doc carries the
     whole session under it (`with_full=False` leaves it out)."""
     name = doc.get("client") or doc.get("brand") or "The client"
+    who = doc.get("brand") or doc.get("client") or "the brand"
     terr = doc.get("territories") or []
     t_html = []
-    for t in terr:
+    for n_t, t in enumerate(terr, 1):
         frm = "".join(f"<li>{_e(x)}</li>" for x in t.get("from") or [])
         t_html.append(
-            f'<div class="lb-t{" ripe" if t.get("ripe") else ""}"><div class="lb-h2" role="heading" aria-level="2">{"★ " if t.get("ripe") else ""}{_e(t["t"])}</div>'
-            f'<p><b>The tension:</b> {_e(tension(t.get("a"), t.get("b")))}</p>'
+            f'<div class="lb-t{" ripe" if t.get("ripe") else ""}">'
+            f'<div class="lb-tk" role="heading" aria-level="2">{"★ Ripe · " if t.get("ripe") else ""}Tension {n_t:02d}</div>'
+            + _sides_html(t.get("a"), t.get("b"), _e)
+            + f'<p><b>Where {_e(who)} could stand:</b> {_e(t["t"])}</p>'
             f'<p>{_e(t.get("why"))}</p>'
             + (f'<p class="lb-room"><b>From the room:</b> {_e(t["notes"])}</p>' if t.get("notes") else "")
             + (f'<div class="lb-from">Built from<ul>{frm}</ul></div>' if frm else "") + "</div>")
@@ -2056,7 +2348,7 @@ def leave_html(doc: dict, font_css: str = "", standalone: bool = True,
 <p class="lb-quiet">{_e(doc.get("day") or _fmt_day(doc.get("date")))} · Atlantic New York</p>
 <section class="lb-part"><div class="lb-lbl">The business challenge</div><p>{_e(doc.get("goal")) or "—"}</p></section>
 <section class="lb-part"><div class="lb-lbl">The marketing challenge underneath it</div><p>{_e(doc.get("problem")) or "—"}</p></section>
-<section class="lb-part"><div class="lb-lbl">The territories</div>{"".join(t_html) or "<p>No territories yet.</p>"}</section>
+<section class="lb-part"><div class="lb-lbl">The territories · the tensions the brand could stand in</div>{"".join(t_html) or "<p>No territories yet.</p>"}</section>
 <section class="lb-part"><div class="lb-lbl">The evidence — from Lighthouse and from the room</div><ul class="lb-ev">{"".join(ev_html) or "<li>No selects yet.</li>"}</ul></section>
 <section class="lb-part"><div class="lb-lbl">Next</div><p>The strategic rigour and the creative development — the work after the hypothesis.</p>
 {f'<p class="lb-quiet"><a href="{_e(doc["brief_url"])}" target="_blank" rel="noopener">The full Lighthouse brief behind this session ↗</a></p>' if doc.get("brief_url") else ""}</section>{_full_html(doc["full"], doc.get("brief_url", "")) if with_full and isinstance(doc.get("full"), dict) else ""}
@@ -2091,6 +2383,15 @@ LEAVE_CSS = """
 .lb-doc a{color:#0000ff}
 @media (max-width:820px){.lb-doc .lb-h1{font-size:34px}}
 .lb-doc .lb-logo{width:170px;margin:0 0 26px;line-height:0}
+.lb-doc .lb-t{margin-top:22px}
+.lb-doc .lb-tk{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:#0000ff;margin:0 0 8px}
+.lb-doc .lb-sides{display:grid;grid-template-columns:1fr 1fr;border-top:1.5px solid #000;margin:0 0 10px}
+.lb-doc .lb-sides>div{padding:12px 16px 6px 0}
+.lb-doc .lb-sides>div+div{border-left:1px solid #000;padding-left:16px}
+.lb-doc .lb-sides span{display:block;font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:#666;margin-bottom:6px}
+.lb-doc .lb-sides b{display:block;font-size:22px;font-weight:700;letter-spacing:-.01em;line-height:1.2;color:#000}
+.lb-doc .lb-sides-sm b{font-size:16px;line-height:1.3}
+@media (max-width:820px){.lb-doc .lb-sides{grid-template-columns:1fr}.lb-doc .lb-sides>div+div{border-left:none;padding-left:0;border-top:1px solid #000}}
 .lb-doc .lb-logo svg{width:100%;height:auto;display:block}
 .lb-doc .lb-full{margin-top:56px}
 .lb-doc .lb-band{background:#0000ff;color:#fff;padding:30px 30px 26px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -2226,8 +2527,11 @@ def live_apply(sess: dict, value, now: Optional[str] = None) -> list:
                 lg("set", id=cid, d=sess["dec"].get(cid, ""), title=tt(cid))
         elif t == "tweak":
             before = tt(cid)
-            if tweak(sess, cid, m.get("text")):
-                lg("tweak", id=cid, frm=before, title=tt(cid))
+            i_b, c_b = find_current(sess, cid)
+            before_b = body_of(sess, c_b) if c_b else ""
+            if tweak(sess, cid, m.get("text"), m.get("body") if "body" in m else None):
+                after_b = body_of(sess, find_current(sess, cid)[1])
+                lg("tweak", id=cid, frm=before, title=tt(cid), **({"body": after_b} if after_b != before_b else {}))
         elif t == "add":
             new = add_current(sess, m.get("sec", sess.get("sec", 0)), m.get("text"), "room",
                               body="Added in the session.", now=when)
@@ -2246,6 +2550,17 @@ def live_apply(sess: dict, value, now: Optional[str] = None) -> list:
                 del ch[:-12]
                 lg("ask", q=q, part=SECTIONS[sec]["key"])
                 eff(("ask", sec, f"q{s}"))
+        elif t == "more":
+            try:
+                sec = max(0, min(N_SEC - 1, int(m.get("sec", sess.get("sec", 0)))))
+            except (TypeError, ValueError):
+                sec = 0
+            ch = sess["chat"].setdefault(str(sec), [])
+            if not any(x.get("kind") == "more" and x.get("status") == "running" for x in ch):
+                ch.append({"id": f"m{s}", "q": "", "kind": "more", "status": "running", "note": "", "cid": "", "at": when})
+                del ch[:-12]
+                lg("more", part=SECTIONS[sec]["key"])
+                eff(("more", sec, f"m{s}"))
         elif t == "undo":
             if undo_ai(sess, cid):
                 lg("undo", id=cid, title=tt(cid))
@@ -2416,8 +2731,9 @@ def live_state(sess: dict, intake: Optional[dict], lines: list, people_view: lis
             ev = list(c.get("ev") or [])
             said = [{"who": labels.get(q["w"], "") or "Someone", "x": q["x"]} for q in (stt or {}).get("quotes", [])[-2:]]
             cur.append({
-                "id": cid, "t": title_of(sess, c), "t0": c.get("t", ""), "b": c.get("b", ""),
+                "id": cid, "t": title_of(sess, c), "t0": c.get("t", ""), "b": body_of(sess, c), "b0": c.get("b", ""),
                 "src": c.get("src", "dig"), "q": c.get("q", ""), "looking": bool(c.get("looking")),
+                "noev": bool(c.get("noev")),
                 "ev": [{"ti": plain(e.get("ti", "")), "url": e.get("url", ""), "src": net_label(e.get("src")),
                         "d": e.get("d", ""), "k": e.get("k", "")} for e in ev[:6]],
                 "evline": evidence_line(ev) or ("the room · " + ", ".join(dict.fromkeys(x["who"] for x in said))

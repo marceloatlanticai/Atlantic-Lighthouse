@@ -267,6 +267,14 @@ button{font-family:inherit}
 .rp-terr-h{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .rp-terr .k{font-size:10px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--blue)}
 .rp-terr .ttl{font-size:26px;font-weight:700;letter-spacing:-.01em;line-height:1.15;margin:10px 0 14px}
+.rp-sides{margin-top:12px}
+.rp-sides .sd{font-size:22px;font-weight:700;letter-spacing:-.015em;line-height:1.2}
+.rp-terr .where{border-top:1px solid var(--hair);padding-top:10px}
+.rp-terr .wt{font-size:15px;font-weight:700;line-height:1.35;margin-top:4px}
+.rp-terr.ripe .where{border-top-color:rgba(255,255,255,.55)}
+.rp-ask .morerow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.rp-ask .more{border-radius:var(--rad);border:1.5px solid #fff;background:#fff;color:var(--blue);font-weight:700;font-size:12px;padding:6px 12px}
+.rp-ask .mh{font-size:12.5px;color:var(--fg2)}
 .rp-tens{display:grid;grid-template-columns:1fr 1fr;border-top:1.5px solid var(--ink)}
 .rp-tens > div{padding:12px 14px 12px 0;font-size:13.5px;line-height:1.5}
 .rp-tens > div + div{border-left:1px solid var(--ink);padding-left:14px}
@@ -369,6 +377,8 @@ button{font-family:inherit}
   .rp-terr.ripe .rp-tens{border-top-color:var(--ink)}
   .rp-terr.ripe .rp-tens > div + div{border-left-color:var(--ink);border-top-color:var(--ink)}
   .rp-sbtn.inv{border-color:var(--blue)}
+  .rp-terr.ripe .where{border-top-color:var(--hair)}
+  .rp-ask .more{border-color:var(--ink);color:var(--ink)}
   .rp-ask .dig{border-color:var(--ink)}
   a{text-decoration:none}
 }
@@ -502,9 +512,10 @@ button{font-family:inherit}
     </div>
     <ol class="steps">
       <li><div>In section 2, <b>What Lighthouse looks for</b>, check the brand, category, market, competitors and the question. Click <span class="ui">Save</span>.</div></li>
-      <li><div>In section 3, click <span class="ui">Dig the four parts</span>. It takes about five minutes, and you can keep working meanwhile.</div></li>
+      <li><div>In section 3, click <span class="ui">Dig the four parts</span>: ten to twelve currents per part, standing on the data and the press first, then on social listening. It takes about five minutes, and you can keep working meanwhile.</div></li>
       <li><div>When it is done, read the currents in each part: Company, Competition, Customer and Climate.</div></li>
-      <li><div>Click <span class="ui">Cut</span> on anything weak: it will not appear in the room. Use <span class="ui">+ Add a current</span> for ideas of your own.</div></li>
+      <li><div>Click <span class="ui">Cut</span> on anything weak: it will not appear in the room.</div></li>
+      <li><div>Have an idea of your own? Click <span class="ui">+ Add a current</span> and write it in one line. Lighthouse goes looking for the evidence — figures first, then articles, then posts — and writes the note if you leave it blank. If nothing backs it yet, the card says so, and <span class="ui">Find evidence</span> tries again.</div></li>
       <li><div>If Lighthouse has searched this brand before, <b>What is moving</b> shows what is coming in, what is holding and what is going out since the first search.</div></li>
       <li><div><b>From the board</b> lists what the team already saved for the client. Click <span class="ui">Add to ▾</span> and choose the part: it goes in as the team's current, with its sources.</div></li>
     </ol>
@@ -613,12 +624,13 @@ button{font-family:inherit}
       <dl class="facts"><div><dt>Where</dt><dd>Company, Competition, Customer, Climate</dd></div><div><dt>Time</dt><dd>15′ each, with a 5′ break before Climate</dd></div></dl>
     </div>
     <ol class="steps">
-      <li><div>For each current, the room decides: <span class="ui">✓ Keep</span>, <span class="ui">★ Star</span> (the strongest), <span class="ui">Tweak</span> (rewrite it) or <span class="ui">✕ Kill</span>. The keys <span class="ui key">K</span> <span class="ui key">S</span> <span class="ui key">T</span> <span class="ui key">X</span> decide the first current still open.</div></li>
+      <li><div>For each current, the room decides: <span class="ui">✓ Keep</span>, <span class="ui">★ Star</span> (the strongest), <span class="ui">Tweak</span> (rewrite the current and its note) or <span class="ui">✕ Kill</span>. The keys <span class="ui key">K</span> <span class="ui key">S</span> <span class="ui key">T</span> <span class="ui key">X</span> decide the first current still open.</div></li>
       <li><div>Lighthouse listens, and reads the last minutes every 30 seconds. When people keep coming back to a topic, it marks the current <b>◉ Picked from the conversation</b>. Click <span class="ui">Undo</span> if it got it wrong.</div></li>
       <li><div>Prefer to approve each pick? Switch the room panel to <span class="ui">AI suggests</span>, then click <span class="ui">Confirm</span> or <span class="ui">Dismiss</span> on each suggestion.</div></li>
       <li><div>When someone disagrees, Lighthouse only flags the current as <b>Contested</b>. It never kills anything on its own.</div></li>
-      <li><div><b>Ask Lighthouse:</b> type a question in the box, such as “what about Gen Z planners?”, and click <span class="ui">Dig ›</span>. It comes back with a new current and its evidence. <b>Their questions</b>, under the box, are the client's own: click one to dig it.</div></li>
-      <li><div><b>Add an idea:</b> type it in the <b>+ Add a current</b> box and click <span class="ui">Add</span>. Lighthouse looks for posts that back it.</div></li>
+      <li><div><b>Ask Lighthouse:</b> type a question in the box, such as “what about Gen Z planners?”, and click <span class="ui">Dig ›</span>. Lighthouse searches the news and published data on the web, and what was collected, and brings up to three new currents with their sources — at the top of the part, marked <b>New</b>. <b>Their questions</b>, under the box, are the client's own: click one to dig it.</div></li>
+      <li><div><span class="ui">More currents for this part ›</span> brings three or four new ones from what was collected, the data and the press first, never repeating what is on screen.</div></li>
+      <li><div><b>Add an idea:</b> type it in the <b>+ Add a current</b> box and click <span class="ui">Add</span>. Lighthouse searches for the figures, articles and posts that back it, as it does before the meeting.</div></li>
       <li><div>Move between parts with the steps at the top, or with <span class="ui">‹ Back</span> and <span class="ui">Next · Competition ›</span> at the bottom of each part.</div></li>
     </ol>
   </div>
@@ -630,7 +642,7 @@ button{font-family:inherit}
           <div class="tag">Current <span class="star" hidden>★ starred</span></div>
           <div class="ttl">A current from the dig, with the evidence behind it</div>
           <p class="b">Lighthouse found it before the meeting. The room says whether it is true: keep it, star it, rewrite it or kill it.</p>
-          <div class="ev"><b>Evidence</b> · 4 posts · Reddit, TikTok · 1 article <u>show ↗</u></div>
+          <div class="ev"><b>Evidence</b> · 1 article · 4 posts · Reddit, TikTok <u>show ↗</u></div>
           <div class="rp-aimark">◉ <b>Picked from the conversation</b> — Dana, Sam · 3 mentions<button type="button" data-demo="undo">Undo</button></div>
           <div class="rp-talk">Talk · <b>3 mentions</b> · 2 people · came back to it</div>
           <div class="rp-dec"><button type="button" class="on" data-demo="dec" data-d="keep" aria-pressed="true">✓ Keep</button><button type="button" data-demo="dec" data-d="star" aria-pressed="false">★ Star</button><button type="button" data-demo="tweak">Tweak</button><button type="button" class="kill" data-demo="dec" data-d="kill" aria-pressed="false">✕ Kill</button></div>
@@ -660,7 +672,8 @@ button{font-family:inherit}
     </div>
     <div class="rp-ask" aria-hidden="true">
       <div class="lbl2">Ask Lighthouse</div>
-      <div class="rowc"><div class="in">Dig into something the room just said — e.g. “what about Gen Z planners?”</div><div class="dig">Dig ›</div></div>
+      <div class="rowc"><div class="in">Ask about something the room just said — e.g. “what about Gen Z planners?”</div><div class="dig">Dig ›</div></div>
+      <div class="morerow"><span class="more">More currents for this part ›</span><span class="mh">Three or four new ones from what was collected, the data and the press first.</span></div>
     </div>
   </figure>
   <nav class="step-nav" aria-label="Step 06"><a class="back" href="#steps">‹ All steps</a><a href="#step-07">Next · Selects and countercurrents ›</a></nav>
@@ -675,13 +688,13 @@ button{font-family:inherit}
     </div>
     <ol class="steps">
       <li><div>Click <span class="ui">Selects</span> at the top: everything the room kept, side by side. You need at least four. <span class="ui">Take it out</span> removes one.</div></li>
-      <li><div>Click <span class="ui">Find the countercurrents ›</span>. Lighthouse proposes territories in the gaps between what the room kept, and starred currents carry more weight.</div></li>
+      <li><div>Click <span class="ui">Find the countercurrents ›</span>. Lighthouse proposes tensions in the gaps between what the room kept: two sides that are both true, in large type, and where the brand could stand. Starred currents carry more weight.</div></li>
       <li><div>Discuss them. Write the room's notes in each one, and click <span class="ui">Mark ripe</span> on the good ones.</div></li>
       <li><div>Click <span class="ui">Regenerate with the notes</span>. Ripe territories stay; the others are rewritten using the notes.</div></li>
     </ol>
   </div>
   <figure class="fig">
-    <figcaption class="fig-cap"><span class="micro">Example · try Mark ripe</span>Three selects with their part's code, and two territories built from them. The second is ripe.</figcaption>
+    <figcaption class="fig-cap"><span class="micro">Example · try Mark ripe</span>Three selects with their part's code, and two tensions built from them. The second is ripe.</figcaption>
     <div class="rp-sels" aria-hidden="true">
       <div class="rp rp-sel"><div class="s"><span class="code c0"></span>Company · <b>★ starred</b></div><div class="t">A current the room starred</div><span class="x">Take it out</span></div>
       <div class="rp rp-sel"><div class="s"><span class="code c2"></span>Customer</div><div class="ai">◉ picked from the conversation</div><div class="t">A current Lighthouse picked as people talked</div><span class="x">Take it out</span></div>
@@ -689,17 +702,17 @@ button{font-family:inherit}
     </div>
     <div class="rp-terrs">
     <div class="rp rp-terr">
-      <div class="rp-terr-h"><span class="k">Territory / 01</span><button type="button" class="rp-sbtn" data-demo="ripe" aria-pressed="false">Mark ripe</button></div>
-      <div class="ttl">A territory sits in the gap between two currents</div>
-      <div class="rp-tens"><div><span class="rp-micro">Side A</span>One thing the room kept.</div><div><span class="rp-micro">Side B</span>Another it kept, which pulls the other way.</div></div>
+      <div class="rp-terr-h"><span class="k">Tension / 01</span><button type="button" class="rp-sbtn" data-demo="ripe" aria-pressed="false">Mark ripe</button></div>
+      <div class="rp-tens rp-sides"><div><span class="rp-micro">Side A</span><div class="sd">People want the ritual.</div></div><div><span class="rp-micro">Side B</span><div class="sd">People don't want the hangover.</div></div></div>
+      <div class="where"><span class="rp-micro">Where the brand could stand</span><div class="wt">Rituals that end clear-headed</div></div>
       <div class="why">Why the gap is open: what nobody else in the category is saying, and why this brand could say it.</div>
       <div class="evs">Built from: · A current the room starred<br>· A current that pulls the other way</div>
       <div class="notes">Notes from the room…</div>
     </div>
     <div class="rp rp-terr ripe">
-      <div class="rp-terr-h"><span class="k">Territory / 02</span><button type="button" class="rp-sbtn inv" data-demo="ripe" aria-pressed="true">★ Ripe</button></div>
-      <div class="ttl">Ripe territories stay when Lighthouse looks again</div>
-      <div class="rp-tens"><div><span class="rp-micro">Side A</span>A current from one part.</div><div><span class="rp-micro">Side B</span>A current from another part that contradicts it.</div></div>
+      <div class="rp-terr-h"><span class="k">Tension / 02</span><button type="button" class="rp-sbtn inv" data-demo="ripe" aria-pressed="true">★ Ripe</button></div>
+      <div class="rp-tens rp-sides"><div><span class="rp-micro">Side A</span><div class="sd">Taste is private.</div></div><div><span class="rp-micro">Side B</span><div class="sd">Taste wants an audience.</div></div></div>
+      <div class="where"><span class="rp-micro">Where the brand could stand</span><div class="wt">A place to practise taste before showing it</div></div>
       <div class="why">The room marked it ripe, so Regenerate with the notes keeps it as it is and rewrites only the others.</div>
       <div class="evs">Built from: · A current the room kept<br>· A current Lighthouse picked as people talked</div>
       <div class="notes filled">Room: this is the one. Take it into the leave-behind.</div>

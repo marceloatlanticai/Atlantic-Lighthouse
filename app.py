@@ -2115,11 +2115,19 @@ def save_dispatch(content: dict, topic: str):
 
 
 # ── Claude model config ────────────────────────────────────────────────────────
-# Switch model here based on your phase:
-#   Testing  → "claude-haiku-4-5-20251001"  (~$0.014/call, ~350 calls per $5)
-#   Staging  → "claude-sonnet-4-6"           (~$0.042/call, ~120 calls per $5)
-#   Client   → "claude-opus-4-5"             (~$0.070/call,  ~70 calls per $5)
+# THREE ROLES, THREE MODELS — each set in the secrets, so changing one never
+# needs a new upload:
+#   CLAUDE_MODEL       writes what the client reads: the brief, the dig's four
+#                      parts, the tensions. Power over speed — it runs while the
+#                      team prepares, or behind a progress bar.
+#   CLAUDE_MODEL_LIVE  answers the room during the meeting: Ask Lighthouse, "More
+#                      currents", the evidence for a current the room added.
+#                      Strong but quick — the room is waiting (default below).
+#   CLAUDE_MODEL_FAST  the mechanical calls: listening to the room, sorting posts,
+#                      reading a page into fields.
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+# Falls back to CLAUDE_MODEL by itself if this one cannot be used (see _lv_ai_live).
+CLAUDE_MODEL_LIVE = os.environ.get("CLAUDE_MODEL_LIVE", "") or "claude-sonnet-5-5"
 
 # The cheap model, for the mechanical calls: extracting a page into fields,
 # classifying signals, one-line synopses. These are not the product — the brief
@@ -14811,6 +14819,20 @@ def _lv_ai(prompt: str, model: str, max_tokens: int, timeout: float = 90.0) -> d
         return {}
 
 
+def _lv_ai_live(prompt: str, max_tokens: int, timeout: float = 90.0) -> dict:
+    """The room's model (CLAUDE_MODEL_LIVE) — and CLAUDE_MODEL when that one
+    cannot be used (a name the account does not have, a model retired), so a
+    wrong secret slows the room down instead of leaving it without answers."""
+    try:
+        return _lv_ai(prompt, CLAUDE_MODEL_LIVE, max_tokens, timeout=timeout)
+    except Exception as exc:
+        if CLAUDE_MODEL_LIVE == CLAUDE_MODEL:
+            raise
+        print(f"[live] {CLAUDE_MODEL_LIVE} unavailable ({type(exc).__name__}: {str(exc)[:120]}) — "
+              f"answering with {CLAUDE_MODEL}")
+        return _lv_ai(prompt, CLAUDE_MODEL, max_tokens, timeout=timeout)
+
+
 def _lv_job_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {str(exc)[:180]}"
 
@@ -14826,7 +14848,7 @@ def _lv_label_worker(jid: str, prompt: str) -> None:
 
 def _lv_ask_worker(jid: str, prompt: str, cand: list, back: bool) -> None:
     try:
-        obj = _lv_ai(prompt, CLAUDE_MODEL, 900, timeout=60.0)
+        obj = _lv_ai_live(prompt, 900, timeout=60.0)
         _sc.JOBS.finish(jid, {"res": _lc.parse_ask(obj, cand, back=back)})
     except Exception as exc:
         _sc.JOBS.finish(jid, error=_lv_job_error(exc))
@@ -14843,7 +14865,7 @@ def _lv_terr_worker(jid: str, prompt: str, sels: list) -> None:
 def _lv_redig_worker(jid: str, prompt: str, pool: list, trade: list, figs: list,
                      only: int, avoid: list) -> None:
     try:
-        obj = _lv_ai(prompt, CLAUDE_MODEL, 2500, timeout=120.0)
+        obj = _lv_ai(prompt, CLAUDE_MODEL, 4000, timeout=150.0)
         _sc.JOBS.finish(jid, {"parts": _lc.parse_dig(obj, pool, trade, figs, only=only, avoid=avoid)})
     except Exception as exc:
         _sc.JOBS.finish(jid, error=_lv_job_error(exc))
@@ -14925,23 +14947,38 @@ def _lv_dig_worker(jid: str, p: dict, outlets: list, lets: list, archive: list) 
         _stage("Reading which posts are really about it…")
         voice = _sv_voice_check(sigs, brand, cat, prod)
         _vd = (voice or {}).get("drop") or {}
-        pool_s = _lc.interleave(_lv_clean_pool([s_ for i_, s_ in enumerate(sigs) if str(i_) not in _vd]), 160)
-        trade_all = list(trade_sigs or []) + list(let_sigs or [])
+        if not _lc_has("parse_parts", "split_pool"):
+            raise RuntimeError("live_core.py on the server is older than app.py — upload it with app.py")
+        # The news the scan read (GDELT, RSS, the web) goes with the trade press as
+        # ARTICLES, ahead of the posts: the data and the press first, social after.
+        news, social = _lc.split_pool(_lv_clean_pool([s_ for i_, s_ in enumerate(sigs) if str(i_) not in _vd]))
+        pool_s = _lc.interleave(social, 160)
+        trade_all = (list(trade_sigs or []) + list(let_sigs or []) + news)[:_lc.ARTICLES_MAX]
         _stage("Writing the four parts — and the brief behind them…")
-        lens_prompt = _lc.dig_prompt(p, p.get("answers") or [], pool_s, trade_all[:40], lens_figs, _lv_today())
+        # One request per part, all four at once: ten to twelve currents each, and
+        # four focused requests write better than one asked for forty-eight.
+        answers_ = p.get("answers") or []
+        prompts = [_lc.dig_prompt(p, answers_, pool_s, trade_all, lens_figs, _lv_today(), only=i_)
+                   for i_ in range(_lc.N_SEC)]
         comp_list = [c.strip() for c in comps.split(",") if c.strip()]
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        with ThreadPoolExecutor(max_workers=1 + len(prompts)) as pool:
             f_brief = pool.submit(_sv_synthesize, sigs, cat or search, comp_list, brand,
                                   trade=trade_sigs, letters=let_sigs, numbers=figs, months=months,
                                   question=q, focus=focus, pinterest=pin)
-            f_lens = pool.submit(_lv_ai, lens_prompt, CLAUDE_MODEL, 4500, timeout=240.0)
-            lens = f_lens.result(timeout=300)
+            f_parts = [pool.submit(_lv_ai, pr, CLAUDE_MODEL, 4000, timeout=240.0) for pr in prompts]
+            outs = []
+            for i_, f_ in enumerate(f_parts):
+                try:
+                    outs.append(f_.result(timeout=300) or {})
+                except Exception as pexc:
+                    print(f"[live] part {i_ + 1} was not written: {pexc}")
+                    outs.append({})
             try:
                 res = f_brief.result(timeout=420) or {}
             except Exception as bexc:
                 print(f"[live] the brief behind the dig was not written: {bexc}")
                 res = {}
-        parts = _lc.parse_dig(lens, pool_s, trade_all[:40], lens_figs)
+        parts = _lc.parse_parts(outs, pool_s, trade_all, lens_figs)
         rid = ""
         if res:
             _stage("Filing the brief in the Archive…")
@@ -15045,39 +15082,219 @@ def _lv_brief_bits(sess: dict) -> tuple:
             sigs = [s for s in _load_signals_raw(limit=300) if brand and _signal_matches_client(s, brand)][:200]
         except Exception:
             sigs = []
-    out = (_lc.interleave(_lv_clean_pool(sigs), 160), trade[:40], figs)
+    posts = _lv_clean_pool(sigs)
+    if _lc_has("split_pool"):
+        news, posts = _lc.split_pool(posts)
+        trade = trade + [{"title": n_.get("title", ""), "content": n_.get("content", ""), "url": n_.get("url", ""),
+                          "source": n_.get("source", ""), "timestamp": n_.get("timestamp", "")} for n_ in news]
+    out = (_lc.interleave(posts, 160), trade[:getattr(_lc, "ARTICLES_MAX", 40)], figs)
     if rid:
         cache[rid] = out
     return out
 
 
+# Social networks stay out of the room's web search: the question goes to the
+# news, the trade press and published data — the posts are already collected.
+_LV_SOCIAL_DOMAINS = ["reddit.com", "tiktok.com", "instagram.com", "x.com", "twitter.com", "facebook.com",
+                      "youtube.com", "pinterest.com", "threads.net", "linkedin.com", "quora.com"]
+_LV_ASK_WEB = str(os.environ.get("LH_ASK_WEB", "on")).strip().lower() not in ("off", "0", "false", "no")
+
+
+def _lv_all_titles(sess: dict) -> list:
+    return [_lc.title_of(sess, c) for s_ in sess["sections"] for c in s_.get("currents") or []]
+
+
 def _lv_start_ask(sess: dict, sec: int, qid: str) -> None:
+    """The room's question: up to three currents, standing on the news and the
+    data on the web first (Claude's web search, as By the numbers uses it), and
+    on what the dig collected."""
     entry = next((q for q in (sess["chat"].get(str(sec)) or []) if q.get("id") == qid), None)
     if not entry:
         return
-    pool = _lv_brief_bits(sess)[0][:_LV_ASK_POOL]
-    if not pool:
+    posts, trade, figs = _lv_brief_bits(sess)
+    posts = posts[:_LV_ASK_POOL]
+    if not _lc_has("ask_web_prompt", "parse_ask_web"):
+        # an older live_core.py next to this app.py: the question as before
+        if not posts:
+            entry.update(status="none", note="Nothing has been collected for this session yet — "
+                                             "dig the four parts first.")
+            return
+        prompt = _lc.ask_prompt(sess, sec, entry["q"], posts, _lv_today())
+        jid = _sc.JOBS.start(sess["id"], "ask", kind="ask", sec=sec, qid=qid)
+        entry["jid"] = jid
+        _rm_threading.Thread(target=_lv_ask_worker, args=(jid, prompt, posts, False),
+                             daemon=True, name=f"lh-ask-{jid}").start()
+        return
+    web = _LV_ASK_WEB and _lhsrc is not None
+    if not web and not (posts or trade or figs):
         entry.update(status="none", note="Nothing has been collected for this session yet — "
                                          "dig the four parts first.")
         return
-    prompt = _lc.ask_prompt(sess, sec, entry["q"], pool, _lv_today())
+    today = _lv_today()
+    p_web = _lc.ask_web_prompt(sess, sec, entry["q"], posts, trade, figs, today, web=True) if web else ""
+    p_plain = _lc.ask_web_prompt(sess, sec, entry["q"], posts, trade, figs, today, web=False)
     jid = _sc.JOBS.start(sess["id"], "ask", kind="ask", sec=sec, qid=qid)
     entry["jid"] = jid
-    _rm_threading.Thread(target=_lv_ask_worker, args=(jid, prompt, pool, False),
+    _rm_threading.Thread(target=_lv_ask_web_worker,
+                         args=(jid, p_web, p_plain, posts, trade, figs, _lv_all_titles(sess)),
                          daemon=True, name=f"lh-ask-{jid}").start()
 
 
-def _lv_start_back(sess: dict, cid: str) -> None:
-    """The room added a current of its own: look for posts that back it."""
-    i, c = _lc.find_current(sess, cid)
-    pool = _lv_brief_bits(sess)[0][:_LV_ASK_POOL]
-    if not c or not pool:
+def _lv_ask_web_worker(jid: str, p_web: str, p_plain: str, posts: list, trade: list, figs: list,
+                       avoid: list) -> None:
+    """Search first; when the web search cannot run (switched off for the
+    account, a model without it, a network error) the same question goes to
+    what was collected, so the room always gets an answer."""
+    try:
+        res = None
+        if p_web:
+            try:
+                key = os.environ.get("ANTHROPIC_API_KEY", "")
+                if not key:
+                    raise RuntimeError("ANTHROPIC_API_KEY is not set")
+                import anthropic
+                cl = anthropic.Anthropic(api_key=key, timeout=150.0, max_retries=1)
+                tool = {"type": "web_search_20250305", "name": "web_search", "max_uses": 3,
+                        "blocked_domains": _LV_SOCIAL_DOMAINS}
+                try:
+                    blocks, _n = _lhsrc._call(cl, CLAUDE_MODEL_LIVE, p_web, [tool], max_tokens=2500)
+                except Exception as mexc:
+                    if CLAUDE_MODEL_LIVE == CLAUDE_MODEL or "model" not in str(mexc).lower():
+                        raise
+                    print(f"[live] ask: {CLAUDE_MODEL_LIVE} refused ({str(mexc)[:100]}) — searching with {CLAUDE_MODEL}")
+                    blocks, _n = _lhsrc._call(cl, CLAUDE_MODEL, p_web, [tool], max_tokens=2500)
+                rd = _lhsrc.read_search(blocks)
+                objs = [o for o, _a, _b in _lhsrc.json_lines(rd.get("text") or "")
+                        if isinstance(o, dict) and ("currents" in o or "none" in o)]
+                obj = objs[-1] if objs else (_extract_json(rd.get("text") or "") or {})
+                res = _lc.parse_ask_web(obj, list((rd.get("results") or {}).values()), posts, trade, figs, avoid)
+            except Exception as wexc:
+                print(f"[live] ask: no web search this time, using what was collected "
+                      f"({type(wexc).__name__}: {str(wexc)[:160]})")
+                res = None
+        if res is None:
+            obj = _lv_ai_live(p_plain, 2000, timeout=90.0)
+            res = _lc.parse_ask_web(obj, [], posts, trade, figs, avoid)
+        _sc.JOBS.finish(jid, {"res": res})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=_lv_job_error(exc))
+
+
+def _lv_start_more(sess: dict, sec: int, qid: str) -> None:
+    """"More currents for this part": three or four new ones from what the dig
+    collected — the data and the press first — never repeating the screen."""
+    entry = next((q for q in (sess["chat"].get(str(sec)) or []) if q.get("id") == qid), None)
+    if not entry:
         return
-    prompt = _lc.ask_prompt(sess, i, "", pool, _lv_today(), back=c["t"])
+    posts, trade, figs = _lv_brief_bits(sess)
+    if not (posts or trade or figs):
+        entry.update(status="none", note="Nothing has been collected for this session yet — "
+                                         "dig the four parts first.")
+        return
+    avoid = _lv_all_titles(sess)
+    prompt = _lc.dig_prompt(sess.get("setup") or {}, _lv_answers(sess), posts, trade, figs, _lv_today(),
+                            only=sec, avoid=avoid, n="3 or 4")
+    jid = _sc.JOBS.start(sess["id"], "more", kind="more", sec=sec, qid=qid)
+    entry["jid"] = jid
+    _rm_threading.Thread(target=_lv_more_worker, args=(jid, prompt, posts, trade, figs, sec, avoid),
+                         daemon=True, name=f"lh-more-{jid}").start()
+
+
+def _lv_more_worker(jid: str, prompt: str, posts: list, trade: list, figs: list, sec: int, avoid: list) -> None:
+    try:
+        obj = _lv_ai_live(prompt, 2000, timeout=90.0)
+        _sc.JOBS.finish(jid, {"cur": _lc.parse_dig(obj, posts, trade, figs, only=sec, avoid=avoid)[sec][:4]})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=_lv_job_error(exc))
+
+
+# What a current added by hand says before Lighthouse has looked: not a note to keep.
+_LV_PLACEHOLDERS = ("", "Added in the session.", "Added in the session — nothing Lighthouse collected backs it yet.",
+                    "Added in the session — nothing Lighthouse found backs it yet.")
+
+
+def _lv_start_back(sess: dict, cid: str) -> None:
+    """A current the team or the room wrote on its own: Lighthouse goes and
+    gathers what backs it — figures and articles on the web first, then the
+    figures, articles and posts the dig collected."""
+    i, c = _lc.find_current(sess, cid)
+    if not c or c.get("looking"):
+        return
+    posts, trade, figs = _lv_brief_bits(sess)
+    posts = posts[:_LV_ASK_POOL]
+    if not _lc_has("evidence_prompt", "parse_evidence"):
+        if not posts:                                  # an older live_core.py: posts only, as before
+            c["noev"] = True
+            return
+        prompt = _lc.ask_prompt(sess, i, "", posts, _lv_today(), back=c["t"])
+        jid = _sc.JOBS.start(sess["id"], "back", kind="back", cid=cid)
+        c["looking"], c["jid"] = True, jid
+        _rm_threading.Thread(target=_lv_ask_worker, args=(jid, prompt, posts, True),
+                             daemon=True, name=f"lh-back-{jid}").start()
+        return
+    web = _LV_ASK_WEB and _lhsrc is not None
+    if not web and not (posts or trade or figs):
+        c["noev"] = True
+        return
+    who = "room" if c.get("src") == "room" else "team"
+    body = "" if c.get("b", "") in _LV_PLACEHOLDERS else c.get("b", "")
+    today = _lv_today()
+    p_web = (_lc.evidence_prompt(sess, i, _lc.title_of(sess, c), body, posts, trade, figs, today, web=True, who=who)
+             if web else "")
+    p_plain = _lc.evidence_prompt(sess, i, _lc.title_of(sess, c), body, posts, trade, figs, today, web=False, who=who)
     jid = _sc.JOBS.start(sess["id"], "back", kind="back", cid=cid)
     c["looking"], c["jid"] = True, jid
-    _rm_threading.Thread(target=_lv_ask_worker, args=(jid, prompt, pool, True),
+    c.pop("noev", None)
+    _rm_threading.Thread(target=_lv_evidence_worker, args=(jid, p_web, p_plain, posts, trade, figs),
                          daemon=True, name=f"lh-back-{jid}").start()
+
+
+def _lv_evidence_worker(jid: str, p_web: str, p_plain: str, posts: list, trade: list, figs: list) -> None:
+    """Search the web for what backs the current, then read what was collected;
+    when the search cannot run, the collected material alone."""
+    try:
+        res = None
+        if p_web:
+            try:
+                key = os.environ.get("ANTHROPIC_API_KEY", "")
+                if not key:
+                    raise RuntimeError("ANTHROPIC_API_KEY is not set")
+                import anthropic
+                cl = anthropic.Anthropic(api_key=key, timeout=150.0, max_retries=1)
+                # Reddit is let in here: a current the team wrote may be nowhere in
+                # what the dig collected, and Reddit threads are how people talk.
+                tool = {"type": "web_search_20250305", "name": "web_search", "max_uses": 3,
+                        "blocked_domains": [d for d in _LV_SOCIAL_DOMAINS if d != "reddit.com"]}
+                try:
+                    blocks, _n = _lhsrc._call(cl, CLAUDE_MODEL_LIVE, p_web, [tool], max_tokens=2000)
+                except Exception as mexc:
+                    if CLAUDE_MODEL_LIVE == CLAUDE_MODEL or "model" not in str(mexc).lower():
+                        raise
+                    blocks, _n = _lhsrc._call(cl, CLAUDE_MODEL, p_web, [tool], max_tokens=2000)
+                rd = _lhsrc.read_search(blocks)
+                objs = [o for o, _a, _b in _lhsrc.json_lines(rd.get("text") or "")
+                        if isinstance(o, dict) and ("body" in o or "none" in o)]
+                obj = objs[-1] if objs else (_extract_json(rd.get("text") or "") or {})
+                results = list((rd.get("results") or {}).values())
+                # What a number in "stat" must be found in: the pages' titles and the
+                # passages cited — never a forum's (a number on Reddit is not a figure).
+                _soc = getattr(_lc, "social_of", lambda u: "")
+                texts = ([r_.get("title", "") for r_ in results if not _soc(r_.get("url"))]
+                         + [c_.get("cited_text", "") for _a, _b, cs in rd.get("spans") or [] for c_ in cs
+                            if not _soc(c_.get("url"))])
+                res = _lc.parse_evidence(obj, results, posts, trade, figs, texts=texts)
+            except Exception as wexc:
+                print(f"[live] evidence: no web search this time, using what was collected "
+                      f"({type(wexc).__name__}: {str(wexc)[:160]})")
+                res = None
+        if res is None:
+            if not (posts or trade or figs):
+                res = {"none": "Nothing was collected to look in, and the web search could not run."}
+            else:
+                res = _lc.parse_evidence(_lv_ai_live(p_plain, 1500, timeout=90.0), [], posts, trade, figs)
+        _sc.JOBS.finish(jid, {"res": res})
+    except Exception as exc:
+        _sc.JOBS.finish(jid, error=_lv_job_error(exc))
 
 
 def _lv_people(sess: dict) -> tuple:
@@ -15192,28 +15409,70 @@ def _lv_collect(sess: dict) -> bool:
                 elif res.get("none"):
                     entry.update(status="none", note=res["none"])
                 else:
-                    cid = _lc.add_current(sess, j.get("sec", 0), res["t"], "ask", body=res.get("b", ""),
-                                          ev=res.get("ev"), q=entry.get("q", ""), keep=False, now=_lv_now())
-                    entry.update(status="done", cid=cid, note=res["t"])
+                    curs = res.get("cur") or ([{"t": res["t"], "b": res.get("b", ""), "ev": res.get("ev")}]
+                                              if res.get("t") else [])
+                    cids, titles = [], []
+                    for c_ in reversed(curs):                  # the first answer ends up first
+                        cid = _lc.add_current(sess, j.get("sec", 0), c_["t"], "ask", body=c_.get("b", ""),
+                                              ev=c_.get("ev"), q=entry.get("q", ""), keep=False, now=_lv_now(),
+                                              **({"top": True} if _lc_has("parse_ask_web") else {}))
+                        if cid:
+                            cids.insert(0, cid)
+                            titles.insert(0, c_["t"])
+                    if cids:
+                        entry.update(status="done", cid=cids[0], cids=cids, n=len(cids),
+                                     note=titles[0] if len(titles) == 1 else " · ".join(titles))
+                    else:
+                        entry.update(status="none", note="This part is full — kill or cut a current first.")
                 # the answer, in the record of the session (the question is there already)
                 _lc.log_event(sess, "ask_done" if entry.get("status") == "done" else "ask_none", _lv_now(),
                               screen="sec", sec=int(j.get("sec") or 0), q=entry.get("q", ""),
                               id=entry.get("cid", ""), title=entry.get("note", "") if entry.get("status") == "done" else "",
-                              note=entry.get("note", "") if entry.get("status") != "done" else "")
+                              note=entry.get("note", "") if entry.get("status") != "done" else "",
+                              n=int(entry.get("n") or 1))
+        elif kind == "more":
+            sec_m = int(j.get("sec") or 0)
+            entry = next((q for q in (sess["chat"].get(str(sec_m)) or []) if q.get("id") == j.get("qid")), None)
+            got = r.get("cur") or []
+            cids, titles = [], []
+            if ok:
+                for c_ in reversed(got):
+                    cid = _lc.add_current(sess, sec_m, c_["t"], "live", body=c_.get("b", ""), ev=c_.get("ev"),
+                                          keep=False, now=_lv_now(), top=True)
+                    if cid:
+                        cids.insert(0, cid)
+                        titles.insert(0, c_["t"])
+            part = _lc.SECTIONS[sec_m]["key"]
+            if entry is not None:
+                if cids:
+                    entry.update(status="done", cid=cids[0], cids=cids, n=len(cids), note=" · ".join(titles))
+                else:
+                    entry.update(status="none", note=("Lighthouse could not be reached — try again." if not ok else
+                                                      "Nothing new in what was collected — ask a question to "
+                                                      "search the news."))
+            _lc.log_event(sess, "more_done" if cids else "more_none", _lv_now(), screen="sec", sec=sec_m,
+                          part=part, n=len(cids), title=" · ".join(f"“{t_}”" for t_ in titles),
+                          note=(entry or {}).get("note", "") if not cids else "")
         elif kind == "back":
             i, c = _lc.find_current(sess, j.get("cid", ""))
             if c:
                 c.pop("looking", None)
                 c.pop("jid", None)
                 res = r.get("res") or {}
+                own = c.get("b", "") not in _LV_PLACEHOLDERS       # the team or the room wrote the note
                 if ok and res.get("ev"):
                     c["ev"] = res["ev"]
-                    c["b"] = res.get("b") or c.get("b", "")
+                    if not own and res.get("b"):
+                        c["b"] = res["b"]
+                    c.pop("noev", None)
                 else:
-                    c["b"] = "Added in the session — nothing Lighthouse collected backs it yet."
+                    c["noev"] = True            # the card and the room's screen say so themselves
+                    if not own:
+                        c["b"] = "Added in the session." if c.get("src") == "room" else ""
                 if sess.get("went_live"):
                     _lc.log_event(sess, "back", _lv_now(), screen="sec", sec=max(0, i), id=c.get("id", ""),
-                                  title=_lc.title_of(sess, c), n=len(c.get("ev") or []) if ok and res.get("ev") else 0)
+                                  title=_lc.title_of(sess, c), n=len(c.get("ev") or []) if ok and res.get("ev") else 0,
+                                  line=_lc.evidence_line(c.get("ev") or []) if ok and res.get("ev") else "")
         elif kind == "terr":
             found = r.get("found") or []
             if ok and found:
@@ -15427,6 +15686,8 @@ def _lv_effect(sess: dict, eff: tuple) -> None:
         _lv_save(sess, force=True)
     elif kind == "ask":
         _lv_start_ask(sess, eff[1], eff[2])
+    elif kind == "more":
+        _lv_start_more(sess, eff[1], eff[2])
     elif kind == "back":
         _lv_start_back(sess, eff[1])
     elif kind == "terr":
@@ -15894,6 +16155,11 @@ def _lv_delete_panel(c: dict, user: str) -> None:
             st.rerun()
 
 
+def _lv_body(sess: dict, c: dict) -> str:
+    """The note under a current, as the room last rewrote it."""
+    return _lc.body_of(sess, c) if _lc_has("body_of") else c.get("b", "")
+
+
 def _lv_cur_card(sess: dict, i: int, c: dict) -> None:
     """One current, before the meeting: what it says, what it stands on, and
     the team's two moves — cut it, or rewrite it."""
@@ -15906,10 +16172,25 @@ def _lv_cur_card(sess: dict, i: int, c: dict) -> None:
     with st.container(key=f"lvc_{c['id']}"):
         st.markdown(f'<div class="lv-cur{" cut" if cut else ""}"><div class="tag{" cut" if cut else ""}">'
                     f'{"Cut — not shown in the room" if cut else e(tag)}</div>'
-                    f'<div class="t">{e(_lc.title_of(sess, c))}</div><div class="b">{e(c.get("b", ""))}</div>'
-                    + (f'<div class="ev"><b>Evidence</b> · {e(_lc.evidence_line(ev))}<br>{links}</div>' if ev else "")
+                    f'<div class="t">{e(_lc.title_of(sess, c))}</div><div class="b">{e(_lv_body(sess, c))}</div>'
+                    + (f'<div class="ev"><b>Evidence</b> · {e(_lc.evidence_line(ev))}<br>{links}</div>' if ev else
+                       '<div class="ev">Lighthouse is gathering evidence — figures, articles and posts…</div>'
+                       if c.get("looking") else
+                       '<div class="ev">Nothing Lighthouse found backs it yet.</div>'
+                       if c.get("noev") else "")
                     + "</div>", unsafe_allow_html=True)
-        a, b, _sp = st.columns([1, 1, 2.2])
+        can_look = (c.get("src") in ("team", "room") and not ev and not c.get("looking") and not cut)
+        if can_look:
+            a, b, f_, _sp = st.columns([1, 1, 1.25, 0.95])
+        else:
+            a, b, _sp = st.columns([1, 1, 2.2])
+            f_ = None
+        if f_ is not None:
+            with f_:
+                if st.button("Find evidence", key=f"lv_fe_{c['id']}", use_container_width=True):
+                    _lv_start_back(sess, c["id"])
+                    _lv_save(sess, force=True)
+                    st.rerun()
         with a:
             if st.button("Put back" if cut else "Cut", key=f"lv_cut_{c['id']}", use_container_width=True):
                 _lc.cut(sess, c["id"], not cut)
@@ -15926,6 +16207,7 @@ def _lv_cur_card(sess: dict, i: int, c: dict) -> None:
                         c["t"] = _lc.clip(t, _lc.TITLE_MAX) or c["t"]
                         c["b"] = _lc.clip(bd, _lc.BODY_MAX)
                         sess["tweak"].pop(c["id"], None)
+                        (sess.get("tweak_b") or {}).pop(c["id"], None)
                         _lv_save(sess, force=True)
                         st.rerun()
 
@@ -15955,6 +16237,25 @@ def _lv_dig_panel(sid: str) -> None:
     for i in redig:
         st.markdown(f'<div class="lv-run"><div class="h">Digging again</div><div class="rm-run"></div>'
                     f'<div class="s">{e(_lc.SECTIONS[i]["head"])}</div></div>', unsafe_allow_html=True)
+
+
+def _lv_looking(sess: dict) -> bool:
+    """Is Lighthouse gathering the evidence for a current right now?"""
+    return any(c.get("looking") for s in sess.get("sections") or [] for c in s.get("currents") or [])
+
+
+def _lv_look_panel(sid: str) -> None:
+    """While Lighthouse gathers the evidence for a current the team added:
+    collected every two seconds, and the page is drawn again when it lands.
+    Draws nothing of its own — the card already says it is looking."""
+    sess = st.session_state.get("lv_sess")
+    if not sess or sess.get("id") != sid:
+        return
+    if _lv_collect(sess):
+        _lv_save(sess, force=True)
+        st.rerun()
+    elif not _lv_looking(sess):          # collected by the dig's panel meanwhile
+        st.rerun()
 
 
 def _lv_opt_changed(sid: str, k: str) -> None:
@@ -16219,11 +16520,13 @@ def _lv_prep(sess: dict, user: str) -> None:
             with st.popover("+ Add a current", use_container_width=True):
                 with st.form(f"lv_add_{i}", border=False, clear_on_submit=True):
                     t = st.text_input("The current, in one line", max_chars=_lc.TITLE_MAX, key=f"lv_at_{i}")
-                    bd = st.text_area("What it says (optional)", max_chars=_lc.BODY_MAX, height=80,
-                                      key=f"lv_ab_{i}")
+                    bd = st.text_area("What it says (optional — Lighthouse writes it from the evidence)",
+                                      max_chars=_lc.BODY_MAX, height=80, key=f"lv_ab_{i}")
+                    fe = st.checkbox("Find evidence for it: figures, articles and posts", value=True,
+                                     key=f"lv_af_{i}")
                     if st.form_submit_button("Add", type="primary") and t.strip():
                         cid = _lc.add_current(sess, i, t, "team", body=bd, keep=False, now=_lv_now())
-                        if cid and not bd.strip():
+                        if cid and (fe or not bd.strip()):
                             _lv_start_back(sess, cid)
                         _lv_save(sess, force=True)
                         st.rerun()
@@ -16280,6 +16583,10 @@ def _lv_prep(sess: dict, user: str) -> None:
         if _tv:
             tide_slot.markdown(_lv_tide_html(_tv, str(stp.get("brand") or c.get("brand") or c.get("name") or "")),
                                unsafe_allow_html=True)
+    # A current the team added is being looked into: collected every two
+    # seconds, at the end of the page so nothing above waits or moves for it.
+    if _lv_looking(sess):
+        st.fragment(_lv_look_panel, run_every=2)(sess["id"])
     if sess.get("_dirty"):
         _lv_save(sess)
 
